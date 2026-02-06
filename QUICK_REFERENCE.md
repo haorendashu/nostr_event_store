@@ -3,10 +3,18 @@
 ## 项目统计
 
 - **总包数**：12 个核心包 + cmd 子包
-- **核心文件数**：~25 个主要实现文件（包括 Phase 8 完成的 store、recovery、compaction）
-- **接口数**：50+ 个接口定义（确保高可测试性）
-- **实现类**：5 个（EventSerializer、FileSegment、FileSegmentManager、WAL、EventStore）
-- **测试覆盖**：27/27 测试通过（存储 8、WAL 6、存储实现 5、恢复 4、压缩 5）
+- **核心文件数**：~33 个主要实现文件（已完成 cache、index、query 模块）
+- **接口数**：60+ 个接口定义（确保高可测试性）
+- **实现类**：9 个（EventSerializer、FileSegment、FileSegmentManager、WAL、EventStore、LRU Cache、Memory Cache、B+Tree Index、Index Manager）
+- **测试覆盖**：47/47 测试通过 ✅
+  - storage: 9 tests
+  - wal: 6 tests
+  - store: 5 tests
+  - recovery: 4 tests
+  - compaction: 5 tests
+  - cache: 5 tests ✨ (NEW)
+  - index: 5 tests ✨ (NEW)
+  - query: 8 tests ✨ (NEW)
 
 ---
 
@@ -329,14 +337,14 @@ for _, tt := range tests {
 
 ---
 
-## 实现进度（截至 Phase 10 - 2026年2月）
+## 实现进度（截至 Phase 12 - 2026年2月）
 
-✅ **已完成**（27/27 测试通过）
+✅ **已完成**（47/47 测试通过）
 
 核心存储堆栈：
 - [x] **types** - Event、RecordLocation、EventFlags、Tag 等核心类型（完成）
 - [x] **errors** - 标准错误处理（完成）
-- [x] **storage** - 多页面 TLV 序列化、段存储、扫描器（完成，8 个测试）
+- [x] **storage** - 多页面 TLV 序列化、段存储、扫描器（完成，9 个测试）
   - [x] serializer.go (367 行) - 自动多页面分块、TLV 编码
   - [x] segment.go (578 行) - 页面对齐文件操作、多页记录
   - [x] scanner.go (372 行) - 透明多页面扫描
@@ -353,33 +361,41 @@ for _, tt := range tests {
 - [x] **compaction** - 碎片分析与压缩执行（完成，5 个测试，Phase 10）
   - [x] compaction_impl.go (220 行) - 碎片分析、候选选择、记录迁移
   - [x] 测试：分析、选择、废弃分析、完整流程、小段
+- [x] **cache** - LRU 缓存、内存限制缓存（完成，5 个测试，Phase 11）✨
+  - [x] cache.go (568 行) - LRU 缓存、内存缓存、缓存池
+  - [x] 测试：LRU 基础、LRU 淘汰、内存淘汰、缓存池、并发缓存
+- [x] **index** - B+Tree 索引、三索引管理器（完成，5 个测试，Phase 11）✨
+  - [x] btree.go (403 行) - 内存 B+Tree 实现
+  - [x] primary.go (22 行) - ID 索引辅助函数
+  - [x] author_time.go (22 行) - (pubkey, created_at) 索引辅助函数
+  - [x] search.go (22 行) - 统一搜索索引辅助函数
+  - [x] manager.go (176 行) - 三索引管理器协调
+  - [x] 测试：主键构建、作者时间键、搜索键、B+Tree 操作、索引管理器
+- [x] **query** - 查询编译、优化、执行（完成，8 个测试，Phase 12）✨
+  - [x] engine.go (267 行) - Engine、Compiler、Executor、监控封装
+  - [x] compiler.go (186 行) - 过滤器验证与执行计划
+  - [x] optimizer.go (40 行) - 查询优化与索引选择
+  - [x] executor.go (330 行) - 执行器与结果迭代
+  - [x] filters.go (230 行) - 过滤器匹配逻辑
+  - [x] 测试：过滤器匹配、编译器、执行器、计划描述、监控统计
 
-🚧 **待实现**（预留架构）
+🚧 **待实现**（架构就绪）
 
-索引与查询堆栈：
-- [ ] **cache** - LRU 缓存、并发包装（架构就绪）
-- [ ] **index** - B+Tree 索引、多索引协调（架构就绪）
-  - [ ] btree.go - 节点结构与操作
-  - [ ] primary.go - ID 索引
-  - [ ] author_time.go - (pubkey, created_at) 索引
-  - [ ] search.go - 统一搜索索引
-  - [ ] manager.go - 3 索引协调
-- [ ] **query** - 查询编译、优化、执行（架构就绪）
-  - [ ] compiler.go - NIP-01 过滤器 → 执行计划
-  - [ ] optimizer.go - 索引选择、路径优化
-  - [ ] executor.go - 执行引擎
-  - [ ] filters.go - 过滤逻辑
-- [ ] **config** - 配置管理与验证（架构就绪）
-  - [ ] config.go - JSON/环境变量加载
-  - [ ] validator.go - 配置验证
+查询与配置堆栈：
+- [ ] **config** - 配置管理与验证（结构已定义，待实现）
+  - [x] config.go (317 行) - 配置结构定义、默认配置、JSON 加载
+  - [ ] validator.go - 配置验证逻辑
 - [ ] **eventstore** - 完整 API 规范实现（已定义，可扩展）
+  - [x] store.go (282 行) - 完整 API 规范定义
+  - [ ] 实现类 - 协调存储、索引、查询、压缩
 - [ ] **cmd/nostr-store** - CLI 工具
 
 **特别说明**：
-- Phases 1-10 完成了核心 WAL + Storage 堆栈
-- 所有 27 个测试通过，包括 5000 标签（350KB）大事件
-- 接口架构完整，可逐步添加索引、查询、缓存功能
-- store 包已生产就绪，支持多页面事件、崩溃恢复、碎片压缩
+- Phases 1-12 完成了核心 WAL + Storage + Cache + Index + Query 堆栈
+- 所有 47 个测试通过，包括 5000 标签（350KB）大事件
+- 新增 query 引擎模块，支持编译、执行、过滤与统计
+- Phase 11 实现了在内存 B+Tree 索引（可替换为持久化索引）
+- 接口架构完整，可继续添加配置管理、命令行工具
 
 ---
 
@@ -408,7 +424,10 @@ for _, tt := range tests {
 ✅ **WAL 持久化** - CRC64 校验、批量刷新、LSN 追踪  
 ✅ **崩溃恢复** - WAL 重放、EventID 重建、完整性验证  
 ✅ **自动压缩** - 碎片分析、候选选择、记录迁移  
-✅ **生产就绪** - 27/27 测试通过
+✅ **LRU 缓存** - 计数限制与内存限制两种模式（Phase 11）✨  
+✅ **三索引架构** - 主键（ID）、时间线（作者+时间）、搜索（Kind+Tag）（Phase 11）✨  
+✅ **B+Tree 索引** - 内存 B+Tree 实现，支持范围查询、正反向迭代（Phase 11）✨  
+✅ **生产就绪** - 47/47 测试通过
 
 ---
 
@@ -421,30 +440,35 @@ for _, tt := range tests {
 cat PROJECT_STRUCTURE.md
 
 # 2. 运行完整测试套件（验证所有功能）
-go test -v ./src/storage ./src/wal ./src/store ./src/recovery ./src/compaction
+go test -v ./src/...
 
 # 3. 阅读核心实现
 cat src/store/eventstore.go      # 主实现
 cat src/storage/serializer.go    # 多页面序列化
 cat src/wal/file_wal.go          # WAL 实现
+cat src/cache/cache.go           # LRU 缓存（NEW）
+cat src/index/btree.go           # B+Tree 索引（NEW）
+cat src/index/manager.go         # 三索引管理器（NEW）
 
 # 4. 查看集成测试
 cat src/store/eventstore_test.go
 cat src/recovery/recovery_test.go
+cat src/cache/cache_test.go      # 缓存测试（NEW）
+cat src/index/index_test.go      # 索引测试（NEW）
 ```
 
 ### 在已有基础上扩展
 
 ```bash
-# 下一步开发方向（在 store 基础上构建）：
-# 1. 实现 cache 中的 LRU 缓存
-# 2. 实现 index 中的 B+Tree 索引系统
-# 3. 实现 query 中的查询执行引擎
-# 4. 完成 eventstore 包中的完整 API 实现
-# 5. 添加 cmd 中的 CLI 工具
+# 下一步开发方向（在 store + cache + index 基础上构建）：
+# 1. 实现 query 中的查询编译器（NIP-01 filter → plan）
+# 2. 实现 query 中的优化器（选择最优索引）
+# 3. 实现 query 中的执行器（使用索引+过滤返回结果）
+# 4. 实现 eventstore 的完整实现（协调存储、索引、查询）
+# 5. 实现 cmd/nostr-store CLI 工具（init、write、query、compact）
 
 # 开发指南：
-# - 参考现有的 27 个测试编写新功能测试
+# - 参考现有的 47 个测试编写新功能测试
 # - 所有 I/O 操作接收 context.Context
 # - 使用接口抽象便于单元测试和 mock
 # - 保持包间单向依赖流（types → ... → eventstore）

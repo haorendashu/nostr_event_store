@@ -6,8 +6,13 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
+	"gopkg.in/yaml.v3"
 	"nostr_event_store/src/index"
 	"nostr_event_store/src/storage"
 )
@@ -204,42 +209,249 @@ type ManagerImpl struct {
 
 // NewManager creates a new configuration manager.
 func NewManager() Manager {
-	panic("not implemented")
+	return &ManagerImpl{
+		config: DefaultConfig(),
+	}
 }
 
 // Load loads configuration from a file.
 func (m *ManagerImpl) Load(ctx context.Context, path string) error {
-	panic("not implemented")
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	var cfg *Config
+	switch ext {
+	case ".json":
+		cfg, err = LoadJSON(data)
+	case ".yaml", ".yml":
+		cfg, err = LoadYAML(data)
+	default:
+		return fmt.Errorf("unsupported config file extension: %s", ext)
+	}
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	m.config = cfg
+	m.SetDefaults()
+	return m.Validate()
 }
 
 // LoadFromEnv loads configuration from environment variables.
 func (m *ManagerImpl) LoadFromEnv(ctx context.Context) error {
-	panic("not implemented")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.config == nil {
+		m.config = DefaultConfig()
+	}
+
+	if v, ok := getEnvString("NOSTR_STORE_DATA_DIR"); ok {
+		m.config.StorageConfig.DataDir = v
+	}
+	if v, ok := getEnvUint32("NOSTR_STORE_PAGE_SIZE"); ok {
+		m.config.StorageConfig.PageSize = v
+	}
+	if v, ok := getEnvUint64("NOSTR_STORE_MAX_SEGMENT_SIZE"); ok {
+		m.config.StorageConfig.MaxSegmentSize = v
+	}
+	if v, ok := getEnvUint32("NOSTR_STORE_EVENT_BUFFER_SIZE"); ok {
+		m.config.StorageConfig.EventBufferSize = v
+	}
+
+	if v, ok := getEnvString("NOSTR_STORE_INDEX_DIR"); ok {
+		m.config.IndexConfig.IndexDir = v
+	}
+	if v, ok := getEnvString("NOSTR_STORE_INDEX_INIT_MODE"); ok {
+		m.config.IndexConfig.InitializationMode = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_PRIMARY_INDEX_CACHE_MB"); ok {
+		m.config.IndexConfig.CacheConfig.PrimaryIndexCacheMB = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_AUTHOR_TIME_INDEX_CACHE_MB"); ok {
+		m.config.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_SEARCH_INDEX_CACHE_MB"); ok {
+		m.config.IndexConfig.CacheConfig.SearchIndexCacheMB = v
+	}
+	if v, ok := getEnvString("NOSTR_STORE_CACHE_EVICTION"); ok {
+		m.config.IndexConfig.CacheConfig.EvictionPolicy = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_CACHE_CONCURRENCY"); ok {
+		m.config.IndexConfig.CacheConfig.CacheConcurrency = v
+	}
+
+	if v, ok := getEnvString("NOSTR_STORE_WAL_DIR"); ok {
+		m.config.WALConfig.WALDir = v
+	}
+	if v, ok := getEnvString("NOSTR_STORE_WAL_SYNC_MODE"); ok {
+		m.config.WALConfig.SyncMode = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_WAL_BATCH_INTERVAL_MS"); ok {
+		m.config.WALConfig.BatchIntervalMs = v
+	}
+	if v, ok := getEnvUint32("NOSTR_STORE_WAL_BATCH_SIZE_BYTES"); ok {
+		m.config.WALConfig.BatchSizeBytes = v
+	}
+	if v, ok := getEnvUint64("NOSTR_STORE_WAL_MAX_SEGMENT_SIZE"); ok {
+		m.config.WALConfig.MaxSegmentSize = v
+	}
+
+	if v, ok := getEnvBool("NOSTR_STORE_COMPACTION_ENABLED"); ok {
+		m.config.CompactionConfig.Enabled = v
+	}
+	if v, ok := getEnvFloat64("NOSTR_STORE_COMPACTION_FRAGMENTATION"); ok {
+		m.config.CompactionConfig.FragmentationThreshold = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_COMPACTION_INTERVAL_MS"); ok {
+		m.config.CompactionConfig.CompactionIntervalMs = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_COMPACTION_MAX_CONCURRENT"); ok {
+		m.config.CompactionConfig.MaxConcurrentCompactions = v
+	}
+	if v, ok := getEnvBool("NOSTR_STORE_COMPACTION_PRESERVE_OLD"); ok {
+		m.config.CompactionConfig.PreserveOldSegments = v
+	}
+
+	m.SetDefaults()
+	return m.Validate()
 }
 
 // SetDefaults sets default values.
 func (m *ManagerImpl) SetDefaults() {
-	panic("not implemented")
+	defaults := DefaultConfig()
+	if m.config == nil {
+		m.config = defaults
+		return
+	}
+
+	if m.config.StorageConfig.DataDir == "" {
+		m.config.StorageConfig.DataDir = defaults.StorageConfig.DataDir
+	}
+	if m.config.StorageConfig.PageSize == 0 {
+		m.config.StorageConfig.PageSize = defaults.StorageConfig.PageSize
+	}
+	if m.config.StorageConfig.MaxSegmentSize == 0 {
+		m.config.StorageConfig.MaxSegmentSize = defaults.StorageConfig.MaxSegmentSize
+	}
+	if m.config.StorageConfig.EventBufferSize == 0 {
+		m.config.StorageConfig.EventBufferSize = defaults.StorageConfig.EventBufferSize
+	}
+
+	if m.config.IndexConfig.IndexDir == "" {
+		m.config.IndexConfig.IndexDir = defaults.IndexConfig.IndexDir
+	}
+	if m.config.IndexConfig.InitializationMode == "" {
+		m.config.IndexConfig.InitializationMode = defaults.IndexConfig.InitializationMode
+	}
+	if len(m.config.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode) == 0 {
+		m.config.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode = defaults.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode
+	}
+	if len(m.config.IndexConfig.SearchTypeMapConfig.EnabledTags) == 0 {
+		m.config.IndexConfig.SearchTypeMapConfig.EnabledTags = defaults.IndexConfig.SearchTypeMapConfig.EnabledTags
+	}
+
+	if m.config.IndexConfig.CacheConfig.PrimaryIndexCacheMB == 0 {
+		m.config.IndexConfig.CacheConfig.PrimaryIndexCacheMB = defaults.IndexConfig.CacheConfig.PrimaryIndexCacheMB
+	}
+	if m.config.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB == 0 {
+		m.config.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = defaults.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB
+	}
+	if m.config.IndexConfig.CacheConfig.SearchIndexCacheMB == 0 {
+		m.config.IndexConfig.CacheConfig.SearchIndexCacheMB = defaults.IndexConfig.CacheConfig.SearchIndexCacheMB
+	}
+	if m.config.IndexConfig.CacheConfig.EvictionPolicy == "" {
+		m.config.IndexConfig.CacheConfig.EvictionPolicy = defaults.IndexConfig.CacheConfig.EvictionPolicy
+	}
+	if m.config.IndexConfig.CacheConfig.CacheConcurrency == 0 {
+		m.config.IndexConfig.CacheConfig.CacheConcurrency = defaults.IndexConfig.CacheConfig.CacheConcurrency
+	}
+
+	if m.config.WALConfig.WALDir == "" {
+		m.config.WALConfig.WALDir = defaults.WALConfig.WALDir
+	}
+	if m.config.WALConfig.SyncMode == "" {
+		m.config.WALConfig.SyncMode = defaults.WALConfig.SyncMode
+	}
+	if m.config.WALConfig.BatchIntervalMs == 0 {
+		m.config.WALConfig.BatchIntervalMs = defaults.WALConfig.BatchIntervalMs
+	}
+	if m.config.WALConfig.BatchSizeBytes == 0 {
+		m.config.WALConfig.BatchSizeBytes = defaults.WALConfig.BatchSizeBytes
+	}
+	if m.config.WALConfig.MaxSegmentSize == 0 {
+		m.config.WALConfig.MaxSegmentSize = defaults.WALConfig.MaxSegmentSize
+	}
+
+	if m.config.CompactionConfig.FragmentationThreshold == 0 {
+		m.config.CompactionConfig.FragmentationThreshold = defaults.CompactionConfig.FragmentationThreshold
+	}
+	if m.config.CompactionConfig.CompactionIntervalMs == 0 {
+		m.config.CompactionConfig.CompactionIntervalMs = defaults.CompactionConfig.CompactionIntervalMs
+	}
+	if m.config.CompactionConfig.MaxConcurrentCompactions == 0 {
+		m.config.CompactionConfig.MaxConcurrentCompactions = defaults.CompactionConfig.MaxConcurrentCompactions
+	}
 }
 
 // Validate validates the configuration.
 func (m *ManagerImpl) Validate() error {
-	panic("not implemented")
+	return ValidateConfig(m.config)
 }
 
 // Get returns the current configuration.
 func (m *ManagerImpl) Get() *Config {
-	panic("not implemented")
+	return m.config
 }
 
 // Update applies a partial configuration update.
 func (m *ManagerImpl) Update(ctx context.Context, partial *Config) error {
-	panic("not implemented")
+	if partial == nil {
+		return fmt.Errorf("partial config is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.config == nil {
+		m.config = DefaultConfig()
+	}
+
+	mergeConfig(m.config, partial)
+	m.SetDefaults()
+	return m.Validate()
 }
 
 // Save writes the configuration to a file.
 func (m *ManagerImpl) Save(ctx context.Context, path string) error {
-	panic("not implemented")
+	if path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.config == nil {
+		return fmt.Errorf("no config to save")
+	}
+
+	data, err := json.MarshalIndent(m.config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
 }
 
 // LoadJSON loads configuration from JSON bytes.
@@ -252,14 +464,70 @@ func LoadJSON(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// LoadYAML loads configuration from YAML bytes.
+// Used internally by Load().
+func LoadYAML(data []byte) (*Config, error) {
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 // ToIndexConfig converts this config to an index.Config.
 func (c *Config) ToIndexConfig() index.Config {
-	panic("not implemented")
+	mapping := c.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode
+	if len(mapping) == 0 {
+		mapping = index.DefaultSearchTypeCodes()
+	}
+
+	enabledTags := c.IndexConfig.SearchTypeMapConfig.EnabledTags
+	if len(enabledTags) == 0 {
+		switch strings.ToLower(c.IndexConfig.InitializationMode) {
+		case "performance":
+			enabledTags = []string{"e", "p", "t"}
+		case "full":
+			for tag := range mapping {
+				enabledTags = append(enabledTags, tag)
+			}
+		case "custom":
+			// Keep empty, validation will catch if missing
+		default:
+			enabledTags = []string{"e", "p", "t", "a", "r", "subject"}
+		}
+	}
+
+	enabledTypes := make([]index.SearchType, 0, len(enabledTags)+3)
+	for _, tag := range enabledTags {
+		if code, ok := mapping[tag]; ok {
+			enabledTypes = append(enabledTypes, code)
+		}
+	}
+	// Always include reserved types
+	enabledTypes = append(enabledTypes, index.SearchTypeTime, index.SearchTypeReplaceable, index.SearchTypeParameterizedReplaceable)
+
+	return index.Config{
+		Dir:                     c.IndexConfig.IndexDir,
+		TagNameToSearchTypeCode: mapping,
+		EnabledSearchTypes:      enabledTypes,
+		PrimaryIndexCacheMB:     c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
+		AuthorTimeIndexCacheMB:  c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
+		SearchIndexCacheMB:      c.IndexConfig.CacheConfig.SearchIndexCacheMB,
+	}
 }
 
 // ToStorageConfig converts this config to a storage.PageSize.
 func (c *Config) ToStoragePageSize() storage.PageSize {
-	panic("not implemented")
+	switch c.StorageConfig.PageSize {
+	case uint32(storage.PageSize4KB):
+		return storage.PageSize4KB
+	case uint32(storage.PageSize8KB):
+		return storage.PageSize8KB
+	case uint32(storage.PageSize16KB):
+		return storage.PageSize16KB
+	default:
+		return storage.PageSize4KB
+	}
 }
 
 // DefaultConfig returns a configuration with all sensible defaults.
@@ -276,17 +544,15 @@ func DefaultConfig() *Config {
 			IndexDir:            "./data/indexes",
 			InitializationMode:  "standard",
 			SearchTypeMapConfig: SearchTypeMapConfig{
-				Mapping: map[string]uint8{
-					"e":     0x01,
-					"p":     0x02,
-					"t":     0x03,
-					"a":     0x04,
-					"r":     0x05,
-					"subject": 0x06,
-					"REPL":  0x20,
-					"PREPL": 0x21,
+				TagNameToSearchTypeCode: map[string]index.SearchType{
+					"e":       2,
+					"p":       3,
+					"t":       4,
+					"a":       5,
+					"r":       6,
+					"subject": 7,
 				},
-				EnabledSearchTypes: []string{"e", "p", "t", "a", "r", "subject", "REPL", "PREPL"},
+				EnabledTags: []string{"e", "p", "t", "a", "r", "subject"},
 				LastRebuildEpoch:   0,
 				RebuildInProgress:  false,
 			},
@@ -312,5 +578,156 @@ func DefaultConfig() *Config {
 			MaxConcurrentCompactions: 2,
 			PreserveOldSegments:      false,
 		},
+	}
+}
+
+func getEnvString(key string) (string, bool) {
+	val, ok := os.LookupEnv(key)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(val), true
+}
+
+func getEnvInt(key string) (int, bool) {
+	val, ok := getEnvString(key)
+	if !ok || val == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func getEnvUint32(key string) (uint32, bool) {
+	val, ok := getEnvString(key)
+	if !ok || val == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(val, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(parsed), true
+}
+
+func getEnvUint64(key string) (uint64, bool) {
+	val, ok := getEnvString(key)
+	if !ok || val == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(val, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func getEnvFloat64(key string) (float64, bool) {
+	val, ok := getEnvString(key)
+	if !ok || val == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func getEnvBool(key string) (bool, bool) {
+	val, ok := getEnvString(key)
+	if !ok || val == "" {
+		return false, false
+	}
+	parsed, err := strconv.ParseBool(val)
+	if err != nil {
+		return false, false
+	}
+	return parsed, true
+}
+
+func mergeConfig(dst *Config, src *Config) {
+	if src == nil || dst == nil {
+		return
+	}
+
+	if src.Debug {
+		dst.Debug = true
+	}
+
+	if src.StorageConfig.DataDir != "" {
+		dst.StorageConfig.DataDir = src.StorageConfig.DataDir
+	}
+	if src.StorageConfig.PageSize != 0 {
+		dst.StorageConfig.PageSize = src.StorageConfig.PageSize
+	}
+	if src.StorageConfig.MaxSegmentSize != 0 {
+		dst.StorageConfig.MaxSegmentSize = src.StorageConfig.MaxSegmentSize
+	}
+	if src.StorageConfig.EventBufferSize != 0 {
+		dst.StorageConfig.EventBufferSize = src.StorageConfig.EventBufferSize
+	}
+
+	if src.IndexConfig.IndexDir != "" {
+		dst.IndexConfig.IndexDir = src.IndexConfig.IndexDir
+	}
+	if src.IndexConfig.InitializationMode != "" {
+		dst.IndexConfig.InitializationMode = src.IndexConfig.InitializationMode
+	}
+	if len(src.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode) > 0 {
+		dst.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode = src.IndexConfig.SearchTypeMapConfig.TagNameToSearchTypeCode
+	}
+	if len(src.IndexConfig.SearchTypeMapConfig.EnabledTags) > 0 {
+		dst.IndexConfig.SearchTypeMapConfig.EnabledTags = src.IndexConfig.SearchTypeMapConfig.EnabledTags
+	}
+	if src.IndexConfig.CacheConfig.PrimaryIndexCacheMB != 0 {
+		dst.IndexConfig.CacheConfig.PrimaryIndexCacheMB = src.IndexConfig.CacheConfig.PrimaryIndexCacheMB
+	}
+	if src.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB != 0 {
+		dst.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = src.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB
+	}
+	if src.IndexConfig.CacheConfig.SearchIndexCacheMB != 0 {
+		dst.IndexConfig.CacheConfig.SearchIndexCacheMB = src.IndexConfig.CacheConfig.SearchIndexCacheMB
+	}
+	if src.IndexConfig.CacheConfig.EvictionPolicy != "" {
+		dst.IndexConfig.CacheConfig.EvictionPolicy = src.IndexConfig.CacheConfig.EvictionPolicy
+	}
+	if src.IndexConfig.CacheConfig.CacheConcurrency != 0 {
+		dst.IndexConfig.CacheConfig.CacheConcurrency = src.IndexConfig.CacheConfig.CacheConcurrency
+	}
+
+	if src.WALConfig.WALDir != "" {
+		dst.WALConfig.WALDir = src.WALConfig.WALDir
+	}
+	if src.WALConfig.SyncMode != "" {
+		dst.WALConfig.SyncMode = src.WALConfig.SyncMode
+	}
+	if src.WALConfig.BatchIntervalMs != 0 {
+		dst.WALConfig.BatchIntervalMs = src.WALConfig.BatchIntervalMs
+	}
+	if src.WALConfig.BatchSizeBytes != 0 {
+		dst.WALConfig.BatchSizeBytes = src.WALConfig.BatchSizeBytes
+	}
+	if src.WALConfig.MaxSegmentSize != 0 {
+		dst.WALConfig.MaxSegmentSize = src.WALConfig.MaxSegmentSize
+	}
+
+	if src.CompactionConfig.Enabled {
+		dst.CompactionConfig.Enabled = src.CompactionConfig.Enabled
+	}
+	if src.CompactionConfig.FragmentationThreshold != 0 {
+		dst.CompactionConfig.FragmentationThreshold = src.CompactionConfig.FragmentationThreshold
+	}
+	if src.CompactionConfig.CompactionIntervalMs != 0 {
+		dst.CompactionConfig.CompactionIntervalMs = src.CompactionConfig.CompactionIntervalMs
+	}
+	if src.CompactionConfig.MaxConcurrentCompactions != 0 {
+		dst.CompactionConfig.MaxConcurrentCompactions = src.CompactionConfig.MaxConcurrentCompactions
+	}
+	if src.CompactionConfig.PreserveOldSegments {
+		dst.CompactionConfig.PreserveOldSegments = src.CompactionConfig.PreserveOldSegments
 	}
 }

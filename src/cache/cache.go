@@ -6,6 +6,8 @@ package cache
 import (
 	"context"
 	"sync"
+
+	storeerrors "nostr_event_store/src/errors"
 )
 
 // Cache is the interface for a key-value cache with LRU eviction.
@@ -153,18 +155,367 @@ type Options struct {
 	Concurrency int
 }
 
+// lruCache is a count-based LRU cache implementation.
+type lruCache struct {
+	mu       sync.Mutex
+	capacity int
+	items    map[interface{}]*lruItem
+	head     *lruItem
+	tail     *lruItem
+	stats    Stats
+}
+
+type lruItem struct {
+	key  interface{}
+	val  interface{}
+	prev *lruItem
+	next *lruItem
+}
+
 // LRUCache creates a new LRU cache with count-based eviction.
 // items is the maximum number of items.
 // Returns error if items <= 0.
 func LRUCache(items int) (Cache, error) {
-	panic("not implemented")
+	if items <= 0 {
+		return nil, storeerrors.ErrCacheInvalidCapacity
+	}
+	return &lruCache{
+		capacity: items,
+		items:    make(map[interface{}]*lruItem),
+		stats: Stats{
+			Capacity: items,
+		},
+	}, nil
+}
+
+// Get retrieves a value by key and updates its LRU position.
+func (c *lruCache) Get(key interface{}) (interface{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, ok := c.items[key]
+	if !ok {
+		c.stats.Misses++
+		return nil, false
+	}
+	c.moveToFront(item)
+	c.stats.Hits++
+	return item.val, true
+}
+
+// Set inserts or updates a key-value pair.
+func (c *lruCache) Set(key interface{}, value interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if item, ok := c.items[key]; ok {
+		item.val = value
+		c.moveToFront(item)
+		return
+	}
+
+	item := &lruItem{key: key, val: value}
+	c.items[key] = item
+	c.moveToFront(item)
+	c.stats.Size = len(c.items)
+
+	if len(c.items) > c.capacity {
+		c.evictLRU()
+	}
+}
+
+// Delete removes a key from the cache.
+func (c *lruCache) Delete(key interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, ok := c.items[key]
+	if !ok {
+		return
+	}
+	c.removeItem(item)
+	delete(c.items, key)
+	c.stats.Size = len(c.items)
+}
+
+// Clear removes all items from the cache.
+func (c *lruCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.items = make(map[interface{}]*lruItem)
+	c.head = nil
+	c.tail = nil
+	c.stats.Size = 0
+}
+
+// Size returns the current number of items in the cache.
+func (c *lruCache) Size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items)
+}
+
+// Capacity returns the maximum number of items the cache can hold.
+func (c *lruCache) Capacity() int {
+	return c.capacity
+}
+
+// Stats returns cache statistics.
+func (c *lruCache) Stats() Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.stats.Size = len(c.items)
+	c.stats.Capacity = c.capacity
+	return c.stats
+}
+
+func (c *lruCache) moveToFront(item *lruItem) {
+	if item == c.head {
+		return
+	}
+
+	if item.prev != nil {
+		item.prev.next = item.next
+	}
+	if item.next != nil {
+		item.next.prev = item.prev
+	}
+	if item == c.tail {
+		c.tail = item.prev
+	}
+
+	item.prev = nil
+	item.next = c.head
+	if c.head != nil {
+		c.head.prev = item
+	}
+	c.head = item
+	if c.tail == nil {
+		c.tail = item
+	}
+}
+
+func (c *lruCache) removeItem(item *lruItem) {
+	if item.prev != nil {
+		item.prev.next = item.next
+	}
+	if item.next != nil {
+		item.next.prev = item.prev
+	}
+	if item == c.head {
+		c.head = item.next
+	}
+	if item == c.tail {
+		c.tail = item.prev
+	}
+}
+
+func (c *lruCache) evictLRU() {
+	if c.tail == nil {
+		return
+	}
+	tail := c.tail
+	c.removeItem(tail)
+	delete(c.items, tail.key)
+	c.stats.Evictions++
+	c.stats.Size = len(c.items)
+}
+
+// memoryCache is a memory-based LRU cache implementation.
+type memoryCache struct {
+	mu       sync.Mutex
+	capacity uint64
+	used     uint64
+	items    map[interface{}]*memItem
+	head     *memItem
+	tail     *memItem
+	stats    MemoryStats
+}
+
+type memItem struct {
+	key  interface{}
+	val  Node
+	size uint64
+	prev *memItem
+	next *memItem
 }
 
 // MemoryCacheWithLimit creates a new memory-limited LRU cache.
 // maxMemory is the maximum memory in bytes.
 // Returns error if maxMemory <= 0.
 func MemoryCacheWithLimit(maxMemory uint64) (MemoryCache, error) {
-	panic("not implemented")
+	if maxMemory == 0 {
+		return nil, storeerrors.ErrCacheInvalidCapacity
+	}
+	return &memoryCache{
+		capacity: maxMemory,
+		items:    make(map[interface{}]*memItem),
+		stats: MemoryStats{
+			MaxMemory: maxMemory,
+		},
+	}, nil
+}
+
+// Get retrieves a node by key and updates its LRU position.
+func (c *memoryCache) Get(key interface{}) (Node, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, ok := c.items[key]
+	if !ok {
+		c.stats.Misses++
+		return nil, false
+	}
+	c.moveToFront(item)
+	c.stats.Hits++
+	return item.val, true
+}
+
+// Set inserts or updates a node in the cache.
+func (c *memoryCache) Set(key interface{}, node Node) {
+	if node == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	size := node.Size()
+	if size > c.capacity {
+		return
+	}
+
+	if item, ok := c.items[key]; ok {
+		c.removeItem(item)
+		c.used -= item.size
+		delete(c.items, key)
+	}
+
+	item := &memItem{key: key, val: node, size: size}
+	c.items[key] = item
+	c.moveToFront(item)
+	c.used += size
+	c.stats.NodeCount = len(c.items)
+	c.stats.CurrentMemory = c.used
+
+	for c.used > c.capacity && len(c.items) > 0 {
+		c.evictLRU()
+	}
+}
+
+// Delete removes a node from the cache by key.
+func (c *memoryCache) Delete(key interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, ok := c.items[key]
+	if !ok {
+		return
+	}
+	c.removeItem(item)
+	c.used -= item.size
+	delete(c.items, key)
+	c.stats.NodeCount = len(c.items)
+	c.stats.CurrentMemory = c.used
+}
+
+// Clear removes all nodes from the cache.
+func (c *memoryCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.items = make(map[interface{}]*memItem)
+	c.head = nil
+	c.tail = nil
+	c.used = 0
+	c.stats.NodeCount = 0
+	c.stats.CurrentMemory = 0
+}
+
+// Size returns the current number of nodes in the cache.
+func (c *memoryCache) Size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items)
+}
+
+// MemoryUsage returns the total memory used by cached nodes (in bytes).
+func (c *memoryCache) MemoryUsage() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.used
+}
+
+// MemoryLimit returns the maximum allowed memory (in bytes).
+func (c *memoryCache) MemoryLimit() uint64 {
+	return c.capacity
+}
+
+// Stats returns cache statistics.
+func (c *memoryCache) Stats() MemoryStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.stats.CurrentMemory = c.used
+	c.stats.NodeCount = len(c.items)
+	c.stats.MaxMemory = c.capacity
+	return c.stats
+}
+
+func (c *memoryCache) moveToFront(item *memItem) {
+	if item == c.head {
+		return
+	}
+
+	if item.prev != nil {
+		item.prev.next = item.next
+	}
+	if item.next != nil {
+		item.next.prev = item.prev
+	}
+	if item == c.tail {
+		c.tail = item.prev
+	}
+
+	item.prev = nil
+	item.next = c.head
+	if c.head != nil {
+		c.head.prev = item
+	}
+	c.head = item
+	if c.tail == nil {
+		c.tail = item
+	}
+}
+
+func (c *memoryCache) removeItem(item *memItem) {
+	if item.prev != nil {
+		item.prev.next = item.next
+	}
+	if item.next != nil {
+		item.next.prev = item.prev
+	}
+	if item == c.head {
+		c.head = item.next
+	}
+	if item == c.tail {
+		c.tail = item.prev
+	}
+}
+
+func (c *memoryCache) evictLRU() {
+	if c.tail == nil {
+		return
+	}
+	tail := c.tail
+	c.removeItem(tail)
+	delete(c.items, tail.key)
+	c.used -= tail.size
+	c.stats.Evictions++
+	c.stats.NodeCount = len(c.items)
+	c.stats.CurrentMemory = c.used
 }
 
 // CachePool manages multiple caches for different index types.
@@ -188,9 +539,96 @@ type CachePool interface {
 	Close() error
 }
 
+type cachePool struct {
+	mu     sync.RWMutex
+	caches map[string]Cache
+}
+
 // NewCachePool creates a new pool for managing multiple caches.
 func NewCachePool() CachePool {
-	panic("not implemented")
+	return &cachePool{
+		caches: make(map[string]Cache),
+	}
+}
+
+// NewCache creates a new cache with the given name and options.
+func (p *cachePool) NewCache(name string, opts Options) (Cache, error) {
+	if name == "" {
+		return nil, storeerrors.NewCacheError("cache name cannot be empty", nil)
+	}
+
+	policy := opts.EvictionPolicy
+	if policy == "" {
+		policy = "lru"
+	}
+	if policy != "lru" {
+		return nil, storeerrors.NewCacheError("unsupported eviction policy: "+policy, nil)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, ok := p.caches[name]; ok {
+		return nil, storeerrors.NewCacheError("cache already exists: "+name, nil)
+	}
+
+	var cache Cache
+	var err error
+
+	if opts.MaxMemory > 0 {
+		memCache, err := MemoryCacheWithLimit(opts.MaxMemory)
+		if err != nil {
+			return nil, err
+		}
+		cache = &memoryCacheAdapter{cache: memCache}
+	} else if opts.MaxSize > 0 {
+		cache, err = LRUCache(opts.MaxSize)
+	} else {
+		cache, err = LRUCache(1024)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	p.caches[name] = cache
+	return cache, nil
+}
+
+// GetCache retrieves a previously created cache by name.
+func (p *cachePool) GetCache(name string) (Cache, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	cache, ok := p.caches[name]
+	return cache, ok
+}
+
+// DeleteCache removes a cache by name and evicts all its items.
+func (p *cachePool) DeleteCache(name string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.caches, name)
+	return nil
+}
+
+// Stats returns aggregated statistics across all caches.
+func (p *cachePool) Stats() map[string]Stats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	result := make(map[string]Stats)
+	for name, cache := range p.caches {
+		result[name] = cache.Stats()
+	}
+	return result
+}
+
+// Close closes all caches in the pool.
+func (p *cachePool) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.caches = make(map[string]Cache)
+	return nil
 }
 
 // ConcurrentCache wraps a cache with a sync.RWMutex for thread-safe access.
@@ -202,9 +640,7 @@ type ConcurrentCache struct {
 
 // NewConcurrentCache wraps an existing cache for concurrent access.
 func NewConcurrentCache(cache Cache) *ConcurrentCache {
-	return &ConcurrentCache{
-		cache: cache,
-	}
+	return &ConcurrentCache{cache: cache}
 }
 
 // Get retrieves a value with a read lock.
@@ -264,9 +700,7 @@ type ContextAware struct {
 
 // NewContextAwareCache wraps a cache to support context operations.
 func NewContextAwareCache(cache Cache) *ContextAware {
-	return &ContextAware{
-		cache: cache,
-	}
+	return &ContextAware{cache: cache}
 }
 
 // GetWithContext retrieves a value, respecting context cancellation.
@@ -288,5 +722,49 @@ func (c *ContextAware) SetWithContext(ctx context.Context, key interface{}, valu
 	default:
 		c.cache.Set(key, value)
 		return nil
+	}
+}
+
+// memoryCacheAdapter adapts MemoryCache to the Cache interface for pool usage.
+type memoryCacheAdapter struct {
+	cache MemoryCache
+}
+
+func (a *memoryCacheAdapter) Get(key interface{}) (interface{}, bool) {
+	return a.cache.Get(key)
+}
+
+func (a *memoryCacheAdapter) Set(key interface{}, value interface{}) {
+	node, ok := value.(Node)
+	if !ok {
+		return
+	}
+	a.cache.Set(key, node)
+}
+
+func (a *memoryCacheAdapter) Delete(key interface{}) {
+	a.cache.Delete(key)
+}
+
+func (a *memoryCacheAdapter) Clear() {
+	a.cache.Clear()
+}
+
+func (a *memoryCacheAdapter) Size() int {
+	return a.cache.Size()
+}
+
+func (a *memoryCacheAdapter) Capacity() int {
+	return int(a.cache.MemoryLimit())
+}
+
+func (a *memoryCacheAdapter) Stats() Stats {
+	ms := a.cache.Stats()
+	return Stats{
+		Hits:      ms.Hits,
+		Misses:    ms.Misses,
+		Evictions: ms.Evictions,
+		Size:      ms.NodeCount,
+		Capacity:  int(ms.MaxMemory),
 	}
 }

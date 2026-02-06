@@ -143,3 +143,59 @@ func IsWALCorrupted(err error) bool {
 	e, ok := err.(Error)
 	return ok && e.Code() == "ErrWALCorrupted"
 }
+
+// Cache-related errors
+
+// ErrCacheKeyNotFound is returned when a key is not found in the cache.
+var ErrCacheKeyNotFound = NewError("ErrCacheKeyNotFound", "cache key not found")
+
+// ErrCacheInvalidCapacity is returned when cache capacity is invalid (≤ 0).
+var ErrCacheInvalidCapacity = NewError("ErrCacheInvalidCapacity", "invalid cache capacity")
+
+// ErrCacheSizeFuncRequired is returned when a size function is required but not provided.
+var ErrCacheSizeFuncRequired = NewError("ErrCacheSizeFuncRequired", "size function required")
+
+// ErrCacheValueTooLarge is returned when a value is larger than cache capacity.
+var ErrCacheValueTooLarge = NewError("ErrCacheValueTooLarge", "value too large for cache")
+
+// Index-related errors
+
+// ErrIndexKeyNotFound is returned when a key is not found in the index.
+var ErrIndexKeyNotFound = NewError("ErrIndexKeyNotFound", "index key not found")
+
+// ErrIndexDuplicateKey is returned when attempting to insert a duplicate key.
+var ErrIndexDuplicateKey = NewError("ErrIndexDuplicateKey", "index key already exists")
+
+// ErrIndexInvalidKeyBuilder is returned when key builder is nil or invalid.
+var ErrIndexInvalidKeyBuilder = NewError("ErrIndexInvalidKeyBuilder", "invalid key builder")
+
+// ErrBTreeInvalidOrder is returned when B+Tree order is invalid.
+var ErrBTreeInvalidOrder = NewError("ErrBTreeInvalidOrder", "invalid B+Tree order (must be ≥ 2)")
+
+// NewCacheError creates a cache error with the given message.
+func NewCacheError(message string, cause error) Error {
+	return NewErrorWithCause("ErrCacheError", message, cause)
+}
+
+// NewIndexKeyError creates an index key not found error with the given key.
+func NewIndexKeyError(key string) Error {
+	return NewError("ErrIndexKeyNotFound", fmt.Sprintf("index key '%s' not found", key))
+}
+
+// IsCacheKeyNotFound checks if the error is ErrCacheKeyNotFound.
+func IsCacheKeyNotFound(err error) bool {
+	e, ok := err.(Error)
+	return ok && e.Code() == "ErrCacheKeyNotFound"
+}
+
+// IsIndexKeyNotFound checks if the error is ErrIndexKeyNotFound.
+func IsIndexKeyNotFound(err error) bool {
+	e, ok := err.(Error)
+	return ok && e.Code() == "ErrIndexKeyNotFound"
+}
+
+// IsIndexDuplicateKey checks if the error is ErrIndexDuplicateKey.
+func IsIndexDuplicateKey(err error) bool {
+	e, ok := err.(Error)
+	return ok && e.Code() == "ErrIndexDuplicateKey"
+}

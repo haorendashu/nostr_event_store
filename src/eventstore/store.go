@@ -13,7 +13,6 @@ import (
 	"nostr_event_store/src/index"
 	"nostr_event_store/src/query"
 	"nostr_event_store/src/recovery"
-	"nostr_event_store/src/storage"
 	"nostr_event_store/src/types"
 	"nostr_event_store/src/wal"
 )
@@ -91,7 +90,7 @@ type EventStore interface {
 	WAL() wal.Manager
 
 	// Recovery returns the recovery manager (for explicit recovery or verification).
-	Recovery() recovery.Manager
+	Recovery() *recovery.Manager
 
 	// Compaction returns the compaction manager (for monitoring or manual compaction).
 	Compaction() compaction.Manager
@@ -133,7 +132,7 @@ type Stats struct {
 	WalLastLSN wal.LSN
 
 	// Recovery stats
-	LastRecoveryStats recovery.Stats
+	LastRecoveryStats *recovery.RecoveryState
 }
 
 // Options configures store creation.
@@ -149,8 +148,9 @@ type Options struct {
 	Metrics Metrics
 
 	// RecoveryMode determines how crash recovery is handled.
-	// Default: automatic
-	RecoveryMode recovery.Mode
+	// Options: "auto" (automatic recovery), "skip" (no recovery), "manual" (user-triggered)
+	// Default: "auto"
+	RecoveryMode string
 
 	// VerifyAfterRecovery enables post-recovery verification.
 	// Default: true
@@ -187,18 +187,11 @@ func (m NoOpMetrics) RecordQuery(durationMs int64, resultCount int) {}
 func (m NoOpMetrics) RecordIndexLookup(indexName string, durationMs int64, cacheHit bool) {}
 func (m NoOpMetrics) RecordCacheStat(indexName string, stat cache.Stats) {}
 
-// New creates a new EventStore with the given configuration.
-// The store is not opened yet; call Open() to initialize it.
-// opts may be nil; sensible defaults are used.
-func New(opts *Options) EventStore {
-	panic("not implemented")
-}
-
-// Open creates, initializes, and opens an EventStore at the given directory.
+// OpenDefault creates, initializes, and opens an EventStore at the given directory.
 // Convenience function that creates a store and opens it in one call.
 // Returns error if initialization or opening fails.
 // ctx is used for cancellation and timeouts.
-func Open(ctx context.Context, dir string, cfg *config.Config) (EventStore, error) {
+func OpenDefault(ctx context.Context, dir string, cfg *config.Config) (EventStore, error) {
 	if cfg == nil {
 		cfg = config.DefaultConfig()
 	}
@@ -218,7 +211,7 @@ func OpenReadOnly(ctx context.Context, dir string) (EventStore, error) {
 	cfg := config.DefaultConfig()
 	store := New(&Options{
 		Config:       cfg,
-		RecoveryMode: recovery.ModeReadOnly,
+		RecoveryMode: "skip", // Skip recovery in read-only mode
 	})
 	if err := store.Open(ctx, dir, false); err != nil {
 		return nil, err
@@ -257,7 +250,7 @@ type Listener interface {
 	OnRecoveryStarted(ctx context.Context)
 
 	// OnRecoveryCompleted is called when crash recovery finishes.
-	OnRecoveryCompleted(ctx context.Context, stats recovery.Stats)
+	OnRecoveryCompleted(ctx context.Context, stats *recovery.RecoveryState)
 
 	// OnCompactionStarted is called when compaction begins.
 	OnCompactionStarted(ctx context.Context, segmentID uint32)
@@ -272,10 +265,10 @@ type Listener interface {
 // NoOpListener is a no-op listener implementation.
 type NoOpListener struct{}
 
-func (l NoOpListener) OnOpened(ctx context.Context)                                     {}
-func (l NoOpListener) OnClosed(ctx context.Context)                                     {}
-func (l NoOpListener) OnRecoveryStarted(ctx context.Context)                            {}
-func (l NoOpListener) OnRecoveryCompleted(ctx context.Context, stats recovery.Stats)    {}
-func (l NoOpListener) OnCompactionStarted(ctx context.Context, segmentID uint32)        {}
-func (l NoOpListener) OnCompactionCompleted(ctx context.Context, segmentID uint32)      {}
+func (l NoOpListener) OnOpened(ctx context.Context)                                            {}
+func (l NoOpListener) OnClosed(ctx context.Context)                                            {}
+func (l NoOpListener) OnRecoveryStarted(ctx context.Context)                                   {}
+func (l NoOpListener) OnRecoveryCompleted(ctx context.Context, stats *recovery.RecoveryState) {}
+func (l NoOpListener) OnCompactionStarted(ctx context.Context, segmentID uint32)               {}
+func (l NoOpListener) OnCompactionCompleted(ctx context.Context, segmentID uint32)             {}
 func (l NoOpListener) OnError(ctx context.Context, err error)                           {}

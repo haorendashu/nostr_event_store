@@ -6,6 +6,8 @@ package query
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"nostr_event_store/src/index"
 	"nostr_event_store/src/storage"
@@ -130,6 +132,12 @@ type QueryStats struct {
 	ExecutionPlan string
 }
 
+// engineImpl implements Engine interface.
+type engineImpl struct {
+	compiler Compiler
+	executor Executor
+}
+
 // MonitoredEngine wraps an Engine to collect and report statistics.
 type MonitoredEngine struct {
 	engine Engine
@@ -141,13 +149,87 @@ type MonitoredEngine struct {
 // store: the storage layer for event retrieval
 // Returns the engine or error if initialization fails.
 func NewEngine(indexMgr index.Manager, store storage.Store) Engine {
-	panic("not implemented")
+	return &engineImpl{
+		compiler: NewCompiler(indexMgr),
+		executor: NewExecutor(indexMgr, store),
+	}
+}
+
+// Query executes a query and returns an iterator.
+func (e *engineImpl) Query(ctx context.Context, filter *types.QueryFilter) (ResultIterator, error) {
+	plan, err := e.compiler.Compile(filter)
+	if err != nil {
+		return nil, fmt.Errorf("compile query: %w", err)
+	}
+
+	results, err := e.executor.ExecutePlan(ctx, plan)
+	if err != nil {
+		return nil, fmt.Errorf("execute plan: %w", err)
+	}
+
+	return results, nil
+}
+
+// QueryEvents executes a query and returns all results as a slice.
+func (e *engineImpl) QueryEvents(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
+	iter, err := e.Query(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	var events []*types.Event
+	for iter.Valid() {
+		event := iter.Event()
+		if event != nil {
+			events = append(events, event)
+		}
+		if err := iter.Next(ctx); err != nil {
+			return nil, fmt.Errorf("iterate results: %w", err)
+		}
+	}
+
+	return events, nil
+}
+
+// Count executes a count query.
+func (e *engineImpl) Count(ctx context.Context, filter *types.QueryFilter) (int, error) {
+	iter, err := e.Query(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+
+	count := 0
+	for iter.Valid() {
+		count++
+		if err := iter.Next(ctx); err != nil {
+			return count, fmt.Errorf("iterate results: %w", err)
+		}
+	}
+
+	return count, nil
+}
+
+// Explain returns a query execution plan as a string.
+func (e *engineImpl) Explain(ctx context.Context, filter *types.QueryFilter) (string, error) {
+	plan, err := e.compiler.Compile(filter)
+	if err != nil {
+		return "", fmt.Errorf("compile query: %w", err)
+	}
+
+	planStr := plan.String()
+	costStr := fmt.Sprintf("  Estimated I/O: %d\n", plan.EstimatedCost())
+
+	return fmt.Sprintf("Plan: %s\n%s", planStr, costStr), nil
 }
 
 // NewCompiler creates a new query compiler.
 // indexMgr: the index manager (for checking available indexes)
 func NewCompiler(indexMgr index.Manager) Compiler {
-	panic("not implemented")
+	return &compilerImpl{
+		indexMgr: indexMgr,
+	}
 }
 
 // NewExecutor creates a new query executor.
@@ -155,42 +237,108 @@ func NewCompiler(indexMgr index.Manager) Compiler {
 // store: the storage layer
 // Returns the executor or error if initialization fails.
 func NewExecutor(indexMgr index.Manager, store storage.Store) Executor {
-	panic("not implemented")
+	return &executorImpl{
+		indexMgr: indexMgr,
+		store:    store,
+	}
 }
 
 // NewMonitoredEngine wraps an engine with statistics collection.
 func NewMonitoredEngine(engine Engine) *MonitoredEngine {
-	panic("not implemented")
+	return &MonitoredEngine{
+		engine: engine,
+		stats:  make(map[string]*QueryStats),
+	}
 }
 
 // Query delegates to the wrapped engine and collects stats.
 func (me *MonitoredEngine) Query(ctx context.Context, filter *types.QueryFilter) (ResultIterator, error) {
-	panic("not implemented")
+	start := time.Now()
+	iter, err := me.engine.Query(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	return &monitoredIterator{
+		iter:      iter,
+		monitor:   me,
+		startTime: start,
+		filter:    filter,
+	}, nil
 }
 
 // QueryEvents delegates to the wrapped engine.
 func (me *MonitoredEngine) QueryEvents(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
-	panic("not implemented")
+	return me.engine.QueryEvents(ctx, filter)
 }
 
 // Count delegates to the wrapped engine.
 func (me *MonitoredEngine) Count(ctx context.Context, filter *types.QueryFilter) (int, error) {
-	panic("not implemented")
+	return me.engine.Count(ctx, filter)
 }
 
 // Explain delegates to the wrapped engine.
 func (me *MonitoredEngine) Explain(ctx context.Context, filter *types.QueryFilter) (string, error) {
-	panic("not implemented")
+	return me.engine.Explain(ctx, filter)
 }
 
 // GetStats returns statistics for all executed queries.
 func (me *MonitoredEngine) GetStats() map[string]*QueryStats {
-	panic("not implemented")
+	return me.stats
 }
 
 // ResetStats clears all accumulated statistics.
 func (me *MonitoredEngine) ResetStats() {
-	panic("not implemented")
+	me.stats = make(map[string]*QueryStats)
+}
+
+// monitoredIterator wraps a ResultIterator to collect stats.
+type monitoredIterator struct {
+	iter      ResultIterator
+	monitor   *MonitoredEngine
+	startTime time.Time
+	filter    *types.QueryFilter
+	count     int
+}
+
+// Valid delegates to wrapped iterator.
+func (mi *monitoredIterator) Valid() bool {
+	return mi.iter.Valid()
+}
+
+// Event delegates to wrapped iterator.
+func (mi *monitoredIterator) Event() *types.Event {
+	return mi.iter.Event()
+}
+
+// Next delegates to wrapped iterator and updates count.
+func (mi *monitoredIterator) Next(ctx context.Context) error {
+	if mi.iter.Valid() {
+		mi.count++
+	}
+	return mi.iter.Next(ctx)
+}
+
+// Close closes iterator and records stats.
+func (mi *monitoredIterator) Close() error {
+	err := mi.iter.Close()
+
+	duration := time.Since(mi.startTime).Milliseconds()
+	filterKey := fmt.Sprintf("kinds:%d authors:%d since:%d until:%d",
+		len(mi.filter.Kinds), len(mi.filter.Authors), mi.filter.Since, mi.filter.Until)
+
+	mi.monitor.stats[filterKey] = &QueryStats{
+		EventsFetched:   mi.count,
+		TotalDurationMs: duration,
+		ExecutionPlan:   "monitored query",
+	}
+
+	return err
+}
+
+// Count delegates to wrapped iterator.
+func (mi *monitoredIterator) Count() int {
+	return mi.iter.Count()
 }
 
 // Common query patterns (helpers for building typical filters)

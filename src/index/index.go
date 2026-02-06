@@ -9,6 +9,7 @@ package index
 
 import (
 	"context"
+	"encoding/binary"
 
 	"nostr_event_store/src/cache"
 	"nostr_event_store/src/types"
@@ -287,34 +288,70 @@ type KeyBuilderImpl struct {
 // NewKeyBuilder creates a new key builder with the given tag name to search type code mapping.
 // This mapping comes from manifest.json and defines which tags are indexed and how.
 func NewKeyBuilder(tagNameToSearchTypeCode map[string]SearchType) KeyBuilder {
-	panic("not implemented")
+	copyMap := make(map[string]SearchType, len(tagNameToSearchTypeCode))
+	for k, v := range tagNameToSearchTypeCode {
+		copyMap[k] = v
+	}
+	return &KeyBuilderImpl{
+		tagNameToSearchTypeCode: copyMap,
+	}
 }
 
 // BuildPrimaryKey constructs a primary index key from event ID.
 func (kb *KeyBuilderImpl) BuildPrimaryKey(id [32]byte) []byte {
-	panic("not implemented")
+	key := make([]byte, 32)
+	copy(key, id[:])
+	return key
 }
 
 // BuildAuthorTimeKey constructs an author+time index key.
 func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, createdAt uint64) []byte {
-	panic("not implemented")
+	key := make([]byte, 32+8)
+	copy(key[:32], pubkey[:])
+	binary.BigEndian.PutUint64(key[32:], createdAt)
+	return key
 }
 
 // BuildSearchKey constructs a search index key with configurable search type code.
+// Format: kind(4) + searchType(1) + tagValue + 0x00 + createdAt(8)
 func (kb *KeyBuilderImpl) BuildSearchKey(kind uint32, searchTypeCode SearchType, tagValue []byte, createdAt uint64) []byte {
-	panic("not implemented")
+	key := make([]byte, 4+1+len(tagValue)+1+8)
+	binary.BigEndian.PutUint32(key[0:4], kind)
+	key[4] = byte(searchTypeCode)
+	copy(key[5:5+len(tagValue)], tagValue)
+	key[5+len(tagValue)] = 0x00
+	binary.BigEndian.PutUint64(key[6+len(tagValue):], createdAt)
+	return key
 }
 
 // BuildSearchKeyRange constructs a search key range for range queries.
+// Range is built on prefix: kind(4) + searchType(1) + tagValuePrefix
 func (kb *KeyBuilderImpl) BuildSearchKeyRange(kind uint32, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte) {
-	panic("not implemented")
+	prefix := make([]byte, 4+1+len(tagValuePrefix))
+	binary.BigEndian.PutUint32(prefix[0:4], kind)
+	prefix[4] = byte(searchTypeCode)
+	copy(prefix[5:], tagValuePrefix)
+
+	minKey := make([]byte, len(prefix))
+	copy(minKey, prefix)
+
+	maxKey := make([]byte, len(prefix)+1)
+	copy(maxKey, prefix)
+	maxKey[len(prefix)] = 0xFF
+
+	return minKey, maxKey
 }
 
 // TagNameToSearchTypeCode returns the current runtime tag name to search type code mapping.
 func (kb *KeyBuilderImpl) TagNameToSearchTypeCode() map[string]SearchType {
-	panic("not implemented")
+	copyMap := make(map[string]SearchType, len(kb.tagNameToSearchTypeCode))
+	for k, v := range kb.tagNameToSearchTypeCode {
+		copyMap[k] = v
+	}
+	return copyMap
 }
+
 // NewManager creates a new index manager.
 func NewManager() Manager {
-	panic("not implemented")
+	return newManager()
 }
