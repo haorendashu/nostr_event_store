@@ -79,9 +79,9 @@ The system predefines 14 common Nostr tags with SearchType codes (1-14):
 - `t` (9): topic/hashtag tag
 - `h` (10): content hash (file metadata)
 - `i` (11): external identity reference (NIP-39)
-- `I` (12): identity proof (NIP-39)
+- `I` (12): identity for thread root (NIP-39)
 - `k` (13): kind number reference
-- `K` (14): kind range reference
+- `K` (14): kind number for thread root
 
 **Reserved SearchType**:
 - **Code 0**: `SearchTypeInvalid` (uninitialized/invalid)
