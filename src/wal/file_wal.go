@@ -491,12 +491,19 @@ func (w *FileWriter) rotateLocked() error {
 }
 
 func (w *FileWriter) updateHeaderCheckpointLocked(checkpointLSN uint64) error {
+	// Open file without O_APPEND to allow WriteAt
+	f, err := os.OpenFile(w.segmentPath, os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("open for header update: %w", err)
+	}
+	defer f.Close()
+
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, checkpointLSN)
-	if _, err := w.file.WriteAt(buf, 12); err != nil {
+	if _, err := f.WriteAt(buf, 12); err != nil {
 		return fmt.Errorf("write checkpoint lsn: %w", err)
 	}
-	return w.file.Sync()
+	return f.Sync()
 }
 
 func (r *FileReader) openSegment(index int) error {
