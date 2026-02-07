@@ -103,19 +103,25 @@ Tag 本质上是自由扩展的，但通常含义如下：
 
 ```
 data/
-├── events/
-│   ├── data.0           (B+Tree 页面文件，段 0)
-│   ├── data.1           (段 1，轮转后创建)
+├── wal/                 (写前日志目录；由 eventstore_impl 管理)
+│   ├── wal.log          (当前 WAL 段)
+│   └── wal.XXXXXX.log   (轮转后的 WAL 段)
+├── data/                (段存储目录；由 store.EventStore 管理)
+│   ├── data.0           (段文件 0)
+│   ├── data.1           (段文件 1)
 │   └── ...
-├── indexes/
-│   ├── primary.idx      (id → file+offset)
-│   ├── pubkey_time.idx  (pubkey, created_at → file+offset)
-│   └── search.idx       (kind, search_type, tag_value, created_at → location 或列表)
-├── wal.log              (写前日志，用于崩溃恢复)
-├── manifest.json        (元数据：下一个段 ID、压缩状态等)
-└── cache/
-    └── bloom.dat        (Bloom 过滤器，可选)
+├── indexes/             (由 index.Manager 管理)
+│   ├── primary.idx      (id → location)
+│   ├── author_time.idx  (pubkey, created_at → location)
+│   └── search.idx       (kind, search_type, tag_value, created_at → location)
+└── manifest.json        (元数据：架构版本、配置等)
 ```
+
+**架构说明** (v2.0 重构后)：
+- **WAL** 由顶层 (`eventstore_impl`) 管理，用于正确的崩溃恢复。
+- **Store** (段存储) 仅管理持久化事件记录。
+- **Indexes** 在崩溃后从 WAL 重建，不单独持久化到磁盘。
+- **Recovery**: 启动时，WAL Manager 提供一个 Reader，位置在最后一个 checkpoint。条目被重放以自动重建所有内存索引。
 
 - **Events segment**：B+Tree 页面格式文件，保存序列化事件记录。
 - **Indexes**：B+Tree 索引，映射 key 到记录位置（file ID、byte offset）。

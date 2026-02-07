@@ -57,20 +57,23 @@ checksum    uint64  (CRC64-ECMA over all previous fields)
 
 ### Operation Types
 
-- `OpTypeInsert (1)`
-  - `data` contains the serialized event record from `storage.EventSerializer`.
+- `OpTypeInsert (1)`:
+  - **Data format recovered** (as of v2.0): `data` contains the **complete serialized event record** from `storage.EventSerializer`.
+  - This allows independent recovery without accessing segment files.
+  - Typical size: 200–5000+ bytes (full event, not just ID).
 
-- `OpTypeUpdateFlags (2)`
-  - Current writer in store emits **legacy format**: `data = [flags (1 byte)]`.
-  - Supported extended format (replay-aware):
-    - `segment_id` (uint32) + `offset` (uint32) + `flags` (uint8)
+- `OpTypeUpdateFlags (2)`:
+  - **Data format** (v2.0): Includes location information for precise updates.
+  - Format: `segment_id` (uint32) + `offset` (uint32) + `flags` (uint8) = 9 bytes total.
+  - Allows recovery to update event state (deleted/replaced flags) correctly.
 
-- `OpTypeIndexUpdate (3)`
-  - `data` format:
-    - `key_len` (uint32) + `key` + `value_len` (uint32) + `value`
+- `OpTypeIndexUpdate (3)`:
+  - `data` format: `key_len` (uint32) + `key` + `value_len` (uint32) + `value`
+  - Used for index-level operations if needed in future versions.
 
-- `OpTypeCheckpoint (4)`
-  - `data` is empty for now; header `last_checkpoint_lsn` is updated.
+- `OpTypeCheckpoint (4)`:
+  - `data` is empty; header `last_checkpoint_lsn` is updated.
+
 
 ---
 

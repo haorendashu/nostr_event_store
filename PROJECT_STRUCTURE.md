@@ -308,46 +308,70 @@ nostr_event_store/
 
 ---
 
-### 11. `store` - 存储实现层（Phase 8 完成）
-**职责**：WAL 和 Segment Storage 的集成实现，避免循环导入
+### 11. `store` - 段存储实现层（v2.0重构完成）
+**职责**：纯粹的segment存储管理，与WAL分离以实现清晰的职责边界
 **核心结构**：EventStore
 **主要方法**：
 - Open/Close - 生命周期管理
-- WriteEvent - 4 步管道：WAL 写 → 序列化 → 段追加 → 刷新
-- ReadEvent - 从段加载并透明反序列化
-- UpdateEventFlags - 原地标志更新（带 WAL 日志）
-- Flush - 同时提交 WAL 和段（耐久性点）
+- WriteEvent - 2步管道：序列化 → 段追加（WAL由上层管理）
+- ReadEvent - 从段加载并反序列化
+- UpdateEventFlags - 原地标志更新
+- Flush - 提交段至磁盘
+- SegmentManager/Serializer - 返回底层组件供恢复使用
 
 **实现特点**：
-- 避免循环导入（独立于 eventstore 接口包）
+- 不处理WAL（与上层解耦）
 - 多页面事件支持（自动分页）
-- WAL 与段的双重耐久性
-- 与 recovery/compaction 无缝集成
+- 与recovery/compaction无缝集成
+- 简化的职责：仅管理持久化存储
 
 **可测试性**：
-- 5 个集成测试（小、中、大事件，标志更新，目录创建）
-- 验证 12.5KB 多页面事件
-- 验证大型事件（5000 标签，350KB）
+- 5个集成测试（小、中、大事件，标志更新，目录创建）
+- 独立验证segment存储功能
 
 **关键设计**：
-- 依赖注入：SegmentManager、Serializer、WALWriter
-- 单一职责：仅处理 WAL + Storage 层的集成
-- 完整实现：生产就绪，27/27 测试通过
+- 完全移除WAL（v2.0收益）：WAL现由eventstore_impl在顶层管理
+- 依赖注入：SegmentManager、Serializer
+- 单一职责：仅处理segment存储
+- 生产就绪：所有测试通过
 
 ---
 
-### 12. `eventstore` - 顶层 API 规范（接口定义）
-**职责**：应用程序的单一入口规范，协调所有组件
-**核心接口**：
-- `EventStore` - 写入、查询、管理、监控的完整接口
-
-**规范主要方法**：
-- Open/Close - 生命周期
-- WriteEvent(s) - 写入事件
-- GetEvent - 按 ID 查询
+### 12. `eventstore` - 顶层应用层（v2.0整合WAL）
+**职责**：应用程序的单一入口，协调WAL、Storage、Indexes，处理恢复
+**核心结构**：eventStoreImpl + indexReplayer
+**主要方法**：
+- Open/Close - 生命周期，含WAL初始化和恢复流程
+- WriteEvent(s) - 完整写入：序列化 → WAL写 → 段写 → 索引更新
+- GetEvent - 按ID查询
 - Query - 复杂查询（多过滤条件）
-- WaitForSync - 等待特定 LSN 同步
-- Compact - 手动压缩
+- Flush - 同时刷新WAL、Storage、Indexes
+- WAL() - 返回WAL Manager（v2.0新增，曾返回nil）
+- Recovery() - 返回恢复管理器
+
+**实现特点**：
+- 直接管理WAL Manager（v2.0新增）
+- 崩溃恢复：启动时自动从WAL回放（RecoveryMode="auto"时）
+- 通过indexReplayer实现索引重建
+- 完整的事务管理：WAL↔Storage↔Indexes三层同步
+- checkpoint创建：Open成功后和定期Flush时
+
+**恢复机制**：
+- recoverFromWAL()方法："自动导入"损失的索引记录
+- indexReplayer实现Replayer接口："回放"WAL条目
+- OnInsert - 重建所有索引（primary、author-time、search）
+- OnUpdateFlags - 更新段标志，同步索引
+- OnCheckpoint - 记录恢复进度
+
+**可测试性**：
+- 集成测试验证写入→恢复流程
+- TestConvenienceFunctions演示WAL恢复机制
+
+**关键设计**：
+- 清晰的三层架构：WAL（耐久性）→ Storage（持久化）→ Indexes（查询）
+- 数据格式修复（v2.0）：WAL包含完整序列化数据，支持独立恢复
+- 使用Manager接口而非裸Writer：获得checkpoint、cleanup、stats功能
+- 生产就绪：支持完整的崩溃恢复
 - Recover - 手动恢复
 - Flush - 持久化
 - Stats - 统计信息

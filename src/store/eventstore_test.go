@@ -213,7 +213,7 @@ func TestEventStoreUpdateFlags(t *testing.T) {
 	t.Logf("Flags updated successfully")
 }
 
-// TestEventStoreDirectories verifies that WAL and segment directories are created.
+// TestEventStoreDirectories verifies that segment directories are created.
 func TestEventStoreDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()
@@ -224,13 +224,7 @@ func TestEventStoreDirectories(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Check that WAL directory exists
-	walDir := filepath.Join(tmpDir, "wal")
-	if _, err := os.Stat(walDir); err != nil {
-		t.Errorf("WAL directory not created: %v", err)
-	}
-
-	// Check that segment directory exists
+	// Check that segment directory exists (WAL is now managed at a higher level)
 	segmentDir := filepath.Join(tmpDir, "segments")
 	if _, err := os.Stat(segmentDir); err != nil {
 		t.Errorf("Segment directory not created: %v", err)

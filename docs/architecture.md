@@ -103,24 +103,26 @@ The event store occupies a directory (e.g., `./data/`) with:
 
 ```
 data/
-├── events/
-│   ├── data.0           (B+Tree page file, segment 0)
-│   ├── data.1           (segment 1, after rotation)
+├── wal/                 (write-ahead log directory; managed by eventstore_impl)
+│   ├── wal.log          (current WAL segment)
+│   └── wal.XXXXXX.log   (rotated WAL segments)
+├── data/                (segment storage directory; managed by store.EventStore)
+│   ├── data.0           (segment file 0)
+│   ├── data.1           (segment file 1)
 │   └── ...
-├── indexes/
-│   ├── primary.idx      (id → file+offset)
-│   ├── pubkey_time.idx  (pubkey, created_at → file+offset)
-│   └── search.idx       (kind, search_type, tag_value, created_at → location or list)
-├── wal.log              (write-ahead log for crash recovery)
-├── manifest.json        (metadata: next segment ID, compaction state, etc.)
-└── cache/
-    └── bloom.dat        (Bloom filter for missing event IDs, optional)
+├── indexes/             (managed by index.Manager)
+│   ├── primary.idx      (id → location)
+│   ├── author_time.idx  (pubkey, created_at → location)
+│   └── search.idx       (kind, search_type, tag_value, created_at → location)
+└── manifest.json        (metadata: schema version, configuration, etc.)
 ```
 
-- **Events segment**: B+Tree page-formatted file containing serialized event records.
-- **Indexes**: B+Tree indexes mapping keys to record locations (file ID, byte offset).
-- **WAL**: Sequential log of write operations for durability before page acknowledgment.
-- **Manifest**: JSON file tracking schema version, last checkpoint, compaction progress.
+**Architecture notes** (as of v2.0 refactoring):
+- **WAL** is now managed at the top level (`eventstore_impl`) for proper crash recovery.
+- **Store** (segment storage) manages only persistent event records.
+- **Indexes** are rebuilt from WAL on crash, not persisted to disk independently.
+- **Recovery**: On startup, WAL Manager provides a Reader positioned at the last checkpoint. Entries are replayed to rebuild all in-memory indexes automatically.
+
 
 ### Page File Structure
 

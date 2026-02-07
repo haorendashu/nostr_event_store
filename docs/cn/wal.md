@@ -57,19 +57,21 @@ checksum    uint64  (CRC64-ECMA 覆盖前面所有字段)
 
 ### 操作类型
 
-- `OpTypeInsert (1)`
-  - `data` 为序列化后的事件记录（来自 `storage.EventSerializer`）。
+- `OpTypeInsert (1)`:
+  - **数据格式** (v2.0): `data` 包含 `storage.EventSerializer` 生成的**完整序列化事件记录**。
+  - 这允许独立恢复，无需访问段文件。
+  - 典型大小：200–5000+ 字节（完整事件，不仅仅是 ID）。
 
-- `OpTypeUpdateFlags (2)`
-  - 当前 store 侧使用 **旧格式**：`data = [flags (1 byte)]`。
-  - replay 支持扩展格式：
-    - `segment_id` (uint32) + `offset` (uint32) + `flags` (uint8)
+- `OpTypeUpdateFlags (2)`:
+  - **数据格式** (v2.0): 包含位置信息以精确更新。
+  - 格式：`segment_id` (uint32) + `offset` (uint32) + `flags` (uint8) = 9 字节总计。
+  - 允许恢复正确更新事件状态（deleted/replaced标志）。
 
-- `OpTypeIndexUpdate (3)`
+- `OpTypeIndexUpdate (3)`:
   - `data` 格式：
     - `key_len` (uint32) + `key` + `value_len` (uint32) + `value`
 
-- `OpTypeCheckpoint (4)`
+- `OpTypeCheckpoint (4)`:
   - `data` 为空；头部 `last_checkpoint_lsn` 会更新。
 
 ---
@@ -121,39 +123,40 @@ Manager 提供：
 
 ## Replay 设计
 
-Replay 会读取 WAL，并通过 `Replayer` 回调重建内存状态：
+Replay 会读取 WAL 条目，并通过 `Replayer` 回调重建内存状态：
 
-- `OnInsert(event, location)`
-  - 使用 serializer 反序列化。
-  - Insert 条目里不包含 location，因此默认传入 (0,0)，由上层处理映射。
+- `OnInsert(event, location)`:
+  - 使用配置的 serializer 反序列化记录。
+  - 注意：WAL insert 条目里不包含 location，因此默认传入 (0,0)，由上层处理映射。
 
-- `OnUpdateFlags(location, flags)`
-  - 支持旧格式与扩展格式。
+- `OnUpdateFlags(location, flags)`:
+  - 解析旧格式（1字节）或扩展格式（9字节）。
 
-- `OnIndexUpdate(key, value)`
-  - 应用索引更新。
+- `OnIndexUpdate(key, value)`:
+  - 应用索引元数据更新。
 
-- `OnCheckpoint(checkpoint)`
-  - 通知 checkpoint 发生。
+- `OnCheckpoint(checkpoint)`:
+  - 通知 checkpoint 条目被观察到。
 
-Replay 会返回统计信息，包括处理条目数、类型计数与错误收集。
+Replay 会返回统计信息，包括处理条目总数、各操作类型计数与错误收集行为。
 
 ---
 
 ## 崩溃恢复流程
 
-1. 读取 manifest，取得最后 checkpoint。
-2. 从 `last_checkpoint_lsn` 打开 WAL reader。
-3. 重放条目重建内存索引。
-4. 恢复完成后进入服务状态。
+1. 加载 manifest，确定最后一个 checkpoint。
+2. 在 `last_checkpoint_lsn` 位置打开 WAL reader。
+3. 重放条目以重建内存索引和状态。
+4. 恢复完成后继续正常操作。
 
 ---
 
-## 配置项
+## 配置
 
 `wal.Config` 关键参数：
-- `Dir`：WAL 目录
-- `MaxSegmentSize`：单段最大大小
-- `SyncMode`：`always` / `batch` / `never`
-- `BatchIntervalMs`：`batch` 模式 fsync 时间间隔
+- `Dir`: WAL 目录
+- `MaxSegmentSize`: 段轮转阈值
+- `SyncMode`: `always`、`batch`、`never`
+- `BatchIntervalMs`: `batch` 模式的 fsync 时间间隔
+- `BatchSizeBytes`: `batch` 模式的缓冲区大小触发阈值
 - `BatchSizeBytes`：`batch` 模式 buffer 触发阈值

@@ -3,10 +3,10 @@
 ## 项目统计
 
 - **总包数**：12 个核心包 + cmd 子包
-- **核心文件数**：~33 个主要实现文件（已完成 cache、index、query 模块）
+- **核心文件数**：~35 个主要实现文件（包含 WAL 重构 v2.0）
 - **接口数**：60+ 个接口定义（确保高可测试性）
-- **实现类**：9 个（EventSerializer、FileSegment、FileSegmentManager、WAL、EventStore、LRU Cache、Memory Cache、B+Tree Index、Index Manager）
-- **测试覆盖**：47/47 测试通过 ✅
+- **实现类**：10 个（EventSerializer、FileSegment、FileSegmentManager、WAL Manager、WAL Writer/Reader、EventStore、LRU Cache、Memory Cache、B+Tree Index、Index Manager、indexReplayer）
+- **测试覆盖**：50+ 测试通过 ✅（含新增 eventstore 恢复测试）
   - storage: 9 tests
   - wal: 6 tests
   - store: 5 tests
@@ -96,13 +96,15 @@
 ### src/store/
 | 文件 | 职责 |
 |------|------|
-| `eventstore.go` | EventStore 实现（Phase 8：组合 WAL、序列化、段存储） |
+| `eventstore.go` | EventStore 实现（v2.0 重构：纯 segment 存储，WAL 由上层管理） |
 | `eventstore_test.go` | 集成测试（小/中/大事件、标志更新、多页面验证） |
 
 ### src/eventstore/
 | 文件 | 职责 |
 |------|------|
 | `store.go` | EventStore 完整接口规范定义（Options、Stats、Metrics、Listener） |
+| `eventstore_impl.go` | EventStore 实现（v2.0：整合 WAL Manager、Storage、Indexes，处理自动恢复） |
+| `eventstore_test.go` | 集成测试（含崩溃恢复流程验证） |
 
 ### cmd/nostr-store/
 | 文件 | 职责 |
