@@ -256,8 +256,8 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 		return types.RecordLocation{}, fmt.Errorf("wal write: %w", err)
 	}
 
-	// Step 3: Write to storage
-	loc, err := e.storage.WriteEvent(ctx, event)
+	// Step 3: Write pre-serialized record to storage (avoid redundant serialization)
+	loc, err := e.storage.WriteRecord(ctx, record)
 	if err != nil {
 		return types.RecordLocation{}, fmt.Errorf("storage write: %w", err)
 	}

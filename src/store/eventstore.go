@@ -120,7 +120,29 @@ func (s *EventStore) WriteEvent(ctx context.Context, event *types.Event) (types.
 		return types.RecordLocation{}, fmt.Errorf("serialize: %w", err)
 	}
 
-	// Step 2: Append to current segment
+	// Step 2: Use WriteRecord to append the serialized record to storage
+	return s.WriteRecord(ctx, record)
+}
+
+// WriteRecord appends a pre-serialized record to segments and returns the location.
+// This method is used when the record is already serialized, avoiding redundant serialization.
+// Note: WAL is now managed at a higher level. This only handles segment storage.
+//
+// Procedure:
+// 1. Get current segment
+// 2. Check if segment is full and rotate if needed
+// 3. Append pre-serialized record to segment
+// 4. Return location
+func (s *EventStore) WriteRecord(ctx context.Context, record *storage.Record) (types.RecordLocation, error) {
+	if !s.isOpen {
+		return types.RecordLocation{}, fmt.Errorf("store not open")
+	}
+
+	if record == nil {
+		return types.RecordLocation{}, fmt.Errorf("record is nil")
+	}
+
+	// Get current segment
 	segment, err := s.segmentManager.CurrentSegment(ctx)
 	if err != nil {
 		return types.RecordLocation{}, fmt.Errorf("current segment: %w", err)
@@ -134,6 +156,7 @@ func (s *EventStore) WriteEvent(ctx context.Context, event *types.Event) (types.
 		}
 	}
 
+	// Append the record to the segment
 	location, err := segment.Append(ctx, record)
 	if err != nil {
 		return types.RecordLocation{}, fmt.Errorf("segment append: %w", err)
