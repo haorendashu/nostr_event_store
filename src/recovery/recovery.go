@@ -36,10 +36,14 @@ type RecoveryState struct {
 }
 
 // Manager handles crash recovery by replaying WAL and validating segments.
+// Implements wal.Replayer interface for WAL replay callbacks.
 type Manager struct {
 	walDir         string
 	segmentManager storage.SegmentManager
 	serializer     storage.EventSerializer
+
+	// recoveryState tracks the current recovery state during replay
+	recoveryState *RecoveryState
 }
 
 // NewManager creates a new recovery manager.
@@ -55,12 +59,20 @@ func NewManager(walDir string, segmentManager storage.SegmentManager, serializer
 // This rebuilds the event ID map and counts operations.
 // startLSN=0 means start from the beginning of the WAL.
 // Note: the segment manager must be already open before calling this.
+//
+// Current implementation: The store's WAL contains minimal data (event IDs only),
+// so we count WAL entries directly. Full event data is recovered by scanning segments.
+// When the WAL format is upgraded to include full records, we can switch to wal.ReplayWAL.
 func (m *Manager) RecoverFromCheckpoint(ctx context.Context, startLSN wal.LSN) (*RecoveryState, error) {
 	state := &RecoveryState{
 		LastValidLSN:     startLSN,
 		EventIDMap:       make(map[[32]byte]types.RecordLocation),
 		ValidationErrors: []string{},
 	}
+
+	// Store state for use in Replayer callbacks (for future use)
+	m.recoveryState = state
+	defer func() { m.recoveryState = nil }()
 
 	// Open WAL reader at the starting LSN
 	reader := wal.NewFileReader()
@@ -69,7 +81,9 @@ func (m *Manager) RecoverFromCheckpoint(ctx context.Context, startLSN wal.LSN) (
 	}
 	defer reader.Close()
 
-	// Replay each WAL entry
+	// Count WAL entries by type
+	// Note: We don't use wal.ReplayWAL here because the store's WAL format
+	// only contains event IDs, not full serialized records needed for deserialization.
 	for {
 		entry, err := reader.Read(ctx)
 		if err == io.EOF {
@@ -96,13 +110,46 @@ func (m *Manager) RecoverFromCheckpoint(ctx context.Context, startLSN wal.LSN) (
 		state.LastValidLSN = entry.LSN
 	}
 
-	// After replaying WAL, scan segments to rebuild event ID map
+	// After counting WAL entries, scan segments to rebuild event ID map
 	if err := m.rebuildEventIDMap(ctx, state); err != nil {
 		state.ValidationErrors = append(state.ValidationErrors,
 			fmt.Sprintf("rebuild event id map: %v", err))
 	}
 
 	return state, nil
+}
+
+// Replayer interface implementation for WAL replay callbacks.
+
+// OnInsert is called when an insert operation is replayed from WAL.
+func (m *Manager) OnInsert(ctx context.Context, event *types.Event, location types.RecordLocation) error {
+	// During recovery, we just count inserts. Index rebuilding would happen here
+	// if we had an index manager injected.
+	// For now, the event ID map is built by scanning segments after WAL replay.
+	return nil
+}
+
+// OnUpdateFlags is called when an update flags operation is replayed from WAL.
+func (m *Manager) OnUpdateFlags(ctx context.Context, location types.RecordLocation, flags types.EventFlags) error {
+	// During recovery, we just count updates. Actual flag updates would happen here
+	// if we were rebuilding the full state.
+	return nil
+}
+
+// OnIndexUpdate is called when an index update operation is replayed from WAL.
+func (m *Manager) OnIndexUpdate(ctx context.Context, key []byte, value []byte) error {
+	// Index updates are not currently used during recovery.
+	// This would be implemented when we support index metadata in WAL.
+	return nil
+}
+
+// OnCheckpoint is called when a checkpoint operation is replayed from WAL.
+func (m *Manager) OnCheckpoint(ctx context.Context, checkpoint wal.Checkpoint) error {
+	// Update recovery state with checkpoint info
+	if m.recoveryState != nil {
+		m.recoveryState.LastValidLSN = checkpoint.LSN
+	}
+	return nil
 }
 
 // rebuildEventIDMap scans all segments to extract event IDs and their locations.
@@ -167,11 +214,11 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 // Detects incomplete multi-page records and corrupted data.
 func (m *Manager) ValidateSegmentIntegrity(ctx context.Context) (*SegmentIntegrityResult, error) {
 	result := &SegmentIntegrityResult{
-		Segments:        make([]*SegmentIntegrity, 0),
-		TotalRecords:    0,
-		ValidRecords:    0,
+		Segments:         make([]*SegmentIntegrity, 0),
+		TotalRecords:     0,
+		ValidRecords:     0,
 		CorruptedRecords: 0,
-		Errors:          make([]string, 0),
+		Errors:           make([]string, 0),
 	}
 
 	segmentIDs, err := m.segmentManager.ListSegments(ctx)
