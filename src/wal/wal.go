@@ -230,15 +230,15 @@ type Replayer interface {
 
 // NewWriter creates a new WAL writer.
 func NewWriter() Writer {
-	panic("not implemented")
+	return NewFileWriter()
 }
 
 // NewReader creates a new WAL reader.
 func NewReader() Reader {
-	panic("not implemented")
+	return NewFileReader()
 }
 
 // NewManager creates a new WAL manager.
 func NewManager() Manager {
-	panic("not implemented")
+	return NewFileManager()
 }

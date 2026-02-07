@@ -9,22 +9,36 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"nostr_event_store/src/types"
 )
 
+const (
+	walHeaderSize  = 24
+	walMagic       = 0x574C414F
+	walVersion     = 1
+	walBaseName    = "wal.log"
+	walReadBufSize = 1024 * 1024
+)
+
 // FileWriter implements the Writer interface using file-based storage.
 // Supports both single-page and multi-page records.
 type FileWriter struct {
-	cfg        Config
-	file       *os.File
-	buffer     []byte
-	bufferPos  int
-	lastLSN    uint64
-	checkpoint *Checkpoint
-	mu         sync.Mutex
+	cfg         Config
+	file        *os.File
+	buffer      []byte
+	bufferPos   int
+	lastLSN     uint64
+	checkpoint  *Checkpoint
+	mu          sync.Mutex
+	segmentID   uint32
+	segmentPath string
+	segmentSize uint64
 	// For batching
 	ticker *time.Ticker
 	done   chan struct{}
@@ -33,8 +47,8 @@ type FileWriter struct {
 // NewFileWriter creates a new file-based WAL writer.
 func NewFileWriter() *FileWriter {
 	return &FileWriter{
-		buffer:    make([]byte, 0, 10*1024*1024), // 10MB initial buffer
-		lastLSN:   0,
+		buffer:  make([]byte, 0, 10*1024*1024), // 10MB initial buffer
+		lastLSN: 0,
 		checkpoint: &Checkpoint{
 			LSN:       0,
 			Timestamp: 0,
@@ -53,14 +67,27 @@ func (w *FileWriter) Open(ctx context.Context, cfg Config) error {
 
 	w.cfg = cfg
 
-	// Open or create WAL file
-	path := filepath.Join(cfg.Dir, "wal.log")
+	segments, err := listWalSegments(cfg.Dir)
+	if err != nil {
+		return fmt.Errorf("list WAL segments: %w", err)
+	}
+
+	path := filepath.Join(cfg.Dir, walBaseName)
+	segID := uint32(0)
+	if len(segments) > 0 {
+		last := segments[len(segments)-1]
+		path = last.path
+		segID = last.id
+	}
+
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("open WAL file: %w", err)
 	}
 
 	w.file = file
+	w.segmentID = segID
+	w.segmentPath = path
 
 	// Write header if file is new
 	stat, err := file.Stat()
@@ -70,15 +97,25 @@ func (w *FileWriter) Open(ctx context.Context, cfg Config) error {
 	}
 
 	if stat.Size() == 0 {
-		if err := w.writeHeader(); err != nil {
+		if err := w.writeHeaderWithCheckpoint(0); err != nil {
 			file.Close()
 			return fmt.Errorf("write header: %w", err)
 		}
+		w.segmentSize = walHeaderSize
+		w.lastLSN = 0
 	} else {
-		// Load existing checkpoint
+		w.segmentSize = uint64(stat.Size())
 		if err := w.loadLastCheckpoint(); err != nil {
-			// Non-fatal, continue without checkpoint
 			fmt.Printf("warning: load checkpoint: %v\n", err)
+		}
+		lastLSN, lastCheckpoint, err := scanSegmentForLastEntry(path)
+		if err != nil {
+			fmt.Printf("warning: scan WAL last entry: %v\n", err)
+		} else {
+			w.lastLSN = lastLSN
+			if lastCheckpoint != nil {
+				w.checkpoint = lastCheckpoint
+			}
 		}
 	}
 
@@ -110,6 +147,10 @@ func (w *FileWriter) Write(ctx context.Context, entry *Entry) (LSN, error) {
 
 	// Serialize entry
 	data := w.serializeEntry(entry)
+
+	if err := w.ensureCapacityLocked(len(data)); err != nil {
+		return 0, err
+	}
 
 	// Check if we need to flush before adding more
 	if int64(len(w.buffer))+int64(len(data)) > int64(w.cfg.BatchSizeBytes) && w.cfg.SyncMode == "batch" {
@@ -148,6 +189,7 @@ func (w *FileWriter) flushLocked() error {
 	if _, err := w.file.Write(w.buffer); err != nil {
 		return fmt.Errorf("write to file: %w", err)
 	}
+	w.segmentSize += uint64(len(w.buffer))
 
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("sync file: %w", err)
@@ -170,10 +212,17 @@ func (w *FileWriter) CreateCheckpoint(ctx context.Context) (LSN, error) {
 
 	w.lastLSN = entry.LSN
 	data := w.serializeEntry(entry)
+	if err := w.ensureCapacityLocked(len(data)); err != nil {
+		return 0, err
+	}
 	w.buffer = append(w.buffer, data...)
 
 	if err := w.flushLocked(); err != nil {
 		return 0, fmt.Errorf("flush checkpoint: %w", err)
+	}
+
+	if err := w.updateHeaderCheckpointLocked(entry.LSN); err != nil {
+		return 0, fmt.Errorf("update checkpoint header: %w", err)
 	}
 
 	w.checkpoint = &Checkpoint{
@@ -238,7 +287,7 @@ func (w *FileWriter) batchFlusher() {
 //	op_type(1) | lsn(8) | timestamp(8) | data_len(4) | data | checksum(8)
 func (w *FileWriter) serializeEntry(entry *Entry) []byte {
 	// Calculate total size
-	headerSize := 1 + 8 + 8 + 4 // op_type + lsn + timestamp + data_len
+	headerSize := 1 + 8 + 8 + 4                                  // op_type + lsn + timestamp + data_len
 	totalSize := headerSize + len(entry.EventDataOrMetadata) + 8 // + checksum
 
 	data := make([]byte, totalSize)
@@ -275,17 +324,12 @@ func (w *FileWriter) serializeEntry(entry *Entry) []byte {
 }
 
 // writeHeader writes the WAL file header.
-func (w *FileWriter) writeHeader() error {
-	header := make([]byte, 24)
+func (w *FileWriter) writeHeaderWithCheckpoint(checkpointLSN uint64) error {
+	header := make([]byte, walHeaderSize)
 
-	// magic(4) = 0x574C414F 'WLAO'
-	binary.BigEndian.PutUint32(header[0:], 0x574C414F)
-
-	// version(8)
-	binary.BigEndian.PutUint64(header[4:], 1)
-
-	// last_checkpoint_lsn(8)
-	binary.BigEndian.PutUint64(header[12:], 0)
+	binary.BigEndian.PutUint32(header[0:], walMagic)
+	binary.BigEndian.PutUint64(header[4:], walVersion)
+	binary.BigEndian.PutUint64(header[12:], checkpointLSN)
 
 	if _, err := w.file.Write(header); err != nil {
 		return fmt.Errorf("write header: %w", err)
@@ -296,24 +340,15 @@ func (w *FileWriter) writeHeader() error {
 
 // loadLastCheckpoint loads the last checkpoint from the WAL file.
 func (w *FileWriter) loadLastCheckpoint() error {
-	// Seek to start
-	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek: %w", err)
+	checkpointLSN, err := readWalHeaderCheckpoint(w.file)
+	if err != nil {
+		return err
 	}
 
-	// Read and validate header
-	header := make([]byte, 24)
-	if _, err := w.file.Read(header); err != nil {
-		return fmt.Errorf("read header: %w", err)
+	w.checkpoint = &Checkpoint{
+		LSN:       checkpointLSN,
+		Timestamp: 0,
 	}
-
-	magic := binary.BigEndian.Uint32(header[0:])
-	if magic != 0x574C414F {
-		return fmt.Errorf("invalid WAL magic: 0x%X", magic)
-	}
-
-	// Scan for last checkpoint (simplified - just load header)
-	w.lastLSN = 0
 
 	return nil
 }
@@ -325,123 +360,69 @@ type FileReader struct {
 	offset       int
 	lastValidLSN uint64
 	tableECMA    *crc64.Table
+	segments     []walSegment
+	segmentIndex int
+	pending      *Entry
 }
 
 // NewFileReader creates a new file-based WAL reader.
 func NewFileReader() *FileReader {
 	return &FileReader{
-		buffer:    make([]byte, 0, 10*1024*1024),
+		buffer:    make([]byte, 0, walReadBufSize),
 		tableECMA: crc64.MakeTable(crc64.ECMA),
 	}
 }
 
 // Open initializes the WAL reader.
 func (r *FileReader) Open(ctx context.Context, dir string, startLSN uint64) error {
-	path := filepath.Join(dir, "wal.log")
-	file, err := os.Open(path)
+	segments, err := listWalSegments(dir)
 	if err != nil {
-		return fmt.Errorf("open WAL file: %w", err)
+		return fmt.Errorf("list WAL segments: %w", err)
+	}
+	if len(segments) == 0 {
+		return fmt.Errorf("no WAL segments found")
 	}
 
-	r.file = file
+	r.segments = segments
+	r.segmentIndex = 0
 
-	// Read and validate header
-	header := make([]byte, 24)
-	if _, err := file.Read(header); err != nil {
-		file.Close()
-		return fmt.Errorf("read header: %w", err)
+	if err := r.openSegment(0); err != nil {
+		return err
 	}
 
-	magic := binary.BigEndian.Uint32(header[0:])
-	if magic != 0x574C414F {
-		file.Close()
-		return fmt.Errorf("invalid WAL magic: 0x%X", magic)
-	}
-
-	// Pre-load buffer
-	buf := make([]byte, 1024*1024) // 1MB read buffer
-	n, err := file.Read(buf)
-	if err != nil && err != io.EOF {
-		file.Close()
-		return fmt.Errorf("read buffer: %w", err)
-	}
-
-	r.buffer = buf[:n]
+	r.buffer = r.buffer[:0]
 	r.offset = 0
 	r.lastValidLSN = 0
+	r.pending = nil
+
+	if startLSN > 0 {
+		for {
+			entry, err := r.readNextInternal()
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if entry.LSN >= startLSN {
+				r.pending = entry
+				break
+			}
+		}
+	}
 
 	return nil
 }
 
 // Read returns the next entry in the WAL.
 func (r *FileReader) Read(ctx context.Context) (*Entry, error) {
-	// Check if we need to load more data
-	if r.offset >= len(r.buffer) {
-		buf := make([]byte, 1024*1024)
-		n, err := r.file.Read(buf)
-		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("read more: %w", err)
-		}
-		if n == 0 {
-			return nil, io.EOF
-		}
-		r.buffer = buf[:n]
-		r.offset = 0
+	if r.pending != nil {
+		entry := r.pending
+		r.pending = nil
+		return entry, nil
 	}
 
-	// Parse entry header
-	if r.offset+21 > len(r.buffer) {
-		return nil, io.EOF // Not enough for header
-	}
-
-	offset := r.offset
-
-	// op_type(1)
-	opType := OpType(r.buffer[offset])
-	offset++
-
-	// lsn(8)
-	lsn := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
-	offset += 8
-
-	// timestamp(8)
-	timestamp := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
-	offset += 8
-
-	// data_len(4)
-	dataLen := binary.BigEndian.Uint32(r.buffer[offset : offset+4])
-	offset += 4
-
-	// Check if full record is available
-	if offset+int(dataLen)+8 > len(r.buffer) {
-		return nil, io.EOF // Need more data
-	}
-
-	// data
-	eventData := make([]byte, dataLen)
-	copy(eventData, r.buffer[offset:offset+int(dataLen)])
-	offset += int(dataLen)
-
-	// checksum(8)
-	storedChecksum := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
-	offset += 8
-
-	// Validate checksum
-	calculatedChecksum := crc64.Checksum(r.buffer[r.offset:offset-8], r.tableECMA)
-	if calculatedChecksum != storedChecksum {
-		return nil, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculatedChecksum, storedChecksum)
-	}
-
-	r.offset = offset
-	r.lastValidLSN = lsn
-
-	return &Entry{
-		Type:                   opType,
-		LSN:                    lsn,
-		Timestamp:              timestamp,
-		EventDataOrMetadata:    eventData,
-		Checksum:               storedChecksum,
-	}, nil
+	return r.readNextInternal()
 }
 
 // LastValidLSN returns the LSN of the last successfully read entry.
@@ -458,6 +439,471 @@ func (r *FileReader) Close() error {
 		r.file = nil
 	}
 	return nil
+}
+
+func (w *FileWriter) ensureCapacityLocked(dataLen int) error {
+	if w.cfg.MaxSegmentSize == 0 {
+		return nil
+	}
+
+	projected := w.segmentSize + uint64(len(w.buffer)) + uint64(dataLen)
+	if projected <= w.cfg.MaxSegmentSize {
+		return nil
+	}
+
+	return w.rotateLocked()
+}
+
+func (w *FileWriter) rotateLocked() error {
+	if err := w.flushLocked(); err != nil {
+		return fmt.Errorf("flush before rotate: %w", err)
+	}
+
+	if w.file != nil {
+		if err := w.file.Close(); err != nil {
+			return fmt.Errorf("close segment: %w", err)
+		}
+		w.file = nil
+	}
+
+	w.segmentID++
+	newPath := walSegmentPath(w.cfg.Dir, w.segmentID)
+	file, err := os.OpenFile(newPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("open new segment: %w", err)
+	}
+
+	w.file = file
+	w.segmentPath = newPath
+	w.segmentSize = 0
+
+	checkpointLSN := uint64(0)
+	if w.checkpoint != nil {
+		checkpointLSN = w.checkpoint.LSN
+	}
+	if err := w.writeHeaderWithCheckpoint(checkpointLSN); err != nil {
+		file.Close()
+		return fmt.Errorf("write new header: %w", err)
+	}
+	w.segmentSize = walHeaderSize
+
+	return nil
+}
+
+func (w *FileWriter) updateHeaderCheckpointLocked(checkpointLSN uint64) error {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint64(buf, checkpointLSN)
+	if _, err := w.file.WriteAt(buf, 12); err != nil {
+		return fmt.Errorf("write checkpoint lsn: %w", err)
+	}
+	return w.file.Sync()
+}
+
+func (r *FileReader) openSegment(index int) error {
+	if index < 0 || index >= len(r.segments) {
+		return io.EOF
+	}
+
+	if r.file != nil {
+		if err := r.file.Close(); err != nil {
+			return fmt.Errorf("close segment: %w", err)
+		}
+		r.file = nil
+	}
+
+	path := r.segments[index].path
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open WAL file: %w", err)
+	}
+
+	if _, err := readWalHeaderCheckpoint(file); err != nil {
+		file.Close()
+		return err
+	}
+
+	if _, err := file.Seek(walHeaderSize, io.SeekStart); err != nil {
+		file.Close()
+		return fmt.Errorf("seek data: %w", err)
+	}
+
+	r.file = file
+	r.segmentIndex = index
+	r.buffer = r.buffer[:0]
+	r.offset = 0
+
+	return nil
+}
+
+func (r *FileReader) readNextInternal() (*Entry, error) {
+	if err := r.ensureBuffer(21); err != nil {
+		return nil, err
+	}
+
+	offset := r.offset
+	opType := OpType(r.buffer[offset])
+	offset++
+
+	lsn := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
+	offset += 8
+
+	timestamp := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
+	offset += 8
+
+	dataLen := binary.BigEndian.Uint32(r.buffer[offset : offset+4])
+	offset += 4
+
+	entrySize := 21 + int(dataLen) + 8
+	if err := r.ensureBuffer(entrySize); err != nil {
+		return nil, err
+	}
+
+	eventData := make([]byte, dataLen)
+	copy(eventData, r.buffer[offset:offset+int(dataLen)])
+	offset += int(dataLen)
+
+	storedChecksum := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
+	offset += 8
+
+	calculatedChecksum := crc64.Checksum(r.buffer[r.offset:offset-8], r.tableECMA)
+	if calculatedChecksum != storedChecksum {
+		return nil, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculatedChecksum, storedChecksum)
+	}
+
+	r.offset = offset
+	r.lastValidLSN = lsn
+
+	return &Entry{
+		Type:                opType,
+		LSN:                 lsn,
+		Timestamp:           timestamp,
+		EventDataOrMetadata: eventData,
+		Checksum:            storedChecksum,
+	}, nil
+}
+
+func (r *FileReader) ensureBuffer(minBytes int) error {
+	for len(r.buffer)-r.offset < minBytes {
+		if r.offset > 0 && r.offset < len(r.buffer) {
+			remaining := len(r.buffer) - r.offset
+			copy(r.buffer, r.buffer[r.offset:])
+			r.buffer = r.buffer[:remaining]
+			r.offset = 0
+		} else if r.offset >= len(r.buffer) {
+			r.buffer = r.buffer[:0]
+			r.offset = 0
+		}
+
+		if cap(r.buffer) < minBytes {
+			newBuf := make([]byte, len(r.buffer), minBytes)
+			copy(newBuf, r.buffer)
+			r.buffer = newBuf
+		}
+
+		readInto := r.buffer[len(r.buffer):cap(r.buffer)]
+		n, err := r.file.Read(readInto)
+		if n > 0 {
+			r.buffer = r.buffer[:len(r.buffer)+n]
+		}
+
+		if err == io.EOF {
+			if len(r.buffer)-r.offset >= minBytes {
+				return nil
+			}
+			if err := r.openSegment(r.segmentIndex + 1); err != nil {
+				if err == io.EOF {
+					return io.EOF
+				}
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read buffer: %w", err)
+		}
+		if n == 0 {
+			return io.EOF
+		}
+	}
+
+	return nil
+}
+
+type walSegment struct {
+	id   uint32
+	path string
+}
+
+func walSegmentPath(dir string, id uint32) string {
+	if id == 0 {
+		return filepath.Join(dir, walBaseName)
+	}
+	return filepath.Join(dir, fmt.Sprintf("wal.%06d.log", id))
+}
+
+func listWalSegments(dir string) ([]walSegment, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	segmentsByID := make(map[uint32]string)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == walBaseName {
+			segmentsByID[0] = filepath.Join(dir, name)
+			continue
+		}
+		if !strings.HasPrefix(name, "wal.") || !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		idStr := strings.TrimSuffix(strings.TrimPrefix(name, "wal."), ".log")
+		id, err := strconv.ParseUint(idStr, 10, 32)
+		if err != nil {
+			continue
+		}
+		segID := uint32(id)
+		if _, exists := segmentsByID[segID]; exists {
+			continue
+		}
+		segmentsByID[segID] = filepath.Join(dir, name)
+	}
+
+	segments := make([]walSegment, 0, len(segmentsByID))
+	for id, path := range segmentsByID {
+		segments = append(segments, walSegment{id: id, path: path})
+	}
+
+	sort.Slice(segments, func(i, j int) bool {
+		return segments[i].id < segments[j].id
+	})
+
+	return segments, nil
+}
+
+func readWalHeaderCheckpoint(file *os.File) (uint64, error) {
+	header := make([]byte, walHeaderSize)
+	if _, err := file.ReadAt(header, 0); err != nil {
+		return 0, fmt.Errorf("read header: %w", err)
+	}
+
+	magic := binary.BigEndian.Uint32(header[0:4])
+	if magic != walMagic {
+		return 0, fmt.Errorf("invalid WAL magic: 0x%X", magic)
+	}
+
+	return binary.BigEndian.Uint64(header[12:20]), nil
+}
+
+func scanSegmentForLastEntry(path string) (uint64, *Checkpoint, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, nil, fmt.Errorf("open segment: %w", err)
+	}
+	defer file.Close()
+
+	checkpointLSN, err := readWalHeaderCheckpoint(file)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	if _, err := file.Seek(walHeaderSize, io.SeekStart); err != nil {
+		return 0, nil, fmt.Errorf("seek data: %w", err)
+	}
+
+	var lastLSN uint64
+	var checkpoint *Checkpoint
+	entryHeader := make([]byte, 21)
+	checksumTable := crc64.MakeTable(crc64.ECMA)
+
+	for {
+		_, err := io.ReadFull(file, entryHeader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return lastLSN, checkpoint, fmt.Errorf("read entry header: %w", err)
+		}
+
+		opType := OpType(entryHeader[0])
+		lsn := binary.BigEndian.Uint64(entryHeader[1:9])
+		timestamp := binary.BigEndian.Uint64(entryHeader[9:17])
+		dataLen := binary.BigEndian.Uint32(entryHeader[17:21])
+
+		dataAndChecksum := make([]byte, int(dataLen)+8)
+		_, err = io.ReadFull(file, dataAndChecksum)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return lastLSN, checkpoint, fmt.Errorf("read entry data: %w", err)
+		}
+
+		payload := make([]byte, 21+int(dataLen))
+		copy(payload, entryHeader)
+		copy(payload[21:], dataAndChecksum[:dataLen])
+		storedChecksum := binary.BigEndian.Uint64(dataAndChecksum[dataLen:])
+		calculated := crc64.Checksum(payload, checksumTable)
+		if calculated != storedChecksum {
+			return lastLSN, checkpoint, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculated, storedChecksum)
+		}
+
+		lastLSN = lsn
+		if opType == OpTypeCheckpoint {
+			checkpoint = &Checkpoint{
+				LSN:       lsn,
+				Timestamp: timestamp,
+			}
+		}
+	}
+
+	if checkpoint == nil && checkpointLSN > 0 {
+		checkpoint = &Checkpoint{LSN: checkpointLSN}
+	}
+
+	return lastLSN, checkpoint, nil
+}
+
+func scanSegmentForFirstLastLSN(path string) (uint64, uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("open segment: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := readWalHeaderCheckpoint(file); err != nil {
+		return 0, 0, err
+	}
+
+	if _, err := file.Seek(walHeaderSize, io.SeekStart); err != nil {
+		return 0, 0, fmt.Errorf("seek data: %w", err)
+	}
+
+	var firstLSN uint64
+	var lastLSN uint64
+	entryHeader := make([]byte, 21)
+	checksumTable := crc64.MakeTable(crc64.ECMA)
+
+	for {
+		_, err := io.ReadFull(file, entryHeader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return firstLSN, lastLSN, fmt.Errorf("read entry header: %w", err)
+		}
+
+		lsn := binary.BigEndian.Uint64(entryHeader[1:9])
+		dataLen := binary.BigEndian.Uint32(entryHeader[17:21])
+
+		dataAndChecksum := make([]byte, int(dataLen)+8)
+		_, err = io.ReadFull(file, dataAndChecksum)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return firstLSN, lastLSN, fmt.Errorf("read entry data: %w", err)
+		}
+
+		payload := make([]byte, 21+int(dataLen))
+		copy(payload, entryHeader)
+		copy(payload[21:], dataAndChecksum[:dataLen])
+		storedChecksum := binary.BigEndian.Uint64(dataAndChecksum[dataLen:])
+		calculated := crc64.Checksum(payload, checksumTable)
+		if calculated != storedChecksum {
+			return firstLSN, lastLSN, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculated, storedChecksum)
+		}
+
+		if firstLSN == 0 {
+			firstLSN = lsn
+		}
+		lastLSN = lsn
+	}
+
+	return firstLSN, lastLSN, nil
+}
+
+func scanSegmentCheckpoints(path string) ([]Checkpoint, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open segment: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := readWalHeaderCheckpoint(file); err != nil {
+		return nil, err
+	}
+
+	if _, err := file.Seek(walHeaderSize, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek data: %w", err)
+	}
+
+	entryHeader := make([]byte, 21)
+	checksumTable := crc64.MakeTable(crc64.ECMA)
+	checkpoints := []Checkpoint{}
+
+	for {
+		_, err := io.ReadFull(file, entryHeader)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read entry header: %w", err)
+		}
+
+		opType := OpType(entryHeader[0])
+		lsn := binary.BigEndian.Uint64(entryHeader[1:9])
+		timestamp := binary.BigEndian.Uint64(entryHeader[9:17])
+		dataLen := binary.BigEndian.Uint32(entryHeader[17:21])
+
+		dataAndChecksum := make([]byte, int(dataLen)+8)
+		_, err = io.ReadFull(file, dataAndChecksum)
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read entry data: %w", err)
+		}
+
+		payload := make([]byte, 21+int(dataLen))
+		copy(payload, entryHeader)
+		copy(payload[21:], dataAndChecksum[:dataLen])
+		storedChecksum := binary.BigEndian.Uint64(dataAndChecksum[dataLen:])
+		calculated := crc64.Checksum(payload, checksumTable)
+		if calculated != storedChecksum {
+			return nil, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculated, storedChecksum)
+		}
+
+		if opType == OpTypeCheckpoint {
+			checkpoints = append(checkpoints, Checkpoint{
+				LSN:       lsn,
+				Timestamp: timestamp,
+			})
+		}
+	}
+
+	return checkpoints, nil
+}
+
+func scanAllCheckpoints(dir string) ([]Checkpoint, error) {
+	segments, err := listWalSegments(dir)
+	if err != nil {
+		return nil, fmt.Errorf("list WAL segments: %w", err)
+	}
+
+	checkpoints := []Checkpoint{}
+	for _, seg := range segments {
+		segmentCheckpoints, err := scanSegmentCheckpoints(seg.path)
+		if err != nil {
+			return nil, err
+		}
+		checkpoints = append(checkpoints, segmentCheckpoints...)
+	}
+
+	return checkpoints, nil
 }
 
 var _ Writer = (*FileWriter)(nil)
