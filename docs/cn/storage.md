@@ -177,12 +177,16 @@ continuation_count: 39（约需 40 页总计，存储 160KB）
 
 ### WAL 文件结构
 
-`wal.log` 为追加写日志，所有写操作先落 WAL 再更新索引。
+WAL 以**追加写段文件**保存，所有写操作先落 WAL 再更新索引。
 
 ```
-[4 B: WAL magic 0x574C4149 'WLAI']
+段 0: wal.log
+段 N: wal.000001.log, wal.000002.log, ...
+
+[4 B: WAL magic 0x574C414F 'WLAO']
 [8 B: WAL version (uint64)]
 [8 B: last_checkpoint_lsn (log sequence number)]
+[4 B: reserved]
 
 [WAL entry 1]
 [WAL entry 2]
@@ -195,26 +199,26 @@ continuation_count: 39（约需 40 页总计，存储 160KB）
 ```
 Offset | Size | Field           | Type   | Notes
 ───────┼──────┼─────────────────┼────────┼──────────────────────
-0      | 1    | op_type         | uint8  | 1=INSERT, 2=REPLACE, 3=DELETE
-1      | 4    | entry_len       | uint32 | Total bytes of this entry (excl. op_type, incl. checksum)
-5      | var  | event_data      | []byte | Serialized record (as stored in segment)
-       | 8    | checksum        | uint64 | CRC64 for integrity check
+0      | 1    | op_type         | uint8  | 1=INSERT, 2=UPDATE_FLAGS, 3=INDEX_UPDATE, 4=CHECKPOINT
+1      | 8    | lsn             | uint64 | 日志序列号
+9      | 8    | timestamp       | uint64 | UNIX 秒
+17     | 4    | data_len        | uint32 | data 字节数
+21     | var  | data            | []byte | op_type 对应的数据
+  | 8    | checksum        | uint64 | CRC64（覆盖前面所有字段）
 ```
 
-**Entry Length**：从 `entry_len` 到 `checksum` 的总长度。
+**Entry Length**：`1 + 8 + 8 + 4 + data_len + 8` 字节。
 
 ### 批量与 fsync
 
-- 写操作先进入内存环形缓冲（如 16 MB）
-- 每 T ms（默认 100 ms）或缓冲达到 B（默认 10 MB）时刷盘：
-  1. 追加 WAL 条目
-  2. fsync WAL
-  3. 更新内存索引
-  4. 写索引快照
-  5. fsync 索引
-  6. 清空缓冲，推进 checkpoint LSN
+- 写操作先进入内存 buffer
+- 每 T ms（默认 100 ms）或 buffer 达到 B（默认 10 MB）时刷盘：
+  1. 追加 WAL 条目到当前段
+  2. fsync 段文件
+  3. 清空 buffer
+- 创建 checkpoint 时会更新段头的 `last_checkpoint_lsn`
 
-**恢复**：重启从最后 checkpoint 回放 WAL。
+**恢复**：重启从 `last_checkpoint_lsn` 回放 WAL 段。
 
 ---
 
@@ -377,7 +381,7 @@ while offset >= 4096:
 | `batch_interval_ms` | 100 | 10–1000 | 越大延迟越高 |
 | `batch_size_bytes` | 10 MB | 1–100 MB | 超过则强制 fsync |
 | `compaction_ratio` | 0.2 | 0.1–0.5 | 碎片率阈值 |
-| `wal_max_entries` | 100K | 1K–10M | WAL 轮转阈值 |
+| `wal_segment_size_bytes` | 1 GB | 10 MB–10 GB | WAL 段大小达到阈值则轮转 |
 
 ---
 
@@ -416,8 +420,10 @@ Event:
 
 WAL Entry:
   op_type: 1 (INSERT)
-  entry_len: 191 + 8 (checksum) = 199
-  event_data: [191 bytes of record]
+  lsn: 1
+  timestamp: 1655000000
+  data_len: 191
+  data: [191 bytes of record]
   checksum: CRC64(...) = 0x...
 ```
 
@@ -458,8 +464,10 @@ Event:
 
 WAL Entry:
   op_type: 1 (INSERT)
-  entry_len: 12450 + 8 (checksum) = 12458
-  event_data: [12450 bytes，在 WAL 中以多页形式存储]
+  lsn: 2
+  timestamp: 1655000000
+  data_len: 12450
+  data: [12450 bytes]
   checksum: CRC64(...) = 0x...
 ```
 
@@ -469,7 +477,7 @@ WAL Entry:
 
 ```
 1. 读取 manifest.json
-2. 从 checkpoint 回放 WAL
+2. 打开 WAL 段（wal.log, wal.000001.log, ...）从 checkpoint 回放
 3. 更新内存索引
 4. 下一次 fsync 写盘
 ```

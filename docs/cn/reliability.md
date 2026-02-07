@@ -30,8 +30,8 @@
    - Check for duplicate (primary index lookup)
    - Serialize to record buffer
    
-3. WAL (in-memory ring buffer):
-   - Append WAL entry to ring buffer (100 MB max)
+3. WAL (in-memory buffer):
+   - Append WAL entry to buffer (100 MB max)
    - Return ACK to client
    
 4. Every T ms or when buffer size exceeds B:
@@ -41,7 +41,7 @@
    - Snapshot index nodes to disk
    - Fsync index files (durability point 2)
    - Fsync manifest.json
-   - Clear ring buffer
+   - Clear buffer
    - Advance checkpoint LSN
 ```
 
@@ -63,10 +63,10 @@
 
 #### 场景 1：fsync 前崩溃（< 100 ms）
 
-**状态**：事件仅在内存 WAL 环形缓冲。
+**状态**：事件仅在内存 WAL buffer。
 
 **恢复**：
-- 缓冲丢失，事件无法恢复
+- buffer 丢失，事件无法恢复
 - 客户端可能收到超时/断开
 - 客户端重试，主索引保证幂等
 
@@ -74,10 +74,10 @@
 
 #### 场景 2：fsync 后崩溃（> 100 ms）
 
-**状态**：WAL 已落盘，索引尚未落盘。
+**状态**：WAL 段已落盘，索引尚未落盘。
 
 **恢复**：
-- 从上次 checkpoint 回放 WAL
+- 从上次 checkpoint 回放 WAL 段
 - 重建内存索引
 - 事件可查询
 
@@ -114,14 +114,14 @@
    - Rebuild in-memory B+Tree cache (LRU)
    
 3. Replay WAL:
-   - Open wal.log
-   - Start from entry at (last_checkpoint_lsn + 1)
+   - Open WAL 段（wal.log, wal.000001.log, ...）
+   - Start from entry at last_checkpoint_lsn
    - For each entry:
-       - Decode op_type (INSERT, REPLACE, DELETE)
-       - Decode event record
-       - Validate checksum (CRC64)
-       - If invalid: log and skip
-       - If valid: apply to in-memory indexes and index cache
+      - Decode op_type (INSERT, UPDATE_FLAGS, INDEX_UPDATE, CHECKPOINT)
+      - Decode event record or metadata
+      - Validate checksum (CRC64)
+      - If invalid: log and skip
+      - If valid: apply to in-memory indexes and index cache
    - Continue until EOF
    
 4. Compaction status:

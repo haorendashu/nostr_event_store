@@ -30,8 +30,8 @@ The system provides **batch-level durability** using write-ahead logging and fsy
    - Check for duplicate (primary index lookup)
    - Serialize to record buffer
    
-3. WAL (in-memory ring buffer):
-   - Append WAL entry to ring buffer (100 MB max)
+3. WAL (in-memory buffer):
+   - Append WAL entry to buffer (100 MB max)
    - Return ACK to client
    
 4. Every T ms or when buffer size exceeds B:
@@ -41,7 +41,7 @@ The system provides **batch-level durability** using write-ahead logging and fsy
    - Snapshot index nodes to disk
    - Fsync index files (durability point 2)
    - Fsync manifest.json
-   - Clear ring buffer
+   - Clear buffer
    - Advance checkpoint LSN
 ```
 
@@ -64,11 +64,11 @@ The system provides **batch-level durability** using write-ahead logging and fsy
 #### Scenario 1: Process Crash Before Fsync (< 100 ms after insert)
 
 **State before crash**:
-- Event in WAL ring buffer (memory).
+- Event in WAL buffer (memory).
 - NOT yet fsynced to disk.
 
 **Recovery**:
-- Ring buffer lost; event not recovered.
+- Buffer lost; event not recovered.
 - Client receives "timeout" or "connection reset".
 - Client may retry; duplicate check (by `id` in primary index) ensures idempotency.
 
@@ -77,11 +77,11 @@ The system provides **batch-level durability** using write-ahead logging and fsy
 #### Scenario 2: Process Crash After Fsync (> 100 ms after insert)
 
 **State before crash**:
-- Event fsynced to `wal.log` on disk.
+- Event fsynced to WAL segment on disk.
 - Index updates in memory (not yet persisted).
 
 **Recovery**:
-- On restart, replay `wal.log` from last checkpoint.
+- On restart, replay WAL segments from last checkpoint.
 - Rebuild in-memory indexes from WAL.
 - Indexes re-built to consistent state.
 - Event is queryable after recovery.
@@ -123,14 +123,14 @@ On server startup:
    - Rebuild in-memory B+Tree cache (LRU)
    
 3. Replay WAL:
-   - Open wal.log
-   - Start from entry at (last_checkpoint_lsn + 1)
+   - Open WAL segments (wal.log, wal.000001.log, ...)
+   - Start from entry at last_checkpoint_lsn
    - For each entry:
-       - Decode op_type (INSERT, REPLACE, DELETE)
-       - Decode event record
-       - Validate checksum (CRC64)
-       - If invalid: log and skip
-       - If valid: apply to in-memory indexes and index cache
+      - Decode op_type (INSERT, UPDATE_FLAGS, INDEX_UPDATE, CHECKPOINT)
+      - Decode event record or metadata
+      - Validate checksum (CRC64)
+      - If invalid: log and skip
+      - If valid: apply to in-memory indexes and index cache
    - Continue until EOF
    
 4. Compaction status:

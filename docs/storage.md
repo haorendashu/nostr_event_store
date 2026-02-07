@@ -180,12 +180,16 @@ continuation_count: 39 (needs ~40 pages total for 160KB)
 
 ### WAL File Structure
 
-`wal.log` is an **append-only** log of write operations. Every write operation (insert/update) is logged before indexes are updated.
+WAL is stored as **append-only** segment files. Every write operation (insert/update) is logged before indexes are updated.
 
 ```
-[4 B: WAL magic 0x574C4149 'WLAI']
+Segment 0: wal.log
+Segment N: wal.000001.log, wal.000002.log, ...
+
+[4 B: WAL magic 0x574C414F 'WLAO']
 [8 B: WAL version (uint64)]
 [8 B: last_checkpoint_lsn (log sequence number)]
+[4 B: reserved]
 
 [WAL entry 1]
 [WAL entry 2]
@@ -198,27 +202,27 @@ continuation_count: 39 (needs ~40 pages total for 160KB)
 ```
 Offset | Size | Field           | Type   | Notes
 ───────┼──────┼─────────────────┼────────┼──────────────────────
-0      | 1    | op_type         | uint8  | 1=INSERT, 2=REPLACE, 3=DELETE
-1      | 4    | entry_len       | uint32 | Total bytes of this entry (excl. op_type, incl. checksum)
-5      | var  | event_data      | []byte | Serialized record (as stored in segment)
-       | 8    | checksum        | uint64 | CRC64 for integrity check
+0      | 1    | op_type         | uint8  | 1=INSERT, 2=UPDATE_FLAGS, 3=INDEX_UPDATE, 4=CHECKPOINT
+1      | 8    | lsn             | uint64 | Log sequence number
+9      | 8    | timestamp       | uint64 | UNIX seconds
+17     | 4    | data_len        | uint32 | Length of data field
+21     | var  | data            | []byte | Payload by op_type
+  | 8    | checksum        | uint64 | CRC64 over all previous fields
 
 ```
 
-**Entry Length**: Total bytes from `entry_len` through `checksum`.
+**Entry Length**: `1 + 8 + 8 + 4 + data_len + 8` bytes.
 
 ### Batching & Fsync
 
-- Write operations accumulate in a **ring buffer** (e.g., 16 MB) in memory.
+- Write operations accumulate in an in-memory buffer.
 - Every **T milliseconds** (default 100 ms) or when buffer reaches **B bytes** (default 10 MB), the batch is flushed:
-  1. Write all pending WAL entries to `wal.log`.
-  2. Fsync `wal.log` to disk (durability guarantee).
-  3. Update in-memory indexes (from ring buffer).
-  4. Snapshot index B+Tree nodes and write to index files.
-  5. Fsync index files.
-  6. Clear ring buffer and advance checkpoint LSN.
+  1. Append buffered WAL entries to the current segment.
+  2. Fsync the WAL segment (durability guarantee).
+  3. Clear the buffer.
+- Checkpoint creation also updates `last_checkpoint_lsn` in the segment header.
 
-**Recovery**: On restart, replay `wal.log` from last checkpoint until EOF.
+**Recovery**: On restart, replay WAL segments from `last_checkpoint_lsn` until EOF.
 
 ---
 
@@ -422,7 +426,7 @@ On read, recompute and compare. Mismatch indicates disk corruption; event is ski
 | `batch_interval_ms` | 100 | 10–1000 | Higher = more latency, better batching; lower = more fsync overhead |
 | `batch_size_bytes` | 10 MB | 1–100 MB | Force fsync if buffer grows beyond this |
 | `compaction_ratio` | 0.2 | 0.1–0.5 | Trigger compaction when fragmentation exceeds 20% |
-| `wal_max_entries` | 100K | 1K–10M | Rotate WAL after this many entries |
+| `wal_segment_size_bytes` | 1 GB | 10 MB–10 GB | Rotate WAL when a segment exceeds this size |
 
 ---
 
@@ -461,8 +465,10 @@ Absolute address: (segment_id=0, offset=4096 + 100)
 
 WAL Entry:
   op_type: 1 (INSERT)
-  entry_len: 191 + 8 (checksum) = 199
-  event_data: [191 bytes of record]
+  lsn: 1
+  timestamp: 1655000000
+  data_len: 191
+  data: [191 bytes of record]
   checksum: CRC64(...) = 0x...
 ```
 
@@ -503,8 +509,10 @@ Absolute address: (segment_id=0, offset=40960)
 
 WAL Entry:
   op_type: 1 (INSERT)
-  entry_len: 12450 + 8 (checksum) = 12458
-  event_data: [12450 bytes of record, stored as multi-page in WAL]
+  lsn: 2
+  timestamp: 1655000000
+  data_len: 12450
+  data: [12450 bytes of record]
   checksum: CRC64(...) = 0x...
 ```
 
@@ -515,7 +523,7 @@ WAL Entry:
 If the store crashes mid-batch:
 
 1. On restart, read `manifest.json`; note `last_checkpoint_lsn = 1024`.
-2. Open `wal.log`; replay all entries from checkpoint `1024` to EOF.
+2. Open WAL segments (`wal.log`, `wal.000001.log`, ...); replay entries from checkpoint `1024` to EOF.
 3. Update in-memory indexes as entries are replayed.
 4. Next batched fsync writes newly-recovered state to disk.
 
