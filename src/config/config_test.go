@@ -264,7 +264,7 @@ func TestValidateConfig(t *testing.T) {
 					IndexDir: "/tmp/indexes",
 					SearchTypeMapConfig: SearchTypeMapConfig{
 						TagNameToSearchTypeCode: map[string]index.SearchType{
-							"custom": index.SearchTypeTime, // Reserved
+							"custom": index.SearchTypeInvalid, // Reserved
 						},
 						EnabledTags: []string{"custom"},
 					},
@@ -360,7 +360,7 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.WALConfig.WALDir == "" {
 		t.Error("WALConfig.WALDir should have a default value")
 	}
-	if cfg.WALConfig.MaxSegmentSize <= 0  {
+	if cfg.WALConfig.MaxSegmentSize <= 0 {
 		t.Errorf("WALConfig.MaxSegmentSize = %d, should be > 0", cfg.WALConfig.MaxSegmentSize)
 	}
 	if cfg.WALConfig.SyncMode != "batch" {
@@ -616,7 +616,7 @@ func TestLoadUnsupportedExtension(t *testing.T) {
 	tempDir := t.TempDir()
 	filePath := filepath.Join(tempDir, "config.txt")
 	ctx := context.Background()
-	
+
 	if err := os.WriteFile(filePath, []byte("some content"), 0644); err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestLoadFromEnv(t *testing.T) {
 	for _, v := range testVars {
 		originalEnv[v] = os.Getenv(v)
 	}
-	
+
 	// Cleanup function
 	defer func() {
 		for k, v := range originalEnv {
@@ -709,12 +709,12 @@ func TestUpdate(t *testing.T) {
 	}
 
 	cfg := mgr.Get()
-	
+
 	// Original values should remain
 	if cfg.StorageConfig.PageSize != 4096 {
 		t.Errorf("StorageConfig.PageSize = %d, want 4096 (should not change)", cfg.StorageConfig.PageSize)
 	}
-	
+
 	// Updated values
 	if cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB != 500 {
 		t.Errorf("CacheConfig.PrimaryIndexCacheMB = %d, want 500", cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB)
@@ -731,9 +731,9 @@ func TestToIndexConfig(t *testing.T) {
 			InitializationMode: "standard",
 			SearchTypeMapConfig: SearchTypeMapConfig{
 				TagNameToSearchTypeCode: map[string]index.SearchType{
-					"e": 2,
-					"p": 3,
-					"t": 4,
+					"e": 1,
+					"p": 2,
+					"t": 9,
 				},
 				EnabledTags: []string{"e", "p", "t"},
 			},
@@ -762,19 +762,25 @@ func TestToIndexConfig(t *testing.T) {
 	if len(idxCfg.TagNameToSearchTypeCode) != 3 {
 		t.Errorf("TagNameToSearchTypeCode length = %d, want 3", len(idxCfg.TagNameToSearchTypeCode))
 	}
-	if idxCfg.TagNameToSearchTypeCode["e"] != index.SearchType(2) {
-		t.Errorf("TagNameToSearchTypeCode[e] = %d, want 2", idxCfg.TagNameToSearchTypeCode["e"])
+	if idxCfg.TagNameToSearchTypeCode["e"] != index.SearchType(1) {
+		t.Errorf("TagNameToSearchTypeCode[e] = %d, want 1", idxCfg.TagNameToSearchTypeCode["e"])
 	}
-	// Should include reserved types
-	hasTime := false
+	if idxCfg.TagNameToSearchTypeCode["p"] != index.SearchType(2) {
+		t.Errorf("TagNameToSearchTypeCode[p] = %d, want 2", idxCfg.TagNameToSearchTypeCode["p"])
+	}
+	if idxCfg.TagNameToSearchTypeCode["t"] != index.SearchType(9) {
+		t.Errorf("TagNameToSearchTypeCode[t] = %d, want 9", idxCfg.TagNameToSearchTypeCode["t"])
+	}
+	// Should include configured tag types in enabled list
+	hasE := false
 	for _, st := range idxCfg.EnabledSearchTypes {
-		if st == index.SearchTypeTime {
-			hasTime = true
+		if st == index.SearchType(1) {
+			hasE = true
 			break
 		}
 	}
-	if !hasTime {
-		t.Error("EnabledSearchTypes should include SearchTypeTime")
+	if !hasE {
+		t.Error("EnabledSearchTypes should include e tag SearchType")
 	}
 }
 
@@ -807,7 +813,7 @@ func TestToStoragePageSize(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	mgr := NewManager()
-	
+
 	// Should pass validation with defaults
 	if err := mgr.Validate(); err != nil {
 		t.Errorf("Validate() with defaults should pass, got error: %v", err)

@@ -15,7 +15,7 @@ type compilerImpl struct {
 
 // planImpl implements ExecutionPlan interface.
 type planImpl struct {
-	strategy    string     // "primary", "author_time", "search", "scan"
+	strategy    string // "primary", "author_time", "search", "scan"
 	filter      *types.QueryFilter
 	indexName   string
 	startKey    []byte
@@ -35,14 +35,16 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 		filter: filter,
 	}
 
-	// Strategy: If ETags with single element, use primary index
-	if len(filter.ETags) == 1 {
+	// Strategy: If single "e" tag, use primary index
+	if eTags := filter.Tags["e"]; len(eTags) == 1 {
+		singleETag := eTags[0]
 		plan.strategy = "primary"
 		plan.indexName = "primary"
-		// startKey = eventID, endKey = eventID (exact match)
-		pid := filter.ETags[0]
-		plan.startKey = pid[:]
-		plan.endKey = pid[:]
+		// Parse hex string to bytes for key
+		if id := parseEventID(singleETag); id != nil {
+			plan.startKey = id[:]
+			plan.endKey = id[:]
+		}
 		plan.estimatedIO = 3 // log_128(10M) ≈ 3
 		return plan, nil
 	}
@@ -68,16 +70,9 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 		return plan, nil
 	}
 
-	// Strategy: If hashtag, use search index
-	if len(filter.Hashtags) > 0 {
-		plan.strategy = "search"
-		plan.indexName = "search"
-		plan.estimatedIO = 6
-		return plan, nil
-	}
-
-	// Strategy: If ptags (mentions), use search index
-	if len(filter.PTags) > 0 {
+	// Strategy: If any tags, use search index
+	hasTagFilter := len(filter.Tags) > 0
+	if hasTagFilter {
 		plan.strategy = "search"
 		plan.indexName = "search"
 		plan.estimatedIO = 6
@@ -100,9 +95,7 @@ func (c *compilerImpl) ValidateFilter(filter *types.QueryFilter) error {
 	// Check that at least one meaningful filter condition exists or has a limit
 	hasCondition := len(filter.Kinds) > 0 ||
 		len(filter.Authors) > 0 ||
-		len(filter.ETags) > 0 ||
-		len(filter.PTags) > 0 ||
-		len(filter.Hashtags) > 0 ||
+		len(filter.Tags) > 0 ||
 		filter.Since > 0 ||
 		filter.Until > 0 ||
 		filter.Search != ""
@@ -118,14 +111,15 @@ func (c *compilerImpl) ValidateFilter(filter *types.QueryFilter) error {
 	if len(filter.Authors) > 100 {
 		return fmt.Errorf("too many authors (max 100, got %d)", len(filter.Authors))
 	}
-	if len(filter.ETags) > 1000 {
-		return fmt.Errorf("too many ETags (max 1000, got %d)", len(filter.ETags))
-	}
-	if len(filter.PTags) > 100 {
-		return fmt.Errorf("too many PTags (max 100, got %d)", len(filter.PTags))
-	}
-	if len(filter.Hashtags) > 100 {
-		return fmt.Errorf("too many hashtags (max 100, got %d)", len(filter.Hashtags))
+
+	// Validate generic Tags field
+	for tagName, tagValues := range filter.Tags {
+		if tagName == "" {
+			return fmt.Errorf("empty tag name in Tags map")
+		}
+		if len(tagValues) > 1000 {
+			return fmt.Errorf("too many values for tag %s (max 1000, got %d)", tagName, len(tagValues))
+		}
 	}
 
 	// Validate timestamps
@@ -150,8 +144,11 @@ func (p *planImpl) String() string {
 		return fmt.Sprintf("AuthorTimeIndexScan(authors=%d, since=%d, until=%d)",
 			len(p.filter.Authors), p.filter.Since, p.filter.Until)
 	case "search":
-		return fmt.Sprintf("SearchIndexScan(hashtags=%d, ptags=%d)",
-			len(p.filter.Hashtags), len(p.filter.PTags))
+		tagCount := 0
+		for _, tagValues := range p.filter.Tags {
+			tagCount += len(tagValues)
+		}
+		return fmt.Sprintf("SearchIndexScan(tags=%d)", tagCount)
 	case "scan":
 		return "FullTableScan()"
 	default:

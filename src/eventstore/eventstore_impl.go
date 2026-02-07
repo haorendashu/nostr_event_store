@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"sync"
 
+	"nostr_event_store/src/compaction"
 	"nostr_event_store/src/config"
 	"nostr_event_store/src/index"
 	"nostr_event_store/src/query"
+	"nostr_event_store/src/recovery"
 	"nostr_event_store/src/store"
 	"nostr_event_store/src/types"
 	"nostr_event_store/src/wal"
-	"nostr_event_store/src/recovery"
-	"nostr_event_store/src/compaction"
 )
 
 // eventStoreImpl is the concrete implementation of EventStore.
@@ -219,11 +219,29 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 		e.logger.Printf("Warning: author-time index update failed: %v", err)
 	}
 
-	// Update search index for event kind
+	// Build tag indexes for all configured tag types
 	searchIdx := e.indexMgr.SearchIndex()
-	kindKey := e.keyBuilder.BuildSearchKey(event.Kind, index.SearchTypeTime, []byte{}, event.CreatedAt)
-	if err := searchIdx.Insert(ctx, kindKey, loc); err != nil {
-		e.logger.Printf("Warning: search index update failed: %v", err)
+	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
+
+	for _, tag := range event.Tags {
+		if len(tag) < 2 {
+			continue // Skip malformed tags
+		}
+
+		tagName := tag[0]
+		tagValue := tag[1]
+
+		// Check if this tag type is configured for indexing
+		searchTypeCode, ok := tagMapping[tagName]
+		if !ok {
+			continue // Skip unconfigured tag types
+		}
+
+		// Build and insert search index entry
+		searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+		if err := searchIdx.Insert(ctx, searchKey, loc); err != nil {
+			e.logger.Printf("Warning: search index failed for tag %s: %v", tagName, err)
+		}
 	}
 
 	return loc, nil

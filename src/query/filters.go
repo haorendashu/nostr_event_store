@@ -27,19 +27,11 @@ func MatchesFilter(event *types.Event, filter *types.QueryFilter) bool {
 		return false
 	}
 
-	// Check e tags (event IDs)
-	if len(filter.ETags) > 0 && !hasETags(event, filter.ETags) {
-		return false
-	}
-
-	// Check p tags (pubkeys)
-	if len(filter.PTags) > 0 && !hasPTags(event, filter.PTags) {
-		return false
-	}
-
-	// Check hashtags (t tags)
-	if len(filter.Hashtags) > 0 && !hasHashtags(event, filter.Hashtags) {
-		return false
+	// Check generic Tags map (new approach)
+	for tagName, tagValues := range filter.Tags {
+		if len(tagValues) > 0 && !hasTag(event, tagName, tagValues) {
+			return false
+		}
 	}
 
 	// Check search (simple substring match)
@@ -70,49 +62,32 @@ func containsBytes32(slice [][32]byte, value [32]byte) bool {
 	return false
 }
 
-// hasETags checks if event has any of the specified event ID tags.
-func hasETags(event *types.Event, etagIDs [][32]byte) bool {
-	if len(event.Tags) == 0 {
+// hasTag checks if event has any of the specified tag values for a given tag name.
+// This is the generic version that works for any tag type.
+// All tag values are compared as strings (case-sensitive for most tags, case-insensitive for "t").
+func hasTag(event *types.Event, tagName string, tagValues []string) bool {
+	if len(event.Tags) == 0 || len(tagValues) == 0 {
 		return false
 	}
-	for _, tag := range event.Tags {
-		if len(tag) > 1 && tag[0] == "e" {
-			// Parse tag value as event ID (hex string to [32]byte)
-			id := parseEventID(tag[1])
-			if id != nil && containsBytes32(etagIDs, *id) {
-				return true
-			}
-		}
-	}
-	return false
-}
 
-// hasPTags checks if event has any of the specified pubkey tags.
-func hasPTags(event *types.Event, pubkeys [][32]byte) bool {
-	if len(event.Tags) == 0 {
-		return false
-	}
-	for _, tag := range event.Tags {
-		if len(tag) > 1 && tag[0] == "p" {
-			// Parse tag value as pubkey (hex string to [32]byte)
-			pubkey := parsePubkey(tag[1])
-			if pubkey != nil && containsBytes32(pubkeys, *pubkey) {
-				return true
-			}
-		}
-	}
-	return false
-}
+	// Special handling for hashtag "t" tags (case-insensitive)
+	caseInsensitive := (tagName == "t")
 
-// hasHashtags checks if event has any of the specified hashtags.
-func hasHashtags(event *types.Event, hashtags []string) bool {
-	if len(event.Tags) == 0 {
-		return false
-	}
 	for _, tag := range event.Tags {
-		if len(tag) > 1 && tag[0] == "t" {
-			if containsString(hashtags, strings.ToLower(tag[1])) {
-				return true
+		if len(tag) < 2 || tag[0] != tagName {
+			continue
+		}
+
+		tagValue := tag[1]
+		for _, filterValue := range tagValues {
+			if caseInsensitive {
+				if strings.EqualFold(tagValue, filterValue) {
+					return true
+				}
+			} else {
+				if tagValue == filterValue {
+					return true
+				}
 			}
 		}
 	}
@@ -122,12 +97,12 @@ func hasHashtags(event *types.Event, hashtags []string) bool {
 // matchesSearch checks if event matches search string (simple substring match).
 func matchesSearch(event *types.Event, search string) bool {
 	searchLower := strings.ToLower(search)
-	
+
 	// Search in content
 	if strings.Contains(strings.ToLower(event.Content), searchLower) {
 		return true
 	}
-	
+
 	// Search in tag values
 	for _, tag := range event.Tags {
 		if len(tag) < 2 {
@@ -139,7 +114,7 @@ func matchesSearch(event *types.Event, search string) bool {
 			}
 		}
 	}
-	
+
 	return false
 }
 

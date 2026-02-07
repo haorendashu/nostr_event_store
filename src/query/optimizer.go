@@ -31,15 +31,20 @@ func (o *optimizerImpl) ChooseBestIndex(filter *types.QueryFilter) (string, []by
 		return "", nil, fmt.Errorf("filter cannot be nil")
 	}
 
-	if len(filter.ETags) == 1 {
-		return "primary", filter.ETags[0][:], nil
+	// Check for single "e" tag
+	if eTags := filter.Tags["e"]; len(eTags) == 1 {
+		// Parse hex to bytes for primary key
+		if id := parseEventID(eTags[0]); id != nil {
+			return "primary", id[:], nil
+		}
 	}
 
 	if len(filter.Authors) > 0 {
 		return "author_time", nil, nil
 	}
 
-	if len(filter.Hashtags) > 0 || len(filter.PTags) > 0 {
+	// Check for any tag filters
+	if len(filter.Tags) > 0 {
 		return "search", nil, nil
 	}
 

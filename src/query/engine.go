@@ -362,22 +362,28 @@ func KindTimelineFilter(kind uint32, limit int) *types.QueryFilter {
 // RepliesFilter creates a filter for all replies to an event.
 func RepliesFilter(eventID [32]byte) *types.QueryFilter {
 	return &types.QueryFilter{
-		ETags: [][32]byte{eventID},
+		Tags: map[string][]string{
+			"e": {eventIDToString(eventID)},
+		},
 	}
 }
 
 // MentionsFilter creates a filter for all mentions of a user.
 func MentionsFilter(pubkey [32]byte) *types.QueryFilter {
 	return &types.QueryFilter{
-		PTags: [][32]byte{pubkey},
+		Tags: map[string][]string{
+			"p": {pubkeyToString(pubkey)},
+		},
 	}
 }
 
 // HashtagFilter creates a filter for a hashtag timeline.
 func HashtagFilter(hashtag string, limit int) *types.QueryFilter {
 	return &types.QueryFilter{
-		Hashtags: []string{hashtag},
-		Limit:    limit,
+		Tags: map[string][]string{
+			"t": {hashtag},
+		},
+		Limit: limit,
 	}
 }
 
@@ -395,7 +401,9 @@ func BoundedTimelineFilter(since uint64, until uint64, kinds []uint32, limit int
 // This should be very fast (O(log N) via primary index).
 func EventByIDFilter(eventID [32]byte) *types.QueryFilter {
 	return &types.QueryFilter{
-		ETags: [][32]byte{eventID},
+		Tags: map[string][]string{
+			"e": {eventIDToString(eventID)},
+		},
 		Limit: 1,
 	}
 }

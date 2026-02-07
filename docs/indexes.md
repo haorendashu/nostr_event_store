@@ -13,7 +13,6 @@ Indexes are the query engine's backbone. They map search keys to record location
 **Name**: `primary.idx` or `idx_id`
 
 **Key**: Event `id` (32 bytes, binary)
----
 
 **Value**: `(segment_id: uint32, offset: uint32)` = 8 bytes
 
@@ -57,65 +56,78 @@ key_start := pubkey || created_at_min
 
 **Name**: `search.idx` or `idx_search`
 
-**Key**: `(kind: uint32, search_type: uint8, tag_value: variable, created_at: uint64)`
+**Key**: `(kind: uint32, search_type: uint8, tag_value: string, created_at: uint64)`
 
-**Value**:
-- **List** of locations for multi-hit types: `[(segment_id, offset), ...]`.
-- **Single** location for replaceable types (latest only).
+**Value**: `(segment_id: uint32, offset: uint32)` = 8 bytes
+
+**Note**: All `tag_value` fields are stored as UTF-8 strings. Event IDs and pubkeys are hex-encoded strings, not binary.
 
 **Purpose**:
 - Consolidates all kind-scoped queries into one index.
 - `search_type` is **configurable**, not fixed. The system loads a mapping from config and rebuilds `search.idx` if the set changes.
 
-**Default set (Standard)**:
-- `TIME` (kind timeline)
-- `e`, `p`, `t` tags
-- `a`, `r`, `subject` tags
-- `REPL`, `PREPL` (replaceable, parameterized replaceable)
+**Default tag set**:
+The system predefines 14 common Nostr tags with SearchType codes (1-14):
+- `e` (1): event ID references (replies, quotes)
+- `p` (2): pubkey mentions (tags, replies)
+- `a` (3): addressable event reference (NIP-33: kind:pubkey:d-tag)
+- `d` (4): identifier for parameterized replaceable events (NIP-33)
+- `P` (5): pubkey for delegation (NIP-26)
+- `E` (6): event ID for thread root (NIP-10)
+- `A` (7): alternate addressable reference
+- `g` (8): geohash for location-based events (NIP-52)
+- `t` (9): topic/hashtag tag
+- `h` (10): content hash (file metadata)
+- `i` (11): external identity reference (NIP-39)
+- `I` (12): identity proof (NIP-39)
+- `k` (13): kind number reference
+- `K` (14): kind range reference
+
+**Reserved SearchType**:
+- **Code 0**: `SearchTypeInvalid` (uninitialized/invalid)
 
 **Key Encoding**:
 ```
-Key = [4 B: kind] [1 B: search_type] [tag_value: var] [8 B: created_at]
+Key = [4 B: kind] [1 B: search_type] [N B: tag_value_utf8] [8 B: created_at]
 
-TIME:
-  tag_value = empty
+All tag_value fields are UTF-8 strings:
 
 e-tag:
-  tag_value = [32 B: event_id]
+  tag_value = event_id (64-char hex string)
+  Example: "a1b2c3d4e5f6..." (64 chars)
 
 p-tag:
-  tag_value = [32 B: pubkey]
+  tag_value = pubkey (64-char hex string)
+  Example: "1234567890ab..." (64 chars)
 
 t-tag:
-  tag_value = [N B: hashtag_utf8]
+  tag_value = hashtag (UTF-8 string)
+  Example: "bitcoin", "nostr"
 
 a-tag:
-  tag_value = [N B: "kind:pubkey:d"]
+  tag_value = addressable reference (UTF-8 string)
+  Example: "30023:author_pubkey:article_id"
 
-r-tag:
-  tag_value = [N B: url_utf8]
+d-tag:
+  tag_value = identifier (UTF-8 string)
+  Example: "my-article", "profile-v2"
 
-  tag_value = [N B: subject_utf8]
+g-tag:
+  tag_value = geohash (UTF-8 string)
+  Example: "9q8yy"
 
-REPL:
-  tag_value = [32 B: pubkey] [4 B: kind]
+h-tag:
+  tag_value = content_hash (UTF-8 string)
+  Example: "sha256:1234abcd..."
 
-PREPL:
-  tag_value = [32 B: pubkey] [4 B: kind] [4 B: d_len] [d_bytes]
+(All other tags follow the same UTF-8 string encoding)
 ```
 
 **search_type mapping**:
-- `search_type` is a **compact byte code** assigned at initialization from config.
-- The mapping is stored in `manifest.json` and applied consistently during rebuild.
+- `search_type` is a **compact byte code** assigned in configuration (1-255, 0 reserved).
+- The mapping is stored in config files (e.g., `config.json`) and loaded at startup.
 - If the mapping changes, `search.idx` must be rebuilt.
-
-**B+Tree Storage**:
-- **Leaf node layout**:
-  ```
-  [key: var] [value_kind: 1 B] [value_count: uint32] [value_0: 8 B] ...
-  ```
-- `value_kind = 0` for single location, `value_kind = 1` for list values.
-- Hot tags with large fanout can spill to overflow pages.
+- All tag values are stored as UTF-8 strings to avoid type conversion errors.
 
 **Memory footprint** (LRU node cache):
 - Consolidates kind, tags, and replaceable access paths.
@@ -124,11 +136,6 @@ PREPL:
 
 **Query Examples**:
 ```
-// Latest events for kind=1 (TIME)
-key_min := (kind=1, TIME, empty, 0)
-key_max := (kind=1, TIME, empty, UINT64_MAX)
-iter := search.RangeDesc(key_max, key_min)
-
 // Replies to event (e-tag)
 key_min := (kind=1, e, event_id, 0)
 key_max := (kind=1, e, event_id, UINT64_MAX)
@@ -139,9 +146,10 @@ key_min := (kind=1, p, pubkey, 0)
 key_max := (kind=1, p, pubkey, UINT64_MAX)
 mentions := search.RangeDesc(key_max, key_min)
 
-// Latest user profile (REPL)
-key := (kind=0, REPL, pubkey||kind, UINT64_MAX)
-loc := search.Get(key)
+// Geohash tag (g-tag)
+key_min := (kind=1, g, geohash, 0)
+key_max := (kind=1, g, geohash, UINT64_MAX)
+geoEvents := search.Range(key_min, key_max)
 ```
 
 **Optimization**: Since **created_at** is in the key, range queries are time-ordered, enabling efficient pagination and "latest N" queries.
@@ -173,7 +181,7 @@ loc := search.Get(key)
 
 - **entry_count**: Number of key-value pairs in this leaf.
 - **next_leaf_ptr**: Offset to next sibling leaf (0 if none); enables efficient range iteration.
-- **Values**: Either inline (e.g., 8 B for segment+offset) or pointer to overflow page for large value lists.
+- **Values**: All indexes use 8-byte values (4 B segment_id + 4 B offset).
 
 ### Node Fit in Page
 
@@ -187,11 +195,16 @@ Available: 4096 - 20 - 8 (checksum) = 4068 B
 Max entries: 4068 / 40 = ~101 entries per leaf
 ```
 
-**Example: Search Index (TIME key, 13-byte key, 8-byte value)**
+**Example: Search Index (variable-length tag key)**
 ```
-Entry size: 13 + 8 = 21 B
+Key components: kind (4 B) + search_type (1 B) + tag_value (variable) + created_at (8 B)
+For short tags (e.g., single-char hashtag "t"):  Min key = 4 + 1 + 1 + 8 = 14 B
+For event ID tags (64-char hex string):  Max key ≈ 4 + 1 + 64 + 8 = 77 B
+Value size: 8 B
+
+Typical average entry size: ~30 B key + 8 B value = 38 B
 Available: 4068 B
-Max entries: 4068 / 21 = ~193 entries per leaf
+Typical entries per leaf: 4068 / 38 ≈ ~107 entries
 ```
 
 ---
@@ -262,10 +275,10 @@ When a new event is inserted:
 
 1. **Primary Index**: Add `(id → location)` entry.
 2. **Author+Time**: Add `(pubkey || created_at → location)`.
-3. **Search Index**: For each configured `search_type`:
-  - `TIME`: Add `(kind, TIME, empty, created_at → location)`.
-  - `e/p/t/a/r/subject`: Add `(kind, type, tag_value, created_at → location)`.
-  - `REPL/PREPL`: Use replacement key in `tag_value`. If newer, overwrite the single value and mark old event as REPLACED.
+3. **Search Index**: For each configured tag type (e, p, t, a, d, etc.):
+   - Extract tag values from the event's tags array.
+   - For each tag value, add `(kind, search_type_code, tag_value, created_at → location)` entry.
+   - Example: Event with tags `[["e", "abc123"], ["p", "def456"]]` creates two index entries.
 
 All updates go to **in-memory B+Tree nodes**; written to disk during next batched fsync.
 

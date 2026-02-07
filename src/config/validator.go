@@ -70,9 +70,9 @@ func ValidateConfig(cfg *Config) error {
 		if tag == "" {
 			return fmt.Errorf("index.search_type_map.tag_name_to_search_type_code contains empty tag")
 		}
-		switch code {
-		case index.SearchTypeTime, index.SearchTypeReplaceable, index.SearchTypeParameterizedReplaceable:
-			return fmt.Errorf("index.search_type_map.tag_name_to_search_type_code uses reserved code for tag %s", tag)
+		// Only code 0 is reserved (SearchTypeInvalid)
+		if code == index.SearchTypeInvalid {
+			return fmt.Errorf("index.search_type_map.tag_name_to_search_type_code uses reserved code 0 for tag %s", tag)
 		}
 	}
 

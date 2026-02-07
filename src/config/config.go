@@ -12,9 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
 	"nostr_event_store/src/index"
 	"nostr_event_store/src/storage"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config represents the complete store configuration.
@@ -64,7 +65,7 @@ type IndexConfig struct {
 	SearchTypeMapConfig SearchTypeMapConfig `json:"search_type_map,omitempty"`
 
 	// InitializationMode specifies the default search types to enable.
-	// Options: "performance" (e/p/t only), "standard" (e/p/t/a/r/subject + REPL), 
+	// Options: "performance" (e/p/t only), "standard" (e/p/t/a/r/subject + REPL),
 	//          "full" (all common tags), "custom" (see EnabledSearchTypes)
 	// Default: "standard"
 	InitializationMode string `json:"initialization_mode,omitempty"`
@@ -72,7 +73,6 @@ type IndexConfig struct {
 	// CacheConfig specifies per-index cache allocation.
 	CacheConfig CacheConfig `json:"cache,omitempty"`
 }
-
 
 // SearchTypeMapConfig defines the mapping from tag names to search type codes (from manifest.json).
 // This configuration is user-editable and allows customizing which tags are indexed without code changes.
@@ -98,6 +98,7 @@ type SearchTypeMapConfig struct {
 	// If true when the process restarts, recovery must complete or retry the rebuild.
 	RebuildInProgress bool `json:"rebuild_in_progress,omitempty"`
 }
+
 // CacheConfig defines per-index cache allocation (in MB).
 type CacheConfig struct {
 	// PrimaryIndexCacheMB is the cache size for the primary (ID) index.
@@ -483,28 +484,18 @@ func (c *Config) ToIndexConfig() index.Config {
 
 	enabledTags := c.IndexConfig.SearchTypeMapConfig.EnabledTags
 	if len(enabledTags) == 0 {
-		switch strings.ToLower(c.IndexConfig.InitializationMode) {
-		case "performance":
-			enabledTags = []string{"e", "p", "t"}
-		case "full":
-			for tag := range mapping {
-				enabledTags = append(enabledTags, tag)
-			}
-		case "custom":
-			// Keep empty, validation will catch if missing
-		default:
-			enabledTags = []string{"e", "p", "t", "a", "r", "subject"}
+		// Use all configured tags as default
+		for tag := range mapping {
+			enabledTags = append(enabledTags, tag)
 		}
 	}
 
-	enabledTypes := make([]index.SearchType, 0, len(enabledTags)+3)
+	enabledTypes := make([]index.SearchType, 0, len(enabledTags))
 	for _, tag := range enabledTags {
 		if code, ok := mapping[tag]; ok {
 			enabledTypes = append(enabledTypes, code)
 		}
 	}
-	// Always include reserved types
-	enabledTypes = append(enabledTypes, index.SearchTypeTime, index.SearchTypeReplaceable, index.SearchTypeParameterizedReplaceable)
 
 	return index.Config{
 		Dir:                     c.IndexConfig.IndexDir,
@@ -535,26 +526,34 @@ func DefaultConfig() *Config {
 	return &Config{
 		Debug: false,
 		StorageConfig: StorageConfig{
-			DataDir:        "./data",
-			PageSize:       4096,
-			MaxSegmentSize: 1073741824, // 1 GB
+			DataDir:         "./data",
+			PageSize:        4096,
+			MaxSegmentSize:  1073741824, // 1 GB
 			EventBufferSize: 16777216,   // 16 MB
 		},
 		IndexConfig: IndexConfig{
-			IndexDir:            "./data/indexes",
-			InitializationMode:  "standard",
+			IndexDir:           "./data/indexes",
+			InitializationMode: "standard",
 			SearchTypeMapConfig: SearchTypeMapConfig{
 				TagNameToSearchTypeCode: map[string]index.SearchType{
-					"e":       2,
-					"p":       3,
-					"t":       4,
-					"a":       5,
-					"r":       6,
-					"subject": 7,
+					"e": 1,
+					"p": 2,
+					"a": 3,
+					"d": 4,
+					"P": 5,
+					"E": 6,
+					"A": 7,
+					"g": 8,
+					"t": 9,
+					"h": 10,
+					"i": 11,
+					"I": 12,
+					"k": 13,
+					"K": 14,
 				},
-				EnabledTags: []string{"e", "p", "t", "a", "r", "subject"},
-				LastRebuildEpoch:   0,
-				RebuildInProgress:  false,
+				EnabledTags:       []string{"e", "p", "a", "d", "P", "E", "A", "g", "t", "h", "i", "I", "k", "K"},
+				LastRebuildEpoch:  0,
+				RebuildInProgress: false,
 			},
 			CacheConfig: CacheConfig{
 				PrimaryIndexCacheMB:    50,
@@ -562,13 +561,13 @@ func DefaultConfig() *Config {
 				SearchIndexCacheMB:     100,
 				EvictionPolicy:         "lru",
 				CacheConcurrency:       16,
-	},
+			},
 		},
 		WALConfig: WALConfig{
 			WALDir:          "./data/wal",
 			SyncMode:        "batch",
 			BatchIntervalMs: 100,
-			BatchSizeBytes:  10485760, // 10 MB
+			BatchSizeBytes:  10485760,   // 10 MB
 			MaxSegmentSize:  1073741824, // 1 GB
 		},
 		CompactionConfig: CompactionConfig{

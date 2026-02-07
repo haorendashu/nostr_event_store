@@ -62,66 +62,78 @@ for i := 0; i < 20 && iter.Valid(); i++ {
 
 **名称**：`search.idx` 或 `idx_search`
 
-**Key**：`(kind: uint32, search_type: uint8, tag_value: variable, created_at: uint64)`
+**Key**：`(kind: uint32, search_type: uint8, tag_value: string, created_at: uint64)`
 
-**Value**：
-- **多值列表**：`[(segment_id, offset), ...]`
-- **单值**：可替换类型（仅保留最新）
+**Value**：`(segment_id: uint32, offset: uint32)` = 8 字节
+
+**注意**：所有 `tag_value` 字段都以 UTF-8 字符串存储。事件 ID 和 pubkey 是十六进制字符串，不是二进制格式。
 
 **用途**：
 - 将所有按 kind 的查询路径合并为一个索引
 - `search_type` **可配置**，非固定枚举；映射来自配置，变化需重建 `search.idx`
 
-**默认集合（Standard）**：
-- `TIME`（按 kind 时间线）
-- `e`、`p`、`t`
-- `a`、`r`、`subject`
-- `REPL`、`PREPL`
+**默认标签集合**：
+系统预设 14 种常用 Nostr 标签的 SearchType 映射（codes 1-14）：
+- `e` (1)：Event ID 引用（回复、引用）
+- `p` (2)：Pubkey 提及（标签、回复）
+- `a` (3)：可寻址事件引用（NIP-33: kind:pubkey:d-tag）
+- `d` (4)：参数化可替换事件标识符（NIP-33）
+- `P` (5)：委托的 Pubkey（NIP-26）
+- `E` (6)：线程根事件 ID（NIP-10）
+- `A` (7)：备用可寻址引用
+- `g` (8)：地理哈希（NIP-52）
+- `t` (9)：主题/标签标签
+- `h` (10)：内容哈希（文件元数据）
+- `i` (11)：外部身份引用（NIP-39）
+- `I` (12)：身份凭证（NIP-39）
+- `k` (13)：Kind 数字引用
+- `K` (14)：Kind 范围引用
+
+**保留 SearchType**：
+- **Code 0**：`SearchTypeInvalid`（未初始化/无效类型）
 
 **Key 编码**：
 ```
-Key = [4 B: kind] [1 B: search_type] [tag_value: var] [8 B: created_at]
+Key = [4 B: kind] [1 B: search_type] [N B: tag_value_utf8] [8 B: created_at]
 
-TIME:
-  tag_value = empty
+所有 tag_value 字段都是 UTF-8 字符串：
 
 e-tag:
-  tag_value = [32 B: event_id]
+  tag_value = event_id（64 字符十六进制字符串）
+  示例: "a1b2c3d4e5f6..."（64 字符）
 
 p-tag:
-  tag_value = [32 B: pubkey]
+  tag_value = pubkey（64 字符十六进制字符串）
+  示例: "1234567890ab..."（64 字符）
 
 t-tag:
-  tag_value = [N B: hashtag_utf8]
+  tag_value = hashtag（UTF-8 字符串）
+  示例: "bitcoin", "nostr"
 
 a-tag:
-  tag_value = [N B: "kind:pubkey:d"]
+  tag_value = 可寻址事件引用（UTF-8 字符串）
+  示例: "30023:author_pubkey:article_id"
 
-r-tag:
-  tag_value = [N B: url_utf8]
+d-tag:
+  tag_value = 标识符（UTF-8 字符串）
+  示例: "my-article", "profile-v2"
 
-subject-tag:
-  tag_value = [N B: subject_utf8]
+g-tag:
+  tag_value = 地理哈希（UTF-8 字符串）
+  示例: "9q8yy"
 
-REPL:
-  tag_value = [32 B: pubkey] [4 B: kind]
+h-tag:
+  tag_value = 内容哈希（UTF-8 字符串）
+  示例: "sha256:1234abcd..."
 
-PREPL:
-  tag_value = [32 B: pubkey] [4 B: kind] [4 B: d_len] [d_bytes]
+（其他所有标签都遵循相同的 UTF-8 字符串编码）
 ```
 
 **search_type 映射**：
-- `search_type` 是配置中分配的紧凑字节码
-- 映射存储在 `manifest.json` 并在重建时一致应用
+- `search_type` 是配置中分配的紧凑字节码（1-255，0 保留）
+- 映射存储在配置文件（如 `config.json`）并在启动时加载
 - 映射变化时必须重建 `search.idx`
-
-**B+Tree 存储**：
-- **叶子节点布局**：
-  ```
-  [key: var] [value_kind: 1 B] [value_count: uint32] [value_0: 8 B] ...
-  ```
-- `value_kind = 0`：单值；`value_kind = 1`：列表
-- 高扇出 tag 可溢写到 overflow 页
+- 所有标签值作为 UTF-8 字符串存储，避免类型转换错误
 
 **内存占用**：
 - 1M 事件约 60K–90K 叶子节点（取决于启用的 `search_type` 集合）
@@ -129,11 +141,6 @@ PREPL:
 
 **查询示例**：
 ```
-// kind=1 最新事件（TIME）
-key_min := (kind=1, TIME, empty, 0)
-key_max := (kind=1, TIME, empty, UINT64_MAX)
-iter := search.RangeDesc(key_max, key_min)
-
 // 回复事件（e-tag）
 key_min := (kind=1, e, event_id, 0)
 key_max := (kind=1, e, event_id, UINT64_MAX)
@@ -144,9 +151,10 @@ key_min := (kind=1, p, pubkey, 0)
 key_max := (kind=1, p, pubkey, UINT64_MAX)
 mentions := search.RangeDesc(key_max, key_min)
 
-// 最新用户资料（REPL）
-key := (kind=0, REPL, pubkey||kind, UINT64_MAX)
-loc := search.Get(key)
+// 地理标签（g-tag）
+key_min := (kind=1, g, geohash, 0)
+key_max := (kind=1, g, geohash, UINT64_MAX)
+geoEvents := search.Range(key_min, key_max)
 ```
 
 **优化**：由于 `created_at` 在 key 中，范围查询天然按时间排序，便于分页与“最新 N 条”。
@@ -178,7 +186,7 @@ loc := search.Get(key)
 
 - **entry_count**：键值对数量
 - **next_leaf_ptr**：下一个叶子偏移（0 表示无）
-- **Values**：可内联（8 B）或指向 overflow 页
+- **Values**：所有索引都使用 8 字节值（4 B segment_id + 4 B offset）
 
 ### 节点容纳量
 
@@ -192,11 +200,16 @@ Available: 4096 - 20 - 8 (checksum) = 4068 B
 Max entries: 4068 / 40 = ~101 entries per leaf
 ```
 
-**示例：搜索索引（TIME key，13 字节 key，8 字节 value）**
+**示例：搜索索引（可变长 tag key）**
 ```
-Entry size: 13 + 8 = 21 B
+Key 组成：kind (4 B) + search_type (1 B) + tag_value (变长) + created_at (8 B)
+短标签（如单字符 hashtag "t"）： 最小 key = 4 + 1 + 1 + 8 = 14 B
+事件 ID 标签（64 字符十六进制）： 最大key ≈ 4 + 1 + 64 + 8 = 77 B
+Value 大小：8 B
+
+典型平均 entry 大小：~30 B key + 8 B value = 38 B
 Available: 4068 B
-Max entries: 4068 / 21 = ~193 entries per leaf
+典型每叶条目数：4068 / 38 ≈ ~107 entries
 ```
 
 ---
@@ -265,10 +278,10 @@ for event := range incomingBatch {
 
 1. **主索引**：加入 `(id → location)`。
 2. **作者+时间**：加入 `(pubkey || created_at → location)`。
-3. **搜索索引**：按配置的 `search_type` 集合：
-  - `TIME`：加入 `(kind, TIME, empty, created_at → location)`。
-  - `e/p/t/a/r/subject`：加入 `(kind, type, tag_value, created_at → location)`。
-  - `REPL/PREPL`：使用替换键，若更新则覆盖并标记旧事件为 REPLACED。
+3. **搜索索引**：对于每个配置的 tag 类型（e, p, t, a, d 等）：
+   - 从事件的 tags 数组中提取标签值。
+   - 对每个标签值，添加 `(kind, search_type_code, tag_value, created_at → location)` 条目。
+   - 示例：事件包含 tags `[["e", "abc123"], ["p", "def456"]]` 会创建两个索引条目。
 
 所有更新先写入 **内存 B+Tree 节点**，在下一次批量 fsync 时落盘。
 

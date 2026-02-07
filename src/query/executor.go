@@ -189,55 +189,39 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 		return nil, fmt.Errorf("search index not available")
 	}
 
+	// Get SearchType code mapping
+	searchTypeCodes := index.DefaultSearchTypeCodes()
+
 	var results []types.RecordLocation
 
-	// For hashtags
-	for _, hashtag := range plan.filter.Hashtags {
-		// Build search key (kind + searchType + tagValue + created_at)
-		// Using kind=0, searchType for hashtag (t tag)
-		// This is a simplified version; real implementation would use proper SearchType codes
-		startKey := buildSearchKey(0, 4, hashtag, plan.filter.Since) // 4 = SearchType for "t"
-		endKey := buildSearchKey(0, 4, hashtag, plan.filter.Until)
-		if plan.filter.Until == 0 {
-			endKey = buildSearchKey(0, 4, hashtag, ^uint64(0))
-		}
-
-		iter, err := searchIdx.Range(ctx, startKey, endKey)
-		if err != nil {
+	// Process generic Tags map
+	for tagName, tagValues := range plan.filter.Tags {
+		searchType, ok := searchTypeCodes[tagName]
+		if !ok {
+			// Skip unmapped tag names
 			continue
 		}
 
-		// Collect results (may be multiple locations per search result)
-		for iter.Valid() {
-			results = append(results, iter.Value())
-			if err := iter.Next(); err != nil {
-				break
+		for _, tagValue := range tagValues {
+			startKey := buildSearchKey(0, uint8(searchType), tagValue, plan.filter.Since)
+			endKey := buildSearchKey(0, uint8(searchType), tagValue, plan.filter.Until)
+			if plan.filter.Until == 0 {
+				endKey = buildSearchKey(0, uint8(searchType), tagValue, ^uint64(0))
 			}
-		}
-		iter.Close()
-	}
 
-	// For PTags (mentions)
-	for _, pubkey := range plan.filter.PTags {
-		// Build search key for pubkey tags
-		startKey := buildSearchKey(0, 3, pubkeyToString(pubkey), plan.filter.Since) // 3 = SearchType for "p"
-		endKey := buildSearchKey(0, 3, pubkeyToString(pubkey), plan.filter.Until)
-		if plan.filter.Until == 0 {
-			endKey = buildSearchKey(0, 3, pubkeyToString(pubkey), ^uint64(0))
-		}
-
-		iter, err := searchIdx.Range(ctx, startKey, endKey)
-		if err != nil {
-			continue
-		}
-
-		for iter.Valid() {
-			results = append(results, iter.Value())
-			if err := iter.Next(); err != nil {
-				break
+			iter, err := searchIdx.Range(ctx, startKey, endKey)
+			if err != nil {
+				continue
 			}
+
+			for iter.Valid() {
+				results = append(results, iter.Value())
+				if err := iter.Next(); err != nil {
+					break
+				}
+			}
+			iter.Close()
 		}
-		iter.Close()
 	}
 
 	return results, nil
@@ -257,25 +241,25 @@ func buildAuthorTimeKey(pubkey [32]byte, timestamp uint64) []byte {
 // buildSearchKey builds a key for search index: kind (4) + searchType (1) + value (variable) + timestamp (8).
 func buildSearchKey(kind uint32, searchType byte, value string, timestamp uint64) []byte {
 	key := make([]byte, 4+1+len(value)+8)
-	
+
 	// Kind (big-endian)
 	key[0] = byte((kind >> 24) & 0xff)
 	key[1] = byte((kind >> 16) & 0xff)
 	key[2] = byte((kind >> 8) & 0xff)
 	key[3] = byte(kind & 0xff)
-	
+
 	// SearchType
 	key[4] = searchType
-	
+
 	// Value
 	copy(key[5:5+len(value)], []byte(value))
-	
+
 	// Timestamp (big-endian)
 	offset := 5 + len(value)
 	for i := 0; i < 8; i++ {
 		key[offset+7-i] = byte((timestamp >> (i * 8)) & 0xff)
 	}
-	
+
 	return key
 }
 

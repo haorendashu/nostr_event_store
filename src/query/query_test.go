@@ -95,12 +95,12 @@ func (mi *mockIndex) Stats() index.Stats {
 // mockIterator implements index.Iterator for testing.
 type mockIterator struct{}
 
-func (mi *mockIterator) Valid() bool                                { return false }
-func (mi *mockIterator) Key() []byte                               { return nil }
-func (mi *mockIterator) Value() types.RecordLocation               { return types.RecordLocation{} }
-func (mi *mockIterator) Next() error                               { return nil }
-func (mi *mockIterator) Prev() error                               { return nil }
-func (mi *mockIterator) Close() error                              { return nil }
+func (mi *mockIterator) Valid() bool                 { return false }
+func (mi *mockIterator) Key() []byte                 { return nil }
+func (mi *mockIterator) Value() types.RecordLocation { return types.RecordLocation{} }
+func (mi *mockIterator) Next() error                 { return nil }
+func (mi *mockIterator) Prev() error                 { return nil }
+func (mi *mockIterator) Close() error                { return nil }
 
 // mockStore implements storage.Store for testing.
 type mockStore struct {
@@ -264,35 +264,45 @@ func TestTagMatching(t *testing.T) {
 		{
 			name: "E tag match",
 			filter: &types.QueryFilter{
-				ETags: [][32]byte{etagID},
+				Tags: map[string][]string{
+					"e": {eventIDToString(etagID)},
+				},
 			},
 			match: true,
 		},
 		{
 			name: "E tag no match",
 			filter: &types.QueryFilter{
-				ETags: [][32]byte{{99, 99, 99}},
+				Tags: map[string][]string{
+					"e": {eventIDToString([32]byte{99, 99, 99})},
+				},
 			},
 			match: false,
 		},
 		{
 			name: "Hashtag match",
 			filter: &types.QueryFilter{
-				Hashtags: []string{"hello"},
+				Tags: map[string][]string{
+					"t": {"hello"},
+				},
 			},
 			match: true,
 		},
 		{
 			name: "Hashtag case insensitive",
 			filter: &types.QueryFilter{
-				Hashtags: []string{"HELLO"},
+				Tags: map[string][]string{
+					"t": {"HELLO"},
+				},
 			},
 			match: true,
 		},
 		{
 			name: "Hashtag no match",
 			filter: &types.QueryFilter{
-				Hashtags: []string{"notfound"},
+				Tags: map[string][]string{
+					"t": {"notfound"},
+				},
 			},
 			match: false,
 		},
@@ -329,16 +339,20 @@ func TestCompiler(t *testing.T) {
 		{
 			name: "Single event ID - use primary index",
 			filter: &types.QueryFilter{
-				ETags: [][32]byte{{1, 2, 3}},
+				Tags: map[string][]string{
+					"e": {eventIDToString([32]byte{1, 2, 3})},
+				},
 			},
 			strategy: "primary",
 		},
 		{
-			name: "Multiple ETags - use scan",
+			name: "Multiple ETags - use search",
 			filter: &types.QueryFilter{
-				ETags: [][32]byte{{1, 2, 3}, {4, 5, 6}},
+				Tags: map[string][]string{
+					"e": {eventIDToString([32]byte{1, 2, 3}), eventIDToString([32]byte{4, 5, 6})},
+				},
 			},
-			strategy: "scan",
+			strategy: "search",
 		},
 		{
 			name: "Author with time range - use author_time index",
@@ -351,21 +365,23 @@ func TestCompiler(t *testing.T) {
 		{
 			name: "Hashtag - use search index",
 			filter: &types.QueryFilter{
-				Hashtags: []string{"nostr"},
+				Tags: map[string][]string{
+					"t": {"nostr"},
+				},
 			},
 			strategy: "search",
 		},
 		{
-			name: "Invalid - no conditions and no limit",
-			filter: &types.QueryFilter{},
+			name:    "Invalid - no conditions and no limit",
+			filter:  &types.QueryFilter{},
 			wantErr: true,
 		},
 		{
 			name: "Invalid - since > until",
 			filter: &types.QueryFilter{
-				Since:  1000,
-				Until:  500,
-				Limit:  1,
+				Since: 1000,
+				Until: 500,
+				Limit: 1,
 			},
 			wantErr: true,
 		},
@@ -391,7 +407,7 @@ func TestCompiler(t *testing.T) {
 // Test: Executor with mock data
 func TestExecutor(t *testing.T) {
 	store := newMockStore()
-	
+
 	// Add some test events to the store
 	event1 := createTestEvent(
 		[32]byte{1},
@@ -596,7 +612,9 @@ func TestPlanDescription(t *testing.T) {
 			plan: &planImpl{
 				strategy: "search",
 				filter: &types.QueryFilter{
-					Hashtags: []string{"test"},
+					Tags: map[string][]string{
+						"t": {"test"},
+					},
 				},
 			},
 			contains: "SearchIndexScan",

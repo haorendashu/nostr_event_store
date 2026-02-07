@@ -24,36 +24,28 @@ type SearchType uint8
 const (
 	// SearchTypeInvalid (code 0) represents an uninitialized/invalid search type.
 	SearchTypeInvalid SearchType = 0
-
-	// SearchTypeTime (code 1) represents kind-based time ordering.
-	// Used for queries like "all kind 1 events ordered by created_at".
-	// Key format: (kind, TIME_CODE, empty, created_at)
-	SearchTypeTime SearchType = 1
-
-	// SearchTypeReplaceable (code 254) represents replaceable event lookup (REPL).
-	// Used for NIP-01 replaceable events (kinds 0, 3, 10000-19999).
-	// Key format: (kind, REPL_CODE, empty, created_at)
-	SearchTypeReplaceable SearchType = 254
-
-	// SearchTypeParameterizedReplaceable (code 255) represents parameterized replaceable event lookup (PREPL).
-	// Used for NIP-33 parameterized replaceable events (kinds 30000-39999).
-	// Key format: (kind, PREPL_CODE, d-tag-value, created_at)
-	SearchTypeParameterizedReplaceable SearchType = 255
 )
 
-// DefaultSearchTypeCodes returns the standard search type code mappings.
-// Users can override these in manifest.json config.
-// Returns a map: tag_name -> SearchType code
-// Example: "e" -> 2, "p" -> 3, "t" -> 4, "a" -> 5, "r" -> 6, "subject" -> 7
+// DefaultSearchTypeCodes returns the default search type code mappings for 14 common Nostr tags.
+// Users can override these in configuration.
+// Returns a map: tag_name -> SearchType code (1-14)
+// All tag values are treated as strings for simplicity.
 func DefaultSearchTypeCodes() map[string]SearchType {
 	return map[string]SearchType{
-		"e":       2,  // Event references (replies)
-		"p":       3,  // Person/pubkey mentions
-		"t":       4,  // Hashtags
-		"a":       5,  // Addressable event references
-		"r":       6,  // URL references
-		"subject": 7,  // Subject tag (thread subjects)
-		// Note: TIME, REPL, PREPL are reserved and cannot be remapped
+		"e": 1,  // Event ID references (replies, quotes)
+		"p": 2,  // Pubkey mentions (tags, replies)
+		"a": 3,  // Addressable event references (NIP-33: kind:pubkey:d-tag)
+		"d": 4,  // Identifier for parameterized replaceable events (NIP-33)
+		"P": 5,  // Pubkey for delegation (NIP-26)
+		"E": 6,  // Event ID for threading root (NIP-10)
+		"A": 7,  // Alternative addressable reference
+		"g": 8,  // Geohash for location-based events (NIP-52)
+		"t": 9,  // Topic/hashtag for categorization
+		"h": 10, // Content hash for file metadata
+		"i": 11, // External identity reference (NIP-39)
+		"I": 12, // Identity proof (NIP-39)
+		"k": 13, // Kind number reference
+		"K": 14, // Kind range reference
 	}
 }
 
@@ -239,7 +231,6 @@ type BTreeConfig struct {
 	// Reduces fragmentation but increases occasional latency.
 	AllowOverflow bool
 }
-
 
 // KeyBuilder provides helper methods for constructing index keys.
 // Used by callers to build type-safe keys for their queries.

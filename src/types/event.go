@@ -2,6 +2,7 @@
 package types
 
 import (
+	"encoding/hex"
 	"time"
 )
 
@@ -199,20 +200,75 @@ type QueryFilter struct {
 	// Limit is the maximum number of events to return. If 0, no limit.
 	Limit int
 
-	// ETags is a list of event IDs to filter by (events with matching "e" tags).
-	// If nil/empty, no "e" tag filtering.
-	ETags [][32]byte
-
-	// PTags is a list of pubkeys to filter by (events with matching "p" tags).
-	// If nil/empty, no "p" tag filtering.
-	PTags [][32]byte
-
-	// Hashtags is a list of hashtags to filter by (events with matching "t" tags).
-	// If nil/empty, no hashtag filtering.
-	Hashtags []string
+	// Tags is a generic map for filtering by any tag type.
+	// Key is the tag name (e.g., "e", "p", "t", "a", "d", etc.)
+	// Value is a list of tag values to match (any match satisfies the filter).
+	// Example: Tags["e"] = []string{"event_id_hex1", "event_id_hex2"}
+	// This is the recommended way to query tags in new code.
+	Tags map[string][]string
 
 	// Search is a free-form search string. Filtering by search is optional and may not be supported.
 	Search string
+}
+
+// AddTag adds tag values to the Tags map. Creates the map if nil.
+// This is a convenience method for building filters programmatically.
+func (f *QueryFilter) AddTag(tagName string, values ...string) {
+	if f.Tags == nil {
+		f.Tags = make(map[string][]string)
+	}
+	f.Tags[tagName] = append(f.Tags[tagName], values...)
+}
+
+// GetTag retrieves tag values from the Tags map.
+// Returns nil if the tag is not present.
+func (f *QueryFilter) GetTag(tagName string) []string {
+	if f.Tags == nil {
+		return nil
+	}
+	return f.Tags[tagName]
+}
+
+// SetETags sets "e" tag values from a legacy ETags byte array.
+// Deprecated: Direct use of Tags["e"] is preferred.
+func (f *QueryFilter) SetETags(etags [][32]byte) {
+	if len(etags) == 0 {
+		return
+	}
+	if f.Tags == nil {
+		f.Tags = make(map[string][]string)
+	}
+	f.Tags["e"] = make([]string, len(etags))
+	for i, etag := range etags {
+		f.Tags["e"][i] = hex.EncodeToString(etag[:])
+	}
+}
+
+// SetPTags sets "p" tag values from a legacy PTags byte array.
+// Deprecated: Direct use of Tags["p"] is preferred.
+func (f *QueryFilter) SetPTags(ptags [][32]byte) {
+	if len(ptags) == 0 {
+		return
+	}
+	if f.Tags == nil {
+		f.Tags = make(map[string][]string)
+	}
+	f.Tags["p"] = make([]string, len(ptags))
+	for i, ptag := range ptags {
+		f.Tags["p"][i] = hex.EncodeToString(ptag[:])
+	}
+}
+
+// SetHashtags sets "t" tag values from a legacy Hashtags string array.
+// Deprecated: Direct use of Tags["t"] is preferred.
+func (f *QueryFilter) SetHashtags(hashtags []string) {
+	if len(hashtags) == 0 {
+		return
+	}
+	if f.Tags == nil {
+		f.Tags = make(map[string][]string)
+	}
+	f.Tags["t"] = append([]string{}, hashtags...)
 }
 
 // Timestamp is a convenience type alias for UNIX timestamps used in events.
