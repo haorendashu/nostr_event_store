@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"nostr_event_store/src/compaction"
@@ -401,30 +402,57 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		return nil, fmt.Errorf("wal batch write: %w", err)
 	}
 
-	// Step 4: Batch storage write
+	// Step 4: Batch storage write with segment rotation handling
 	locations := make([]types.RecordLocation, len(events))
-	segment, err := e.storage.SegmentManager().CurrentSegment(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get current segment: %w", err)
-	}
+	storedLocations := make([]types.RecordLocation, 0, len(uniqueEvents))
 
-	// Check if we need to rotate segment
-	if segment.IsFull() {
-		segment, err = e.storage.SegmentManager().RotateSegment(ctx)
+	// Process records, handling segment rotation as needed
+	remainingRecords := records
+	for len(remainingRecords) > 0 {
+		segment, err := e.storage.SegmentManager().CurrentSegment(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("rotate segment: %w", err)
+			return nil, fmt.Errorf("get current segment: %w", err)
 		}
-	}
 
-	// Use batch append on segment
-	storedLocations, err := segment.AppendBatch(ctx, records)
-	if err != nil {
-		return nil, fmt.Errorf("storage batch append: %w", err)
+		// Check if we need to rotate segment
+		if segment.IsFull() {
+			segment, err = e.storage.SegmentManager().RotateSegment(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("rotate segment: %w", err)
+			}
+		}
+
+		// Try to append as many records as possible to current segment
+		batchLocations, err := segment.AppendBatch(ctx, remainingRecords)
+
+		// We got some successful locations
+		storedLocations = append(storedLocations, batchLocations...)
+
+		if err != nil {
+			// If segment is full, rotate and continue with remaining records
+			if strings.Contains(err.Error(), "segment full") {
+				// Calculate how many records were successfully written
+				numWritten := len(batchLocations)
+				if numWritten > 0 {
+					// Remove successfully written records from remaining
+					remainingRecords = remainingRecords[numWritten:]
+					// Continue loop to rotate and write remaining records
+					continue
+				}
+			}
+			// Other errors should fail the batch
+			return nil, fmt.Errorf("storage batch append: %w", err)
+		}
+
+		// All remaining records were written successfully
+		break
 	}
 
 	// Map locations back to original indices
 	for i, uniqueIdx := range uniqueIndices {
-		locations[uniqueIdx] = storedLocations[i]
+		if i < len(storedLocations) {
+			locations[uniqueIdx] = storedLocations[i]
+		}
 	}
 
 	// Step 5: Batch index updates
