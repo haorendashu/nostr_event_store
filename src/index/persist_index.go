@@ -20,15 +20,20 @@ type PersistentBTreeIndex struct {
 	closed bool
 }
 
-// NewPersistentBTreeIndex creates a new persistent B+Tree index
+// NewPersistentBTreeIndex creates a new persistent B+Tree index for the primary index type.
 func NewPersistentBTreeIndex(path string, config Config) (*PersistentBTreeIndex, error) {
+	return NewPersistentBTreeIndexWithType(path, config, indexTypePrimary)
+}
+
+// NewPersistentBTreeIndexWithType creates a new persistent B+Tree index with a specific index type.
+func NewPersistentBTreeIndexWithType(path string, config Config, indexType uint32) (*PersistentBTreeIndex, error) {
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
 
 	// Open or create index file
-	file, err := openIndexFile(path, indexTypePrimary, config.PageSize, true)
+	file, err := openIndexFile(path, indexType, config.PageSize, true)
 	if err != nil {
 		return nil, err
 	}

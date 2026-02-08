@@ -187,12 +187,14 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 	default:
 	}
 
+	path := []pathEntry{}
 	node, err := t.loadNode(t.root)
 	if err != nil {
 		return err
 	}
 	for !node.isLeaf() {
 		idx := searchKeyIndex(node.keys, key)
+		path = append(path, pathEntry{node: node, index: idx})
 		node, err = t.loadNode(node.children[idx])
 		if err != nil {
 			return err
@@ -202,17 +204,238 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 	idx := sort.Search(len(node.keys), func(i int) bool {
 		return compareKeys(node.keys[i], key) >= 0
 	})
-	if idx < len(node.keys) && compareKeys(node.keys[idx], key) == 0 {
-		node.keys = append(node.keys[:idx], node.keys[idx+1:]...)
-		node.values = append(node.values[:idx], node.values[idx+1:]...)
-		node.dirty = true
-		t.cache.markDirty(node)
-		// Entry was deleted
-		if atomic.LoadUint64(&t.entryCount) > 0 {
-			atomic.AddUint64(&t.entryCount, ^uint64(0)) // decrement
+	if idx >= len(node.keys) || compareKeys(node.keys[idx], key) != 0 {
+		return nil
+	}
+
+	node.keys = append(node.keys[:idx], node.keys[idx+1:]...)
+	node.values = append(node.values[:idx], node.values[idx+1:]...)
+	node.dirty = true
+	t.cache.markDirty(node)
+	// Entry was deleted
+	if atomic.LoadUint64(&t.entryCount) > 0 {
+		atomic.AddUint64(&t.entryCount, ^uint64(0)) // decrement
+	}
+
+	// Update parent separator if we removed the first key of this leaf
+	if idx == 0 && len(path) > 0 && len(node.keys) > 0 {
+		parentEntry := path[len(path)-1]
+		if parentEntry.index > 0 {
+			parent := parentEntry.node
+			parent.keys[parentEntry.index-1] = parent.cloneKey(node.keys[0])
+			parent.dirty = true
+			t.cache.markDirty(parent)
 		}
 	}
+
+	child := node
+	for i := len(path) - 1; i >= 0; i-- {
+		parent := path[i].node
+		childIndex := path[i].index
+		if !t.isUnderflow(child) {
+			break
+		}
+		var merged bool
+		child, merged, err = t.rebalanceAfterDelete(parent, child, childIndex)
+		if err != nil {
+			return err
+		}
+		if !merged {
+			break
+		}
+		child = parent
+	}
+
+	rootNode, err := t.loadNode(t.root)
+	if err != nil {
+		return err
+	}
+	if !rootNode.isLeaf() && len(rootNode.keys) == 0 && len(rootNode.children) == 1 {
+		newRoot := rootNode.children[0]
+		t.root = newRoot
+		t.file.header.RootOffset = newRoot
+		if err := t.file.syncHeader(); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+func (t *btree) minNodeSize() int {
+	return int(t.pageSize) / 2
+}
+
+func (t *btree) nodeSize(node *btreeNode) int {
+	if node.isLeaf() {
+		return node.leafSize(t.pageSize)
+	}
+	return node.internalSize(t.pageSize)
+}
+
+func (t *btree) isUnderflow(node *btreeNode) bool {
+	if node.offset == t.root {
+		return false
+	}
+	return t.nodeSize(node) < t.minNodeSize()
+}
+
+func removeKeyAt(keys [][]byte, idx int) [][]byte {
+	return append(keys[:idx], keys[idx+1:]...)
+}
+
+func removeChildAt(children []uint64, idx int) []uint64 {
+	return append(children[:idx], children[idx+1:]...)
+}
+
+func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childIndex int) (*btreeNode, bool, error) {
+	if !t.isUnderflow(child) {
+		return child, false, nil
+	}
+
+	var left *btreeNode
+	var right *btreeNode
+	var err error
+	if childIndex > 0 {
+		left, err = t.loadNode(parent.children[childIndex-1])
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if childIndex+1 < len(parent.children) {
+		right, err = t.loadNode(parent.children[childIndex+1])
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	minSize := t.minNodeSize()
+	// Borrow from left sibling
+	if left != nil && t.nodeSize(left) > minSize && len(left.keys) > 1 {
+		if child.isLeaf() {
+			lastKey := left.keys[len(left.keys)-1]
+			lastVal := left.values[len(left.values)-1]
+			left.keys = left.keys[:len(left.keys)-1]
+			left.values = left.values[:len(left.values)-1]
+
+			child.keys = append([][]byte{lastKey}, child.keys...)
+			child.values = append([]types.RecordLocation{lastVal}, child.values...)
+			parent.keys[childIndex-1] = child.cloneKey(child.keys[0])
+		} else {
+			lastKey := left.keys[len(left.keys)-1]
+			lastChild := left.children[len(left.children)-1]
+			left.keys = left.keys[:len(left.keys)-1]
+			left.children = left.children[:len(left.children)-1]
+
+			sepKey := parent.keys[childIndex-1]
+			child.keys = append([][]byte{sepKey}, child.keys...)
+			child.children = append([]uint64{lastChild}, child.children...)
+			parent.keys[childIndex-1] = child.cloneKey(lastKey)
+		}
+
+		left.dirty = true
+		child.dirty = true
+		parent.dirty = true
+		t.cache.markDirty(left)
+		t.cache.markDirty(child)
+		t.cache.markDirty(parent)
+		return child, false, nil
+	}
+
+	// Borrow from right sibling
+	if right != nil && t.nodeSize(right) > minSize && len(right.keys) > 1 {
+		if child.isLeaf() {
+			firstKey := right.keys[0]
+			firstVal := right.values[0]
+			right.keys = right.keys[1:]
+			right.values = right.values[1:]
+
+			child.keys = append(child.keys, firstKey)
+			child.values = append(child.values, firstVal)
+			parent.keys[childIndex] = child.cloneKey(right.keys[0])
+		} else {
+			firstKey := right.keys[0]
+			firstChild := right.children[0]
+			right.keys = right.keys[1:]
+			right.children = right.children[1:]
+
+			sepKey := parent.keys[childIndex]
+			child.keys = append(child.keys, sepKey)
+			child.children = append(child.children, firstChild)
+			parent.keys[childIndex] = child.cloneKey(firstKey)
+		}
+
+		right.dirty = true
+		child.dirty = true
+		parent.dirty = true
+		t.cache.markDirty(right)
+		t.cache.markDirty(child)
+		t.cache.markDirty(parent)
+		return child, false, nil
+	}
+
+	// Merge with left sibling if available, otherwise with right
+	if left != nil {
+		if child.isLeaf() {
+			left.keys = append(left.keys, child.keys...)
+			left.values = append(left.values, child.values...)
+			left.next = child.next
+			if child.next != 0 {
+				nextNode, err := t.loadNode(child.next)
+				if err != nil {
+					return nil, false, err
+				}
+				nextNode.prev = left.offset
+				nextNode.dirty = true
+				t.cache.markDirty(nextNode)
+			}
+		} else {
+			sepKey := parent.keys[childIndex-1]
+			left.keys = append(left.keys, sepKey)
+			left.keys = append(left.keys, child.keys...)
+			left.children = append(left.children, child.children...)
+		}
+
+		parent.keys = removeKeyAt(parent.keys, childIndex-1)
+		parent.children = removeChildAt(parent.children, childIndex)
+		left.dirty = true
+		parent.dirty = true
+		t.cache.markDirty(left)
+		t.cache.markDirty(parent)
+		return parent, true, nil
+	}
+
+	if right != nil {
+		if child.isLeaf() {
+			child.keys = append(child.keys, right.keys...)
+			child.values = append(child.values, right.values...)
+			child.next = right.next
+			if right.next != 0 {
+				nextNode, err := t.loadNode(right.next)
+				if err != nil {
+					return nil, false, err
+				}
+				nextNode.prev = child.offset
+				nextNode.dirty = true
+				t.cache.markDirty(nextNode)
+			}
+		} else {
+			sepKey := parent.keys[childIndex]
+			child.keys = append(child.keys, sepKey)
+			child.keys = append(child.keys, right.keys...)
+			child.children = append(child.children, right.children...)
+		}
+
+		parent.keys = removeKeyAt(parent.keys, childIndex)
+		parent.children = removeChildAt(parent.children, childIndex+1)
+		child.dirty = true
+		parent.dirty = true
+		t.cache.markDirty(child)
+		t.cache.markDirty(parent)
+		return parent, true, nil
+	}
+
+	return child, false, nil
 }
 
 func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, desc bool) (Iterator, error) {
