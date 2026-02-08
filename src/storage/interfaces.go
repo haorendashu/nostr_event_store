@@ -98,6 +98,13 @@ type Segment interface {
 	// May fail if segment is full or in read-only mode.
 	Append(ctx context.Context, record *Record) (types.RecordLocation, error)
 
+	// AppendBatch appends multiple records to this segment and returns their locations.
+	// More efficient than calling Append repeatedly as it acquires lock once.
+	// Returns partial results if some records succeed before failure.
+	// May fail if segment becomes full during batch operation.
+	// ctx is used for cancellation and timeouts.
+	AppendBatch(ctx context.Context, records []*Record) ([]types.RecordLocation, error)
+
 	// Read reads the record at the given location.
 	// The location must have been produced by a previous Append call.
 	// ctx is used for cancellation and timeouts.

@@ -15,14 +15,14 @@ import (
 // FileSegment implements Segment interface with file-based storage.
 // Supports transparent multi-page record handling.
 type FileSegment struct {
-	id           uint32
-	file         *os.File
-	pageSize     uint32
-	maxSize      uint64
-	currentSize  uint64
-	nextOffset   uint32
-	isReadOnly   bool
-	mu           sync.RWMutex
+	id          uint32
+	file        *os.File
+	pageSize    uint32
+	maxSize     uint64
+	currentSize uint64
+	nextOffset  uint32
+	isReadOnly  bool
+	mu          sync.RWMutex
 }
 
 // NewFileSegment creates a new file-based segment.
@@ -113,6 +113,65 @@ func (s *FileSegment) Append(ctx context.Context, record *Record) (types.RecordL
 	}
 
 	return location, nil
+}
+
+// AppendBatch appends multiple records to the segment efficiently.
+func (s *FileSegment) AppendBatch(ctx context.Context, records []*Record) ([]types.RecordLocation, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	if s.isReadOnly {
+		return nil, fmt.Errorf("segment is read-only")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Pre-allocate locations
+	locations := make([]types.RecordLocation, 0, len(records))
+
+	// Process each record
+	for i, record := range records {
+		// Check if segment is full
+		estimatedSize := uint64(record.Length)
+		if record.Flags.IsContinued() {
+			estimatedSize += uint64(record.ContinuationCount) * 6
+		}
+
+		if s.currentSize+estimatedSize > s.maxSize {
+			// Return partial results if we've written some records
+			if i > 0 {
+				return locations, fmt.Errorf("segment full after %d records", i)
+			}
+			return nil, fmt.Errorf("segment full")
+		}
+
+		location := types.RecordLocation{
+			SegmentID: s.id,
+			Offset:    s.nextOffset,
+		}
+
+		// Write the record (single-page or multi-page)
+		var err error
+		if record.Flags.IsContinued() {
+			err = s.writeMultiPageRecord(record)
+		} else {
+			err = s.writeSinglePageRecord(record)
+		}
+
+		if err != nil {
+			// Return partial results if we've written some records
+			if i > 0 {
+				return locations, fmt.Errorf("write record %d: %w", i, err)
+			}
+			return nil, fmt.Errorf("write record: %w", err)
+		}
+
+		locations = append(locations, location)
+	}
+
+	return locations, nil
 }
 
 // Read reads a record from the segment.
@@ -207,7 +266,7 @@ func (s *FileSegment) writeMultiPageRecord(record *Record) error {
 	// record.Data already contains the full event data starting from record_len
 
 	firstPageData := make([]byte, s.pageSize)
-	
+
 	// Copy first page data from record.Data (includes record_len, record_flags, continuation_count)
 	firstChunkLen := s.pageSize
 	if firstChunkLen > uint32(len(record.Data)) {
@@ -226,28 +285,28 @@ func (s *FileSegment) writeMultiPageRecord(record *Record) error {
 	// Write continuation pages
 	for i := uint16(0); i < record.ContinuationCount; i++ {
 		contPage := make([]byte, s.pageSize)
-		
+
 		// magic(4) = 0x434F4E54 ('CONT')
 		binary.BigEndian.PutUint32(contPage[0:4], ContinuationMagic)
-		
+
 		// Calculate chunk length for this page
 		remainingData := uint32(len(record.Data)) - dataOffset
 		chunkLen := s.pageSize - 6 // magic(4) + chunk_len(2)
 		if chunkLen > remainingData {
 			chunkLen = remainingData
 		}
-		
+
 		// chunk_len(2)
 		binary.BigEndian.PutUint16(contPage[4:6], uint16(chunkLen))
-		
+
 		// chunk_data
 		copy(contPage[6:], record.Data[dataOffset:dataOffset+chunkLen])
-		
+
 		// Write continuation page
 		if _, err := s.file.WriteAt(contPage, int64(currentOffset)); err != nil {
 			return fmt.Errorf("write continuation page %d: %w", i, err)
 		}
-		
+
 		currentOffset += s.pageSize
 		dataOffset += chunkLen
 	}
@@ -288,14 +347,14 @@ func (s *FileSegment) readMultiPageRecord(offset, length uint32, flags types.Eve
 
 	// Allocate full record buffer
 	fullData := make([]byte, length)
-	
+
 	// Copy header from first page
 	copy(fullData[0:7], firstPage[0:7])
-	
+
 	// Copy first chunk
 	firstChunkLen := s.pageSize - 7
 	copy(fullData[7:], firstPage[7:])
-	
+
 	dataOffset := 7 + firstChunkLen
 	currentOffset := offset + s.pageSize
 
@@ -309,7 +368,7 @@ func (s *FileSegment) readMultiPageRecord(offset, length uint32, flags types.Eve
 		// Validate magic
 		magic := binary.BigEndian.Uint32(contPage[0:4])
 		if magic != ContinuationMagic {
-			return nil, fmt.Errorf("invalid continuation magic at offset %d: got 0x%X, expected 0x%X", 
+			return nil, fmt.Errorf("invalid continuation magic at offset %d: got 0x%X, expected 0x%X",
 				currentOffset, magic, ContinuationMagic)
 		}
 
@@ -337,28 +396,28 @@ func (s *FileSegment) readMultiPageRecord(offset, length uint32, flags types.Eve
 // initHeaderPage initializes a new segment header page.
 func (s *FileSegment) initHeaderPage() error {
 	header := make([]byte, s.pageSize)
-	
+
 	// magic (0x4E535452 'NSTR')
 	binary.BigEndian.PutUint32(header[0:4], 0x4E535452)
-	
+
 	// page_size
 	binary.BigEndian.PutUint32(header[4:8], s.pageSize)
-	
+
 	// created_at
 	binary.BigEndian.PutUint64(header[8:16], uint64(types.Now()))
-	
+
 	// segment_id
 	binary.BigEndian.PutUint32(header[16:20], s.id)
-	
+
 	// num_records (initially 0)
 	binary.BigEndian.PutUint32(header[20:24], 0)
-	
+
 	// next_free_offset
 	binary.BigEndian.PutUint32(header[24:28], s.pageSize)
-	
+
 	// version
 	binary.BigEndian.PutUint32(header[28:32], 1)
-	
+
 	// compaction_marker
 	binary.BigEndian.PutUint64(header[32:40], 0)
 
@@ -391,12 +450,12 @@ func (s *FileSegment) loadHeader() error {
 
 // FileSegmentManager implements SegmentManager interface.
 type FileSegmentManager struct {
-	dir           string
-	pageSize      uint32
+	dir            string
+	pageSize       uint32
 	maxSegmentSize uint64
-	segments      map[uint32]*FileSegment
-	currentSegID  uint32
-	mu            sync.RWMutex
+	segments       map[uint32]*FileSegment
+	currentSegID   uint32
+	mu             sync.RWMutex
 }
 
 // NewFileSegmentManager creates a new file-based segment manager.

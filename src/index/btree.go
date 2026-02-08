@@ -6,6 +6,7 @@ package index
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -40,6 +41,32 @@ func (i *BTreeIndex) Insert(ctx context.Context, key []byte, value types.RecordL
 	return nil
 }
 
+// InsertBatch adds multiple entries to the index efficiently.
+func (i *BTreeIndex) InsertBatch(ctx context.Context, keys [][]byte, values []types.RecordLocation) error {
+	if len(keys) != len(values) {
+		return fmt.Errorf("keys and values length mismatch: %d != %d", len(keys), len(values))
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	for idx, key := range keys {
+		i.data[string(key)] = values[idx]
+	}
+
+	return nil
+}
+
 // Get retrieves the location of an event by exact key match.
 func (i *BTreeIndex) Get(ctx context.Context, key []byte) (types.RecordLocation, bool, error) {
 	select {
@@ -52,6 +79,33 @@ func (i *BTreeIndex) Get(ctx context.Context, key []byte) (types.RecordLocation,
 	defer i.mu.RUnlock()
 	loc, ok := i.data[string(key)]
 	return loc, ok, nil
+}
+
+// GetBatch retrieves locations for multiple keys efficiently.
+func (i *BTreeIndex) GetBatch(ctx context.Context, keys [][]byte) ([]types.RecordLocation, []bool, error) {
+	if len(keys) == 0 {
+		return nil, nil, nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	default:
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	locations := make([]types.RecordLocation, len(keys))
+	found := make([]bool, len(keys))
+
+	for idx, key := range keys {
+		loc, ok := i.data[string(key)]
+		locations[idx] = loc
+		found[idx] = ok
+	}
+
+	return locations, found, nil
 }
 
 // Range performs a range query, returning an iterator over all entries with keys in [minKey, maxKey].

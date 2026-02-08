@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -72,6 +73,56 @@ func (idx *PersistentBTreeIndex) Get(ctx context.Context, key []byte) (types.Rec
 		return types.RecordLocation{}, false, errors.ErrIndexClosed
 	}
 	return idx.tree.get(ctx, key)
+}
+
+// GetBatch retrieves locations for multiple keys efficiently
+func (idx *PersistentBTreeIndex) GetBatch(ctx context.Context, keys [][]byte) ([]types.RecordLocation, []bool, error) {
+	if idx.closed {
+		return nil, nil, errors.ErrIndexClosed
+	}
+
+	if len(keys) == 0 {
+		return nil, nil, nil
+	}
+
+	locations := make([]types.RecordLocation, len(keys))
+	found := make([]bool, len(keys))
+
+	for i, key := range keys {
+		loc, ok, err := idx.tree.get(ctx, key)
+		if err != nil {
+			return nil, nil, err
+		}
+		locations[i] = loc
+		found[i] = ok
+	}
+
+	return locations, found, nil
+}
+
+// InsertBatch adds multiple key-value pairs to the index efficiently
+func (idx *PersistentBTreeIndex) InsertBatch(ctx context.Context, keys [][]byte, values []types.RecordLocation) error {
+	if idx.closed {
+		return errors.ErrIndexClosed
+	}
+
+	if len(keys) != len(values) {
+		return fmt.Errorf("keys and values length mismatch: %d != %d", len(keys), len(values))
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// Insert all entries individually
+	// TODO: Could be optimized with bulk loading for sorted keys
+	for i := range keys {
+		if err := idx.tree.insert(ctx, keys[i], values[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Range returns an iterator for keys in [minKey, maxKey)

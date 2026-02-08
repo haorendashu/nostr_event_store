@@ -58,11 +58,23 @@ type Index interface {
 	// Returns error if the insert fails.
 	Insert(ctx context.Context, key []byte, value types.RecordLocation) error
 
+	// InsertBatch adds multiple entries to the index efficiently.
+	// More efficient than calling Insert repeatedly as it minimizes lock overhead.
+	// Returns nil on success, or error if any insert fails.
+	// ctx is used for cancellation and timeouts.
+	InsertBatch(ctx context.Context, keys [][]byte, values []types.RecordLocation) error
+
 	// Get retrieves the location of an event by exact key match.
 	// Returns (location, true) if found, (zero-value, false) if not found.
 	// For multi-value types (e.g., e-tag replies), returns one location (typically the most recent).
 	// ctx is used for cancellation and timeouts.
 	Get(ctx context.Context, key []byte) (types.RecordLocation, bool, error)
+
+	// GetBatch retrieves locations for multiple keys efficiently.
+	// Returns parallel slices of locations and found flags.
+	// If a key is not found, its found flag is false and location is zero-value.
+	// ctx is used for cancellation and timeouts.
+	GetBatch(ctx context.Context, keys [][]byte) ([]types.RecordLocation, []bool, error)
 
 	// Range performs a range query, returning an iterator over all entries with keys in [minKey, maxKey].
 	// The iterator returns entries in key order (ascending).

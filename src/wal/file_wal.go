@@ -172,6 +172,64 @@ func (w *FileWriter) Write(ctx context.Context, entry *Entry) (LSN, error) {
 	return entry.LSN, nil
 }
 
+// WriteBatch appends multiple entries to the WAL atomically.
+func (w *FileWriter) WriteBatch(ctx context.Context, entries []*Entry) ([]LSN, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return nil, fmt.Errorf("WAL not initialized")
+	}
+
+	// Pre-allocate result slice
+	lsns := make([]LSN, 0, len(entries))
+
+	// Calculate total size needed and assign LSNs
+	now := types.Now()
+	totalSize := 0
+	for _, entry := range entries {
+		w.lastLSN++
+		entry.LSN = w.lastLSN
+		if entry.Timestamp == 0 {
+			entry.Timestamp = now
+		}
+		// Estimate size (header + data + checksum)
+		totalSize += 1 + 8 + 8 + 4 + len(entry.EventDataOrMetadata) + 8
+	}
+
+	// Ensure buffer capacity
+	if err := w.ensureCapacityLocked(totalSize); err != nil {
+		return nil, err
+	}
+
+	// Check if we need to flush before adding more
+	if int64(len(w.buffer))+int64(totalSize) > int64(w.cfg.BatchSizeBytes) && w.cfg.SyncMode == "batch" {
+		if err := w.flushLocked(); err != nil {
+			return nil, fmt.Errorf("flush before write: %w", err)
+		}
+	}
+
+	// Serialize all entries into buffer
+	for _, entry := range entries {
+		data := w.serializeEntry(entry)
+		w.buffer = append(w.buffer, data...)
+		lsns = append(lsns, entry.LSN)
+	}
+
+	// Flush immediately if sync mode is "always"
+	if w.cfg.SyncMode == "always" {
+		if err := w.flushLocked(); err != nil {
+			return lsns, fmt.Errorf("flush: %w", err)
+		}
+	}
+
+	return lsns, nil
+}
+
 // Flush commits all buffered entries to disk.
 func (w *FileWriter) Flush(ctx context.Context) error {
 	w.mu.Lock()

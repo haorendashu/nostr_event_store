@@ -91,6 +91,13 @@ type Writer interface {
 	// ctx is used for cancellation and timeouts.
 	Write(ctx context.Context, entry *Entry) (LSN, error)
 
+	// WriteBatch appends multiple entries to the WAL and returns their LSNs.
+	// This is more efficient than calling Write multiple times as it minimizes lock overhead
+	// and batches serialization operations. LSNs are assigned sequentially.
+	// If any entry fails validation or serialization, returns partial results and error.
+	// ctx is used for cancellation and timeouts.
+	WriteBatch(ctx context.Context, entries []*Entry) ([]LSN, error)
+
 	// Flush commits all buffered entries to disk (calls fsync).
 	// After Flush returns, all previous entries are crash-safe.
 	// ctx is used for cancellation and timeouts.

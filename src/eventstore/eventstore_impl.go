@@ -302,7 +302,9 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 	return loc, nil
 }
 
-// WriteEvents writes multiple events in a batch.
+// WriteEvents writes multiple events in a batch with optimized performance.
+// This implementation uses sub-batching, batch deduplication, and batch operations
+// across WAL, storage, and index layers for significant performance improvements.
 func (e *eventStoreImpl) WriteEvents(ctx context.Context, events []*types.Event) ([]types.RecordLocation, error) {
 	e.mu.RLock()
 	if !e.opened {
@@ -319,15 +321,169 @@ func (e *eventStoreImpl) WriteEvents(ctx context.Context, events []*types.Event)
 		return []types.RecordLocation{}, nil
 	}
 
-	locations := make([]types.RecordLocation, 0, len(events))
+	// Process events in sub-batches to control memory usage
+	const subBatchSize = 1000
+	allLocations := make([]types.RecordLocation, 0, len(events))
 
-	// Write each event
-	for _, event := range events {
-		loc, err := e.WriteEvent(ctx, event)
-		if err != nil {
-			return nil, fmt.Errorf("write event %x: %w", event.ID, err)
+	for batchStart := 0; batchStart < len(events); batchStart += subBatchSize {
+		batchEnd := batchStart + subBatchSize
+		if batchEnd > len(events) {
+			batchEnd = len(events)
 		}
-		locations = append(locations, loc)
+		subBatch := events[batchStart:batchEnd]
+
+		// Process the sub-batch
+		locations, err := e.writeEventsBatch(ctx, subBatch)
+		if err != nil {
+			// Return partial results with error
+			allLocations = append(allLocations, locations...)
+			return allLocations, fmt.Errorf("sub-batch %d-%d: %w", batchStart, batchEnd, err)
+		}
+		allLocations = append(allLocations, locations...)
+	}
+
+	return allLocations, nil
+}
+
+// writeEventsBatch processes a sub-batch of events (up to 1000)
+func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.Event) ([]types.RecordLocation, error) {
+	if len(events) == 0 {
+		return []types.RecordLocation{}, nil
+	}
+
+	// Step 1: Batch duplicate check
+	primaryIdx := e.indexMgr.PrimaryIndex()
+	eventKeys := make([][]byte, len(events))
+	for i, event := range events {
+		eventKeys[i] = e.keyBuilder.BuildPrimaryKey(event.ID)
+	}
+
+	_, existsFlags, err := primaryIdx.GetBatch(ctx, eventKeys)
+	if err != nil {
+		return nil, fmt.Errorf("batch duplicate check: %w", err)
+	}
+
+	// Filter out duplicates
+	uniqueEvents := make([]*types.Event, 0, len(events))
+	uniqueIndices := make([]int, 0, len(events))
+	for i, exists := range existsFlags {
+		if !exists {
+			uniqueEvents = append(uniqueEvents, events[i])
+			uniqueIndices = append(uniqueIndices, i)
+		}
+	}
+
+	if len(uniqueEvents) == 0 {
+		return make([]types.RecordLocation, len(events)), nil // All duplicates
+	}
+
+	// Step 2: Batch serialize
+	serializer := e.storage.Serializer()
+	records := make([]*storage.Record, len(uniqueEvents))
+	walEntries := make([]*wal.Entry, len(uniqueEvents))
+
+	for i, event := range uniqueEvents {
+		record, err := serializer.Serialize(event)
+		if err != nil {
+			return nil, fmt.Errorf("serialize event %d: %w", i, err)
+		}
+		records[i] = record
+
+		walEntries[i] = &wal.Entry{
+			Type:                wal.OpTypeInsert,
+			EventDataOrMetadata: record.Data,
+		}
+	}
+
+	// Step 3: Batch WAL write
+	_, err = e.walMgr.Writer().WriteBatch(ctx, walEntries)
+	if err != nil {
+		return nil, fmt.Errorf("wal batch write: %w", err)
+	}
+
+	// Step 4: Batch storage write
+	locations := make([]types.RecordLocation, len(events))
+	segment, err := e.storage.SegmentManager().CurrentSegment(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get current segment: %w", err)
+	}
+
+	// Check if we need to rotate segment
+	if segment.IsFull() {
+		segment, err = e.storage.SegmentManager().RotateSegment(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("rotate segment: %w", err)
+		}
+	}
+
+	// Use batch append on segment
+	storedLocations, err := segment.AppendBatch(ctx, records)
+	if err != nil {
+		return nil, fmt.Errorf("storage batch append: %w", err)
+	}
+
+	// Map locations back to original indices
+	for i, uniqueIdx := range uniqueIndices {
+		locations[uniqueIdx] = storedLocations[i]
+	}
+
+	// Step 5: Batch index updates
+	// Primary index
+	primaryKeys := make([][]byte, len(uniqueEvents))
+	primaryLocs := make([]types.RecordLocation, len(uniqueEvents))
+	for i, event := range uniqueEvents {
+		primaryKeys[i] = e.keyBuilder.BuildPrimaryKey(event.ID)
+		primaryLocs[i] = storedLocations[i]
+	}
+
+	if err := primaryIdx.InsertBatch(ctx, primaryKeys, primaryLocs); err != nil {
+		e.logger.Printf("Warning: primary index batch update failed: %v", err)
+	}
+
+	// Author-time index
+	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
+	authorTimeKeys := make([][]byte, len(uniqueEvents))
+	for i, event := range uniqueEvents {
+		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+	}
+
+	if err := authorTimeIdx.InsertBatch(ctx, authorTimeKeys, primaryLocs); err != nil {
+		e.logger.Printf("Warning: author-time index batch update failed: %v", err)
+	}
+
+	// Search indexes (for tags)
+	searchIdx := e.indexMgr.SearchIndex()
+	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
+
+	// Collect all tag index entries
+	searchKeys := make([][]byte, 0, len(uniqueEvents)*5) // Estimate 5 tags per event
+	searchLocs := make([]types.RecordLocation, 0, len(uniqueEvents)*5)
+
+	for i, event := range uniqueEvents {
+		loc := storedLocations[i]
+		for _, tag := range event.Tags {
+			if len(tag) < 2 {
+				continue
+			}
+
+			tagName := tag[0]
+			tagValue := tag[1]
+
+			searchTypeCode, ok := tagMapping[tagName]
+			if !ok {
+				continue
+			}
+
+			searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+			searchKeys = append(searchKeys, searchKey)
+			searchLocs = append(searchLocs, loc)
+		}
+	}
+
+	if len(searchKeys) > 0 {
+		if err := searchIdx.InsertBatch(ctx, searchKeys, searchLocs); err != nil {
+			e.logger.Printf("Warning: search index batch update failed: %v", err)
+		}
 	}
 
 	return locations, nil
