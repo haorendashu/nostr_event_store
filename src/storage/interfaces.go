@@ -174,9 +174,10 @@ type EventSerializer interface {
 
 // ContinuationPage represents a continuation page for multi-page records.
 // Continuation pages use a special format:
-//   Offset 0-3: magic (0x434F4E54 'CONT')
-//   Offset 4-5: chunk_len (uint16)
-//   Offset 6+:  chunk_data
+//
+//	Offset 0-3: magic (0x434F4E54 'CONT')
+//	Offset 4-5: chunk_len (uint16)
+//	Offset 6+:  chunk_data
 type ContinuationPage struct {
 	// Magic should always be 0x434F4E54 ('CONT' in ASCII).
 	Magic uint32
@@ -198,8 +199,9 @@ const (
 type Store interface {
 	// Open initializes the store from a directory.
 	// If createIfMissing is true, creates missing directories and files.
+	// maxSegmentSize specifies the maximum size of each segment (0 = default 1GB).
 	// ctx is used for cancellation and timeouts.
-	Open(ctx context.Context, dir string, createIfMissing bool, pageSize PageSize) error
+	Open(ctx context.Context, dir string, createIfMissing bool, pageSize PageSize, maxSegmentSize uint64) error
 
 	// Close closes the store and releases all resources.
 	// Must be called when done.

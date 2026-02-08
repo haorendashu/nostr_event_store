@@ -49,6 +49,12 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.IndexConfig.CacheConfig.CacheConcurrency <= 0 {
 		return fmt.Errorf("index.cache.cache_concurrency must be > 0")
 	}
+	if cfg.IndexConfig.FlushIntervalMs <= 0 {
+		return fmt.Errorf("index.flush_interval_ms must be > 0")
+	}
+	if cfg.IndexConfig.DirtyThreshold <= 0 {
+		return fmt.Errorf("index.dirty_threshold must be > 0")
+	}
 
 	switch strings.ToLower(cfg.IndexConfig.CacheConfig.EvictionPolicy) {
 	case "lru", "lfu":

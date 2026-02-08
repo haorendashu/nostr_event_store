@@ -169,6 +169,9 @@ var ErrIndexDuplicateKey = NewError("ErrIndexDuplicateKey", "index key already e
 // ErrIndexInvalidKeyBuilder is returned when key builder is nil or invalid.
 var ErrIndexInvalidKeyBuilder = NewError("ErrIndexInvalidKeyBuilder", "invalid key builder")
 
+// ErrIndexClosed is returned when an index operation is attempted on a closed index.
+var ErrIndexClosed = NewError("ErrIndexClosed", "index is closed")
+
 // ErrBTreeInvalidOrder is returned when B+Tree order is invalid.
 var ErrBTreeInvalidOrder = NewError("ErrBTreeInvalidOrder", "invalid B+Tree order (must be ≥ 2)")
 

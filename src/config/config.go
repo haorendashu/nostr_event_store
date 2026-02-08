@@ -72,6 +72,14 @@ type IndexConfig struct {
 
 	// CacheConfig specifies per-index cache allocation.
 	CacheConfig CacheConfig `json:"cache,omitempty"`
+
+	// FlushIntervalMs is the batch flush interval for dirty index pages.
+	// Default: 100 ms
+	FlushIntervalMs int `json:"flush_interval_ms,omitempty"`
+
+	// DirtyThreshold is the number of dirty index pages that triggers a batch flush.
+	// Default: 128
+	DirtyThreshold int `json:"dirty_threshold,omitempty"`
 }
 
 // SearchTypeMapConfig defines the mapping from tag names to search type codes (from manifest.json).
@@ -504,6 +512,9 @@ func (c *Config) ToIndexConfig() index.Config {
 		PrimaryIndexCacheMB:     c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
 		AuthorTimeIndexCacheMB:  c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
 		SearchIndexCacheMB:      c.IndexConfig.CacheConfig.SearchIndexCacheMB,
+		PageSize:                c.StorageConfig.PageSize,
+		FlushIntervalMs:         c.IndexConfig.FlushIntervalMs,
+		DirtyThreshold:          c.IndexConfig.DirtyThreshold,
 	}
 }
 
@@ -562,6 +573,8 @@ func DefaultConfig() *Config {
 				EvictionPolicy:         "lru",
 				CacheConcurrency:       16,
 			},
+			FlushIntervalMs: 100,
+			DirtyThreshold:  128,
 		},
 		WALConfig: WALConfig{
 			WALDir:          "./data/wal",

@@ -17,7 +17,7 @@ func TestRecoveryBasic(t *testing.T) {
 
 	// Create and populate a store
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 	defer st.Close()
@@ -96,7 +96,7 @@ func TestRecoveryWithMultiPageEvents(t *testing.T) {
 
 	// Create store
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 	defer st.Close()
@@ -167,7 +167,7 @@ func TestSegmentIntegrityValidation(t *testing.T) {
 
 	// Create store and write events
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestRecoveryFromCheckpoint(t *testing.T) {
 
 	// Create store
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 

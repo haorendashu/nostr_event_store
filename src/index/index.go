@@ -163,6 +163,10 @@ type Manager interface {
 	// Covers kind timelines, tag searches, and replaceable event lookups.
 	SearchIndex() Index
 
+	// KeyBuilder returns the key builder used by this manager.
+	// Callers should use this to ensure key encoding matches runtime config.
+	KeyBuilder() KeyBuilder
+
 	// Flush flushes all indexes to disk.
 	// After Flush, all index operations are durable.
 	// ctx is used for cancellation and timeouts.
@@ -204,6 +208,14 @@ type Config struct {
 	// PageSize is the page size used for index nodes (must match storage page size).
 	// Valid values: 4096, 8192, 16384.
 	PageSize uint32
+
+	// FlushIntervalMs is the batch flush interval for dirty index pages.
+	// Default: 100 ms
+	FlushIntervalMs int
+
+	// DirtyThreshold is the number of dirty pages that triggers a batch flush.
+	// Default: 128
+	DirtyThreshold int
 
 	// LastRebuildEpoch stores when the search type mapping was last modified.
 	// Used to detect when indexes need rebuilding due to configuration changes.
@@ -304,14 +316,13 @@ func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, createdAt uint64) 
 }
 
 // BuildSearchKey constructs a search index key with configurable search type code.
-// Format: kind(4) + searchType(1) + tagValue + 0x00 + createdAt(8)
+// Format: kind(4) + searchType(1) + tagValue + createdAt(8)
 func (kb *KeyBuilderImpl) BuildSearchKey(kind uint32, searchTypeCode SearchType, tagValue []byte, createdAt uint64) []byte {
-	key := make([]byte, 4+1+len(tagValue)+1+8)
+	key := make([]byte, 4+1+len(tagValue)+8)
 	binary.BigEndian.PutUint32(key[0:4], kind)
 	key[4] = byte(searchTypeCode)
 	copy(key[5:5+len(tagValue)], tagValue)
-	key[5+len(tagValue)] = 0x00
-	binary.BigEndian.PutUint64(key[6+len(tagValue):], createdAt)
+	binary.BigEndian.PutUint64(key[5+len(tagValue):], createdAt)
 	return key
 }
 

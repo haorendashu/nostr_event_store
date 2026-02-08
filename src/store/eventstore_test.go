@@ -18,7 +18,7 @@ func TestEventStoreBasic(t *testing.T) {
 
 	// Open store
 	store := NewEventStore()
-	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	defer store.Close()
@@ -80,7 +80,7 @@ func TestEventStoreMultipleEvents(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewEventStore()
-	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	defer store.Close()
@@ -129,7 +129,7 @@ func TestEventStoreLargeEvent(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewEventStore()
-	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	defer store.Close()
@@ -181,7 +181,7 @@ func TestEventStoreUpdateFlags(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewEventStore()
-	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	defer store.Close()
@@ -219,7 +219,7 @@ func TestEventStoreDirectories(t *testing.T) {
 	ctx := context.Background()
 
 	store := NewEventStore()
-	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := store.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	defer store.Close()

@@ -2,17 +2,19 @@ package index
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 )
 
 // manager is the default in-memory index manager implementation.
 type manager struct {
-	config      Config
-	keyBuilder  KeyBuilder
-	primary     Index
-	authorTime  Index
-	search      Index
-	isOpen      bool
+	config     Config
+	keyBuilder KeyBuilder
+	primary    Index
+	authorTime Index
+	search     Index
+	isOpen     bool
+	flusher    *flushScheduler
 }
 
 func newManager() Manager {
@@ -34,9 +36,34 @@ func (m *manager) Open(ctx context.Context, dir string, cfg Config) error {
 	}
 
 	m.keyBuilder = NewKeyBuilder(cfg.TagNameToSearchTypeCode)
-	m.primary = NewBTreeIndex()
-	m.authorTime = NewBTreeIndex()
-	m.search = NewBTreeIndex()
+
+	// Create persistent indexes
+	var err error
+	primaryPath := filepath.Join(dir, "indexes", "primary.idx")
+	m.primary, err = NewPersistentBTreeIndex(primaryPath, cfg)
+	if err != nil {
+		return err
+	}
+
+	authorTimePath := filepath.Join(dir, "indexes", "author_time.idx")
+	m.authorTime, err = NewPersistentBTreeIndex(authorTimePath, cfg)
+	if err != nil {
+		m.primary.Close()
+		return err
+	}
+
+	searchPath := filepath.Join(dir, "indexes", "search.idx")
+	m.search, err = NewPersistentBTreeIndex(searchPath, cfg)
+	if err != nil {
+		m.primary.Close()
+		m.authorTime.Close()
+		return err
+	}
+
+	// Start flush scheduler for periodic persistence
+	m.flusher = newFlushScheduler([]Index{m.primary, m.authorTime, m.search}, int64(cfg.FlushIntervalMs))
+	m.flusher.Start(ctx)
+
 	m.isOpen = true
 	return nil
 }
@@ -54,6 +81,11 @@ func (m *manager) AuthorTimeIndex() Index {
 // SearchIndex returns the unified search index.
 func (m *manager) SearchIndex() Index {
 	return m.search
+}
+
+// KeyBuilder returns the current key builder.
+func (m *manager) KeyBuilder() KeyBuilder {
+	return m.keyBuilder
 }
 
 // Flush flushes all indexes to disk.
@@ -84,6 +116,13 @@ func (m *manager) Flush(ctx context.Context) error {
 
 // Close closes all indexes.
 func (m *manager) Close() error {
+	// Stop flush scheduler first
+	if m.flusher != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer cancel()
+		_ = m.flusher.Stop(ctx)
+	}
+
 	if m.primary != nil {
 		_ = m.primary.Close()
 	}

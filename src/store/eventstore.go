@@ -43,13 +43,20 @@ func NewEventStore() *EventStore {
 }
 
 // Open initializes the event store, creating segment directories.
-func (s *EventStore) Open(ctx context.Context, dir string, createIfMissing bool, pageSize storage.PageSize) error {
+// maxSegmentSize specifies the maximum size of each segment in bytes (e.g., 1GB).
+// If maxSegmentSize is 0, defaults to 1GB.
+func (s *EventStore) Open(ctx context.Context, dir string, createIfMissing bool, pageSize storage.PageSize, maxSegmentSize uint64) error {
 	if s.isOpen {
 		return fmt.Errorf("store already open")
 	}
 
 	if !pageSize.Valid() {
 		return fmt.Errorf("invalid page size: %d", pageSize)
+	}
+
+	// Use default if not specified
+	if maxSegmentSize == 0 {
+		maxSegmentSize = 1073741824 // 1 GB
 	}
 
 	s.dir = dir
@@ -59,8 +66,8 @@ func (s *EventStore) Open(ctx context.Context, dir string, createIfMissing bool,
 	// Initialize serializer
 	s.serializer = storage.NewTLVSerializer(uint32(pageSize))
 
-	// Initialize segment manager
-	s.segmentManager = storage.NewFileSegmentManager(uint32(pageSize), 100*1024*1024) // 100MB per segment
+	// Initialize segment manager with configured max segment size
+	s.segmentManager = storage.NewFileSegmentManager(uint32(pageSize), maxSegmentSize)
 	if err := s.segmentManager.Open(ctx, s.segmentDir, createIfMissing); err != nil {
 		return fmt.Errorf("open segment manager: %w", err)
 	}

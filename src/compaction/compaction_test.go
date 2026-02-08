@@ -17,7 +17,7 @@ func TestAnalyzeSegments(t *testing.T) {
 
 	// Create a store and write some events
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 	defer st.Close()
@@ -81,7 +81,7 @@ func TestSelectCompactionCandidates(t *testing.T) {
 
 	// Create a store
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestTotalWasteAnalysis(t *testing.T) {
 
 	// Create and populate store
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestCompactionFlow(t *testing.T) {
 
 	// Create store with initial events
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 
@@ -274,7 +274,7 @@ func TestCompactionWithSmallSegmentSize(t *testing.T) {
 
 	// Create store with small segments to force multiple segments
 	st := store.NewEventStore()
-	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB); err != nil {
+	if err := st.Open(ctx, tmpDir, true, storage.PageSize4KB, 0); err != nil {
 		t.Fatalf("Open store failed: %v", err)
 	}
 

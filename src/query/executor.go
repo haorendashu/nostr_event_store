@@ -189,10 +189,18 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 		return nil, fmt.Errorf("search index not available")
 	}
 
-	// Get SearchType code mapping
-	searchTypeCodes := index.DefaultSearchTypeCodes()
+	keyBuilder := e.indexMgr.KeyBuilder()
+	if keyBuilder == nil {
+		return nil, fmt.Errorf("key builder not available")
+	}
+	searchTypeCodes := keyBuilder.TagNameToSearchTypeCode()
 
 	var results []types.RecordLocation
+
+	kinds := plan.filter.Kinds
+	if len(kinds) == 0 {
+		kinds = []uint32{0}
+	}
 
 	// Process generic Tags map
 	for tagName, tagValues := range plan.filter.Tags {
@@ -203,24 +211,26 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 		}
 
 		for _, tagValue := range tagValues {
-			startKey := buildSearchKey(0, uint8(searchType), tagValue, plan.filter.Since)
-			endKey := buildSearchKey(0, uint8(searchType), tagValue, plan.filter.Until)
-			if plan.filter.Until == 0 {
-				endKey = buildSearchKey(0, uint8(searchType), tagValue, ^uint64(0))
-			}
-
-			iter, err := searchIdx.Range(ctx, startKey, endKey)
-			if err != nil {
-				continue
-			}
-
-			for iter.Valid() {
-				results = append(results, iter.Value())
-				if err := iter.Next(); err != nil {
-					break
+			for _, kind := range kinds {
+				startKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Since)
+				endKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Until)
+				if plan.filter.Until == 0 {
+					endKey = keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint64(0))
 				}
+
+				iter, err := searchIdx.Range(ctx, startKey, endKey)
+				if err != nil {
+					continue
+				}
+
+				for iter.Valid() {
+					results = append(results, iter.Value())
+					if err := iter.Next(); err != nil {
+						break
+					}
+				}
+				iter.Close()
 			}
-			iter.Close()
 		}
 	}
 
@@ -235,31 +245,6 @@ func buildAuthorTimeKey(pubkey [32]byte, timestamp uint64) []byte {
 	for i := 0; i < 8; i++ {
 		key[32+7-i] = byte((timestamp >> (i * 8)) & 0xff)
 	}
-	return key
-}
-
-// buildSearchKey builds a key for search index: kind (4) + searchType (1) + value (variable) + timestamp (8).
-func buildSearchKey(kind uint32, searchType byte, value string, timestamp uint64) []byte {
-	key := make([]byte, 4+1+len(value)+8)
-
-	// Kind (big-endian)
-	key[0] = byte((kind >> 24) & 0xff)
-	key[1] = byte((kind >> 16) & 0xff)
-	key[2] = byte((kind >> 8) & 0xff)
-	key[3] = byte(kind & 0xff)
-
-	// SearchType
-	key[4] = searchType
-
-	// Value
-	copy(key[5:5+len(value)], []byte(value))
-
-	// Timestamp (big-endian)
-	offset := 5 + len(value)
-	for i := 0; i < 8; i++ {
-		key[offset+7-i] = byte((timestamp >> (i * 8)) & 0xff)
-	}
-
 	return key
 }
 

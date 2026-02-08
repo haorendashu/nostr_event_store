@@ -602,11 +602,17 @@ func (r *FileReader) ensureBuffer(minBytes int) error {
 		}
 
 		if cap(r.buffer) < minBytes {
-			newBuf := make([]byte, len(r.buffer), minBytes)
+			// Need to grow buffer capacity
+			newCap := minBytes
+			if newCap < cap(r.buffer)*2 {
+				newCap = cap(r.buffer) * 2
+			}
+			newBuf := make([]byte, len(r.buffer), newCap)
 			copy(newBuf, r.buffer)
 			r.buffer = newBuf
 		}
 
+		// Read more data to fill buffer up to capacity
 		readInto := r.buffer[len(r.buffer):cap(r.buffer)]
 		n, err := r.file.Read(readInto)
 		if n > 0 {

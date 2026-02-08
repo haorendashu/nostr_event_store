@@ -122,7 +122,7 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	storageDir := filepath.Join(dir, "data")
 	pageSize := cfg.ToStoragePageSize()
 	storeImpl := store.NewEventStore()
-	if err := storeImpl.Open(ctx, storageDir, createIfMissing, pageSize); err != nil {
+	if err := storeImpl.Open(ctx, storageDir, createIfMissing, pageSize, cfg.StorageConfig.MaxSegmentSize); err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
 	e.storage = storeImpl

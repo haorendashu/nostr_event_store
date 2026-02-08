@@ -38,6 +38,10 @@ func (m *mockIndexManager) SearchIndex() index.Index {
 	return &mockIndex{mgr: m, indexType: "search"}
 }
 
+func (m *mockIndexManager) KeyBuilder() index.KeyBuilder {
+	return index.NewKeyBuilder(index.DefaultSearchTypeCodes())
+}
+
 func (m *mockIndexManager) Flush(ctx context.Context) error {
 	return nil
 }
@@ -121,7 +125,7 @@ func (ms *mockStore) ReadEvent(ctx context.Context, location types.RecordLocatio
 	return nil, fmt.Errorf("event not found")
 }
 
-func (ms *mockStore) Open(ctx context.Context, dir string, createIfMissing bool, pageSize storage.PageSize) error {
+func (ms *mockStore) Open(ctx context.Context, dir string, createIfMissing bool, pageSize storage.PageSize, maxSegmentSize uint64) error {
 	return nil
 }
 
