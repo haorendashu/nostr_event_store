@@ -92,9 +92,14 @@ for i := 0; i < 20 && iter.Valid(); i++ {
 **保留 SearchType**：
 - **Code 0**：`SearchTypeInvalid`（未初始化/无效类型）
 
-**Key 编码**：
+**Key 编码**（v2 格式，带长度前缀）：
 ```
-Key = [4 B: kind] [1 B: search_type] [N B: tag_value_utf8] [8 B: created_at]
+Key = [4 B: kind] [1 B: search_type] [1 B: tag_value_len] [≤255 B: tag_value_utf8] [8 B: created_at]
+
+注意：
+- tag_value 用单字节长度前缀（0-255），最大 255 字节。
+- 超过 255 字节的值在插入时被截断。
+- 此格式保证精确匹配语义，不支持前缀匹配。
 
 所有 tag_value 字段都是 UTF-8 字符串：
 

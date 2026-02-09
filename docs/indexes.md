@@ -86,19 +86,24 @@ The system predefines 14 common Nostr tags with SearchType codes (1-14):
 **Reserved SearchType**:
 - **Code 0**: `SearchTypeInvalid` (uninitialized/invalid)
 
-**Key Encoding**:
+**Key Encoding** (v2 format with length-prefix):
 ```
-Key = [4 B: kind] [1 B: search_type] [N B: tag_value_utf8] [8 B: created_at]
+Key = [4 B: kind] [1 B: search_type] [1 B: tag_value_len] [≤255 B: tag_value_utf8] [8 B: created_at]
+
+Note: 
+- tag_value is length-prefixed with a single byte (0-255), limiting max value to 255 bytes.
+- Values longer than 255 bytes are truncated during insertion.
+- This format guarantees exact match semantics; prefix matching is NOT supported.
 
 All tag_value fields are UTF-8 strings:
 
 e-tag:
-  tag_value = event_id (64-char hex string)
-  Example: "a1b2c3d4e5f6..." (64 chars)
+  tag_value = event_id (64-char hex string, but truncated to 255 bytes if longer)
+  Example: "a1b2c3d4e5f6..." (max 255 bytes)
 
 p-tag:
   tag_value = pubkey (64-char hex string)
-  Example: "1234567890ab..." (64 chars)
+  Example: "1234567890ab..." (max 255 bytes)
 
 t-tag:
   tag_value = hashtag (UTF-8 string)
