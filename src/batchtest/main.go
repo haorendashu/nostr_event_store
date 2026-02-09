@@ -171,6 +171,12 @@ func initStore(dir string) (eventstore.EventStore, error) {
 	cfg.WALConfig.WALDir = filepath.Join(dir, "wal")
 	cfg.IndexConfig.IndexDir = filepath.Join(dir, "indexes")
 
+	// Increase cache sizes for large datasets (especially search index)
+	// For 100K events, search index needs ~150MB (37K nodes * 4KB/node)
+	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 100
+	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 100
+	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 200 // Increased from default 100MB
+
 	store := eventstore.New(&eventstore.Options{
 		Config: cfg,
 	})
@@ -306,63 +312,81 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 		}
 
 		// If useSearchIndex is enabled and event has tags, verify search index query
-		if useSearchIndex && len(storedEvent.Tags) > 0 {
-			// Look for a suitable tag to query by (prefer "t" hashtag, then "p" mention, then "e" reference)
-			var tagName string
-			var tagValue string
+		// CRITICAL: Use expectedEvent.Tags (original tags before serialization) instead of storedEvent.Tags
+		// because serialization truncates tag names to first character only ("emoji" -> "e")
+		if useSearchIndex && len(expectedEvent.Tags) > 0 {
+			// Collect all indexable tags (including multiple values for same tag name)
+			indexableTags := make(map[string][]string)
 
-			for _, tag := range storedEvent.Tags {
+			for _, tag := range expectedEvent.Tags {
 				if len(tag) >= 2 {
-					switch tag[0] {
-					case "t": // hashtag
-						tagName = "t"
-						tagValue = tag[1]
-						goto foundTag
-					case "p": // person reference
-						if tagName == "" {
-							tagName = "p"
-							tagValue = tag[1]
-						}
-					case "e": // event reference
-						if tagName == "" {
-							tagName = "e"
-							tagValue = tag[1]
-						}
+					tagName := tag[0]
+					tagValue := tag[1]
+					// Check if this tag should be indexed (based on default config tags)
+					switch tagName {
+					case "t", "p", "e", "a", "d", "P", "E", "A", "g", "h", "i", "I", "k", "K":
+						indexableTags[tagName] = append(indexableTags[tagName], tagValue)
 					}
 				}
 			}
-		foundTag:
 
-			if tagName != "" && tagValue != "" {
-				// Create a query filter for this tag, including the event kind
-				filter := &types.QueryFilter{
-					Kinds: []uint32{storedEvent.Kind}, Tags: map[string][]string{tagName: {tagValue}},
-				}
+			// Try all indexable tag values
+			foundInSearch := false
+			failedTag := ""
+			failedValue := ""
+			failedResultCount := 0
+			failedEventID := ""
+			for tagName, tagValues := range indexableTags {
+				for _, tagValue := range tagValues {
+					// Create a query filter for this tag, including the event kind
+					filter := &types.QueryFilter{
+						Kinds: []uint32{storedEvent.Kind},
+						Tags:  map[string][]string{tagName: {tagValue}},
+					}
 
-				// Execute the query
-				results, err := store.QueryAll(ctx, filter)
-				if err != nil {
-					fmt.Printf("  Event %d: Search index query failed for tag %s=%s: %v\n", randomIdx, tagName, tagValue, err)
-					failCount++
-					continue
-				}
+					// Execute the query
+					results, err := store.QueryAll(ctx, filter)
+					if err != nil {
+						fmt.Printf("  Event %d: Query error for tag %s=%s: %v\n", randomIdx, tagName, tagValue, err)
+						failedTag = tagName
+						failedValue = tagValue
+						failedResultCount = 0
+						failedEventID = fmt.Sprintf("%x", expectedEvent.ID)
+						continue
+					}
 
-				// Verify that our event is in the results
-				found := false
-				for _, result := range results {
-					if result.ID == expectedEvent.ID {
-						found = true
+					// Verify that our event is in the results
+					found := false
+					for _, result := range results {
+						if result.ID == expectedEvent.ID {
+							found = true
+							break
+						}
+					}
+
+					if found {
+						foundInSearch = true
+						searchQueryCount++
 						break
+					} else {
+						// This tag didn't return our event
+						failedTag = tagName
+						failedValue = tagValue
+						failedResultCount = len(results)
+						failedEventID = fmt.Sprintf("%x", expectedEvent.ID[:8])
 					}
 				}
-
-				if !found {
-					fmt.Printf("  Event %d: Not found in search index query results for tag %s=%s (got %d results)\n", randomIdx, tagName, tagValue, len(results))
-					failCount++
-					continue
+				if foundInSearch {
+					break
 				}
+			}
 
-				searchQueryCount++
+			// If no indexable tags found in search index, count as skipped
+			if len(indexableTags) > 0 && !foundInSearch && useSearchIndex {
+				fmt.Printf("  Event %d (ID %s...): Not found in search index (tried %d tags with kind %d, failed: %s=%q, returned %d results)\n",
+					randomIdx, failedEventID, len(indexableTags), storedEvent.Kind, failedTag, failedValue, failedResultCount)
+				failCount++ // Count as failure when search index is enabled
+				continue
 			}
 		}
 
@@ -373,11 +397,13 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 	verifyDuration := time.Since(startTime)
 	readRate := float64(successCount) / verifyDuration.Seconds()
 
-	fmt.Printf("\n=== Verification Statistics ===\n")
+	fmt.Printf("=== Verification Statistics ===\n")
 	fmt.Printf("Total verified: %d\n", successCount+failCount)
 	fmt.Printf("Successful: %d\n", successCount)
 	fmt.Printf("Failed: %d\n", failCount)
-	fmt.Printf("Search index queries: %d\n", searchQueryCount)
+	if useSearchIndex {
+		fmt.Printf("Search index queries: %d\n", searchQueryCount)
+	}
 	fmt.Printf("Time taken: %.2fs\n", verifyDuration.Seconds())
 	fmt.Printf("Read rate: %.0f events/s\n", readRate)
 
@@ -390,12 +416,32 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 func main() {
 	// Parse command-line flags
 	flags := &CommandLineFlags{}
+	simpleDebug := flag.Bool("simple", false, "Run simple debug test")
+	keyDebug := flag.Bool("key", false, "Run key building debug")
+	roundtripTest := flag.Bool("roundtrip", false, "Test string roundtrip")
 	flag.IntVar(&flags.EventCount, "count", 1000000, "Total number of events to generate and write")
 	flag.IntVar(&flags.BatchSize, "batch", 10000, "Batch size for writing events")
 	flag.StringVar(&flags.DataDir, "dir", "./testdata", "Data directory for event store")
 	flag.IntVar(&flags.VerifyCount, "verify", 100, "Number of events to verify after writing (0 to skip)")
 	flag.BoolVar(&flags.UseSearchIndex, "search", false, "Use search index for verification (queries by tags if available)")
 	flag.Parse()
+
+	if *simpleDebug {
+		SimpleTestSearchKey()
+		return
+	}
+
+	if *keyDebug {
+		KeyDebug()
+		return
+	}
+
+	if *roundtripTest {
+		TestStringRoundtrip()
+		return
+	}
+
+	// Debug modes are archived - they're available in the archive/ directory if needed
 
 	fmt.Printf("=== Nostr Event Store Batch Test ===\n")
 	fmt.Printf("Events to generate: %d\n", flags.EventCount)
@@ -429,7 +475,7 @@ func main() {
 			fmt.Printf("Error closing store: %v\n", err)
 		}
 	}()
-	fmt.Println("Event store initialized\n")
+	fmt.Println("Event store initialized")
 
 	// Step 3: Write events in batches
 	fmt.Println("Writing events...")
@@ -460,6 +506,13 @@ func main() {
 
 	// Step 6: Verify if requested
 	if flags.VerifyCount > 0 {
+		// Flush again before verification to ensure all hot data is persisted
+		fmt.Println("\nFlushing again before verification...")
+		if err := store.Flush(ctx); err != nil {
+			fmt.Printf("Error flushing before verification: %v\n", err)
+			os.Exit(1)
+		}
+
 		if err := verifyRandomEvents(ctx, store, locations, seedEvents, flags.EventCount, flags.VerifyCount, flags.UseSearchIndex); err != nil {
 			fmt.Printf("Verification error: %v\n", err)
 			os.Exit(1)

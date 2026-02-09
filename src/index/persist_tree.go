@@ -449,14 +449,26 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	if err != nil {
 		return nil, err
 	}
+
+	// Navigate to the leftmost leaf that might contain keys in range [minKey, maxKey]
 	for !node.isLeaf() {
-		idx := searchKeyIndex(node.keys, minKey)
+		var searchKey []byte
+		if desc {
+			searchKey = maxKey
+		} else {
+			searchKey = minKey
+		}
+
+		// Use searchKeyIndex for navigation (same as get/insert)
+		// This is correct for both ascending and descending ranges
+		idx := searchKeyIndex(node.keys, searchKey)
 		node, err = t.loadNode(node.children[idx])
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	// Find the starting position in the leaf node
 	idx := sort.Search(len(node.keys), func(i int) bool {
 		return compareKeys(node.keys[i], minKey) >= 0
 	})
@@ -665,9 +677,24 @@ func (it *btreeIterator) advance() {
 }
 
 func searchKeyIndex(keys [][]byte, key []byte) int {
+	// BUGFIX: Handles duplicate separators correctly for Range queries.
+	// In a B+Tree with duplicate keys (e.g., same tag value), splits create duplicate separators.
+	//
+	// Correct navigation logic:
+	// - Find first separator >= key
+	// - If separator == key, navigate to RIGHT child (keys >= separator)
+	// - If separator > key, navigate to current child (keys < separator)
+	// - If no separator >= key, navigate to rightmost child
 	idx := sort.Search(len(keys), func(i int) bool {
-		return compareKeys(keys[i], key) > 0
+		return compareKeys(keys[i], key) >= 0
 	})
+
+	// If we found an exact match, the key belongs in the RIGHT child
+	// because splitKey comes from the first key of the right child after split
+	if idx < len(keys) && compareKeys(keys[idx], key) == 0 {
+		return idx + 1
+	}
+
 	return idx
 }
 
@@ -680,11 +707,11 @@ func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (bo
 	idx := sort.Search(len(node.keys), func(i int) bool {
 		return compareKeys(node.keys[i], key) >= 0
 	})
-	if idx < len(node.keys) && compareKeys(node.keys[idx], key) == 0 {
-		node.values[idx] = value
-		node.dirty = true
-		return false, nil
-	}
+
+	// CRITICAL FIX: For search index, we MUST allow duplicate keys.
+	// Multiple different events can have the same (kind, tag, createdAt) but different event IDs.
+	// The old code would overwrite, causing data loss. Now we always insert.
+	// Note: This means the same key can appear multiple times in the tree.
 
 	keyCopy := make([]byte, len(key))
 	copy(keyCopy, key)

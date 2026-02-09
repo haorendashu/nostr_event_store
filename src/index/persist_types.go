@@ -4,7 +4,7 @@ import "hash/crc64"
 
 const (
 	indexMagic        = 0x494E4458
-	indexVersion      = 1
+	indexVersion      = 2 // Bumped to v2 for length-prefixed search index keys
 	indexHeaderFormat = 1
 
 	indexTypePrimary    = 1

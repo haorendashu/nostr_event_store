@@ -2,14 +2,68 @@ package query
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"nostr_event_store/src/index"
 	"nostr_event_store/src/storage"
 	"nostr_event_store/src/types"
 )
+
+var (
+	searchIndexRangeLogEnabled     bool
+	searchIndexRangeLogTag         string
+	searchIndexRangeLogValuePrefix string
+	searchIndexRangeLogLimit       int64
+	searchIndexRangeLogCount       int64
+)
+
+func init() {
+	if os.Getenv("SEARCH_INDEX_LOG") == "1" {
+		searchIndexRangeLogEnabled = true
+	}
+	searchIndexRangeLogTag = os.Getenv("SEARCH_INDEX_LOG_TAG")
+	searchIndexRangeLogValuePrefix = os.Getenv("SEARCH_INDEX_LOG_VALUE_PREFIX")
+	if limitStr := os.Getenv("SEARCH_INDEX_LOG_LIMIT"); limitStr != "" {
+		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
+			searchIndexRangeLogLimit = limit
+		}
+	}
+}
+
+// ConfigureSearchIndexRangeLog enables search index range logging at runtime
+func ConfigureSearchIndexRangeLog(enabled bool, tag, valuePrefix string, limit int64) {
+	searchIndexRangeLogEnabled = enabled
+	searchIndexRangeLogTag = tag
+	searchIndexRangeLogValuePrefix = valuePrefix
+	searchIndexRangeLogLimit = limit
+	atomic.StoreInt64(&searchIndexRangeLogCount, 0)
+}
+
+func shouldLogSearchIndexRange(tagName, tagValue string) bool {
+	if !searchIndexRangeLogEnabled {
+		return false
+	}
+	if searchIndexRangeLogTag != "" && tagName != searchIndexRangeLogTag {
+		return false
+	}
+	if searchIndexRangeLogValuePrefix != "" && !strings.HasPrefix(tagValue, searchIndexRangeLogValuePrefix) {
+		return false
+	}
+	if searchIndexRangeLogLimit > 0 {
+		if atomic.AddInt64(&searchIndexRangeLogCount, 1) > searchIndexRangeLogLimit {
+			return false
+		}
+	}
+	return true
+}
 
 // executorImpl implements Executor interface.
 type executorImpl struct {
@@ -216,6 +270,9 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 				endKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Until)
 				if plan.filter.Until == 0 {
 					endKey = keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint64(0))
+				}
+				if shouldLogSearchIndexRange(tagName, tagValue) {
+					log.Printf("search index range: kind=%d tag=%s value_len=%d start=%s end=%s", kind, tagName, len(tagValue), hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 				}
 
 				iter, err := searchIdx.Range(ctx, startKey, endKey)

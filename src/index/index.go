@@ -328,30 +328,41 @@ func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, createdAt uint64) 
 }
 
 // BuildSearchKey constructs a search index key with configurable search type code.
-// Format: kind(4) + searchType(1) + tagValue + createdAt(8)
+// Format: kind(4) + searchType(1) + tagValueLen(1) + tagValue(max 255) + createdAt(8)
+// tagValue is truncated to 255 bytes to fit in uint8 length field.
 func (kb *KeyBuilderImpl) BuildSearchKey(kind uint32, searchTypeCode SearchType, tagValue []byte, createdAt uint64) []byte {
-	key := make([]byte, 4+1+len(tagValue)+8)
+	// Truncate tagValue to 255 bytes max
+	maxLen := 255
+	if len(tagValue) > maxLen {
+		tagValue = tagValue[:maxLen]
+	}
+
+	tagLen := uint8(len(tagValue))
+	key := make([]byte, 4+1+1+len(tagValue)+8)
 	binary.BigEndian.PutUint32(key[0:4], kind)
 	key[4] = byte(searchTypeCode)
-	copy(key[5:5+len(tagValue)], tagValue)
-	binary.BigEndian.PutUint64(key[5+len(tagValue):], createdAt)
+	key[5] = tagLen
+	copy(key[6:6+len(tagValue)], tagValue)
+	binary.BigEndian.PutUint64(key[6+len(tagValue):], createdAt)
 	return key
 }
 
-// BuildSearchKeyRange constructs a search key range for range queries.
-// Range is built on prefix: kind(4) + searchType(1) + tagValuePrefix
+// BuildSearchKeyRange constructs a search key range for exact tag value queries.
+// Note: Prefix matching is NOT supported with the new length-prefixed key format.
+// This function returns a range [minKey, maxKey] for all entries with the exact tagValue,
+// where minKey has createdAt=0 and maxKey has createdAt=MAX.
 func (kb *KeyBuilderImpl) BuildSearchKeyRange(kind uint32, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte) {
-	prefix := make([]byte, 4+1+len(tagValuePrefix))
-	binary.BigEndian.PutUint32(prefix[0:4], kind)
-	prefix[4] = byte(searchTypeCode)
-	copy(prefix[5:], tagValuePrefix)
+	// Truncate to 255 bytes max (same as BuildSearchKey)
+	maxLen := 255
+	if len(tagValuePrefix) > maxLen {
+		tagValuePrefix = tagValuePrefix[:maxLen]
+	}
 
-	minKey := make([]byte, len(prefix))
-	copy(minKey, prefix)
+	// Build min key: kind + searchType + tagValueLen + tagValue + time(0)
+	minKey := kb.BuildSearchKey(kind, searchTypeCode, tagValuePrefix, 0)
 
-	maxKey := make([]byte, len(prefix)+1)
-	copy(maxKey, prefix)
-	maxKey[len(prefix)] = 0xFF
+	// Build max key: kind + searchType + tagValueLen + tagValue + time(MAX)
+	maxKey := kb.BuildSearchKey(kind, searchTypeCode, tagValuePrefix, ^uint64(0))
 
 	return minKey, maxKey
 }

@@ -2,12 +2,15 @@ package eventstore
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"nostr_event_store/src/compaction"
 	"nostr_event_store/src/config"
@@ -19,6 +22,54 @@ import (
 	"nostr_event_store/src/types"
 	"nostr_event_store/src/wal"
 )
+
+var (
+	searchIndexLogEnabled     bool
+	searchIndexLogTag         string
+	searchIndexLogValuePrefix string
+	searchIndexLogLimit       int64
+	searchIndexLogCount       int64
+)
+
+func init() {
+	if os.Getenv("SEARCH_INDEX_LOG") == "1" {
+		searchIndexLogEnabled = true
+	}
+	searchIndexLogTag = os.Getenv("SEARCH_INDEX_LOG_TAG")
+	searchIndexLogValuePrefix = os.Getenv("SEARCH_INDEX_LOG_VALUE_PREFIX")
+	if limitStr := os.Getenv("SEARCH_INDEX_LOG_LIMIT"); limitStr != "" {
+		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
+			searchIndexLogLimit = limit
+		}
+	}
+}
+
+// ConfigureSearchIndexLog enables search index logging at runtime
+func ConfigureSearchIndexLog(enabled bool, tag, valuePrefix string, limit int64) {
+	searchIndexLogEnabled = enabled
+	searchIndexLogTag = tag
+	searchIndexLogValuePrefix = valuePrefix
+	searchIndexLogLimit = limit
+	atomic.StoreInt64(&searchIndexLogCount, 0)
+}
+
+func shouldLogSearchIndex(tagName, tagValue string) bool {
+	if !searchIndexLogEnabled {
+		return false
+	}
+	if searchIndexLogTag != "" && tagName != searchIndexLogTag {
+		return false
+	}
+	if searchIndexLogValuePrefix != "" && !strings.HasPrefix(tagValue, searchIndexLogValuePrefix) {
+		return false
+	}
+	if searchIndexLogLimit > 0 {
+		if atomic.AddInt64(&searchIndexLogCount, 1) > searchIndexLogLimit {
+			return false
+		}
+	}
+	return true
+}
 
 // eventStoreImpl is the concrete implementation of EventStore.
 type eventStoreImpl struct {
@@ -295,6 +346,10 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 
 		// Build and insert search index entry
 		searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+		if shouldLogSearchIndex(tagName, tagValue) {
+			e.logger.Printf("search index insert: id=%s kind=%d tag=%s value_len=%d key=%s",
+				hex.EncodeToString(event.ID[:]), event.Kind, tagName, len(tagValue), hex.EncodeToString(searchKey))
+		}
 		if err := searchIdx.Insert(ctx, searchKey, loc); err != nil {
 			e.logger.Printf("Warning: search index failed for tag %s: %v", tagName, err)
 		}
@@ -503,6 +558,10 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 			}
 
 			searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+			if shouldLogSearchIndex(tagName, tagValue) {
+				e.logger.Printf("search index batch insert: id=%s kind=%d tag=%s value_len=%d key=%s",
+					hex.EncodeToString(event.ID[:]), event.Kind, tagName, len(tagValue), hex.EncodeToString(searchKey))
+			}
 			searchKeys = append(searchKeys, searchKey)
 			searchLocs = append(searchLocs, loc)
 		}

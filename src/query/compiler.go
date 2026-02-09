@@ -35,20 +35,6 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 		filter: filter,
 	}
 
-	// Strategy: If single "e" tag, use primary index
-	if eTags := filter.Tags["e"]; len(eTags) == 1 {
-		singleETag := eTags[0]
-		plan.strategy = "primary"
-		plan.indexName = "primary"
-		// Parse hex string to bytes for key
-		if id := parseEventID(singleETag); id != nil {
-			plan.startKey = id[:]
-			plan.endKey = id[:]
-		}
-		plan.estimatedIO = 3 // log_128(10M) ≈ 3
-		return plan, nil
-	}
-
 	// Strategy: If authors + time range, use author_time index
 	if len(filter.Authors) > 0 && (filter.Since > 0 || filter.Until > 0) {
 		plan.strategy = "author_time"

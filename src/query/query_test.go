@@ -68,6 +68,16 @@ func (mi *mockIndex) Get(ctx context.Context, key []byte) (types.RecordLocation,
 	return types.RecordLocation{}, false, nil
 }
 
+func (mi *mockIndex) GetBatch(ctx context.Context, keys [][]byte) ([]types.RecordLocation, []bool, error) {
+	locations := make([]types.RecordLocation, len(keys))
+	found := make([]bool, len(keys))
+	return locations, found, nil
+}
+
+func (mi *mockIndex) InsertBatch(ctx context.Context, keys [][]byte, values []types.RecordLocation) error {
+	return nil
+}
+
 func (mi *mockIndex) Range(ctx context.Context, begin, end []byte) (index.Iterator, error) {
 	return &mockIterator{}, nil
 }

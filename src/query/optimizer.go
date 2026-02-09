@@ -31,13 +31,16 @@ func (o *optimizerImpl) ChooseBestIndex(filter *types.QueryFilter) (string, []by
 		return "", nil, fmt.Errorf("filter cannot be nil")
 	}
 
-	// Check for single "e" tag
-	if eTags := filter.Tags["e"]; len(eTags) == 1 {
-		// Parse hex to bytes for primary key
-		if id := parseEventID(eTags[0]); id != nil {
-			return "primary", id[:], nil
-		}
-	}
+	// REMOVED: Incorrect optimization that treated tag "e" values as primary keys
+	// Tag "e" contains referenced event IDs, NOT the ID of the event we're searching for
+	// We need to use the search index to find events that HAVE this tag, not events with this ID
+
+	// The commented code below was causing search index queries to incorrectly use primary index:
+	// if eTags := filter.Tags["e"]; len(eTags) == 1 {
+	//     if id := parseEventID(eTags[0]); id != nil {
+	//         return "primary", id[:], nil
+	//     }
+	// }
 
 	if len(filter.Authors) > 0 {
 		return "author_time", nil, nil

@@ -73,6 +73,10 @@ func openIndexFile(path string, indexType uint32, pageSize uint32, createIfMissi
 		file.Close()
 		return nil, fmt.Errorf("index page size mismatch: expected %d, got %d", pageSize, fi.header.PageSize)
 	}
+	if fi.header.Version != indexVersion {
+		file.Close()
+		return nil, fmt.Errorf("index version mismatch: expected %d, got %d (requires rebuild)", indexVersion, fi.header.Version)
+	}
 
 	return fi, nil
 }
