@@ -36,6 +36,7 @@ type CommandLineFlags struct {
 	DataDir        string
 	VerifyCount    int
 	UseSearchIndex bool
+	UseAuthorIndex bool
 }
 
 // ProgressTracker tracks writing progress and performance metrics
@@ -246,12 +247,12 @@ func writeEventsInBatches(ctx context.Context, store eventstore.EventStore, seed
 
 // verifyRandomEvents randomly reads some events to verify they were stored correctly
 // If useSearchIndex is true and the event has suitable tags, it will also verify search index queries
-func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locations []types.RecordLocation, seedEvents []*EventDTO, totalCount int, verifyCount int, useSearchIndex bool) error {
+func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locations []types.RecordLocation, seedEvents []*EventDTO, totalCount int, verifyCount int, useSearchIndex bool, useAuthorIndex bool) error {
 	if verifyCount <= 0 || verifyCount > len(locations) {
 		return nil
 	}
 
-	fmt.Printf("\nVerifying %d random events (useSearchIndex: %v)...\n", verifyCount, useSearchIndex)
+	fmt.Printf("\nVerifying %d random events (useSearchIndex: %v, useAuthorIndex: %v)...\n", verifyCount, useSearchIndex, useAuthorIndex)
 	startTime := time.Now()
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -259,6 +260,8 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 	failCount := 0
 	searchQueryCount := 0
 	searchTotalQueryEventNum := 0
+	pubkeyMap := make(map[string]int) // For author index verification
+	authorTotalQueryEventNum := 0
 
 	for i := 0; i < verifyCount; i++ {
 		// Pick a random event index
@@ -272,6 +275,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 			failCount++
 			continue
 		}
+		pubkeyMap[hex.EncodeToString(expectedEvent.Pubkey[:])] = 1
 
 		// Read from store
 		storedEvent, err := store.GetEvent(ctx, expectedEvent.ID)
@@ -396,6 +400,29 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 		successCount++
 	}
 
+	if useAuthorIndex && len(pubkeyMap) > 0 {
+		for pubkey := range pubkeyMap {
+			pubkeyBytes, err := hexToBytes(pubkey, 32)
+			if err != nil {
+				fmt.Println("hex decode pubkey fail")
+				continue
+			}
+			filter := &types.QueryFilter{
+				Kinds:   []uint32{1, 6, 16, 1111, 30023},
+				Authors: [][32]byte{pubkeyBytes},
+				Limit:   10,
+			}
+
+			authorEventResults, err := store.QueryAll(ctx, filter)
+			if len(authorEventResults) == 0 || err != nil {
+				fmt.Printf("Author index query for pubkey %s returned no results, err: %v\n", pubkey, err)
+				continue
+			}
+
+			authorTotalQueryEventNum += len(authorEventResults)
+		}
+	}
+
 	// Calculate verification performance metrics
 	verifyDuration := time.Since(startTime)
 	readRate := float64(successCount) / verifyDuration.Seconds()
@@ -410,6 +437,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 	fmt.Printf("Time taken: %.2fs\n", verifyDuration.Seconds())
 	fmt.Printf("Read rate: %.0f events/s\n", readRate)
 	fmt.Printf("searchTotalQueryEventNum: %d", searchTotalQueryEventNum)
+	fmt.Printf("authorTotalQueryEventNum: %d", authorTotalQueryEventNum)
 
 	if failCount > 0 {
 		return fmt.Errorf("verification failed for %d events", failCount)
@@ -425,6 +453,7 @@ func main() {
 	flag.StringVar(&flags.DataDir, "dir", "./testdata", "Data directory for event store")
 	flag.IntVar(&flags.VerifyCount, "verify", 100, "Number of events to verify after writing (0 to skip)")
 	flag.BoolVar(&flags.UseSearchIndex, "search", false, "Use search index for verification (queries by tags if available)")
+	flag.BoolVar(&flags.UseAuthorIndex, "useAuthorIndex", false, "Use author-time index for verification (queries by pubkey and time range if available)")
 	flag.Parse()
 
 	// Debug modes are archived - they're available in the archive/ directory if needed
@@ -499,7 +528,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := verifyRandomEvents(ctx, store, locations, seedEvents, flags.EventCount, flags.VerifyCount, flags.UseSearchIndex); err != nil {
+		if err := verifyRandomEvents(ctx, store, locations, seedEvents, flags.EventCount, flags.VerifyCount, flags.UseSearchIndex, flags.UseAuthorIndex); err != nil {
 			fmt.Printf("Verification error: %v\n", err)
 			os.Exit(1)
 		}
