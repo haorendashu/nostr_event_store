@@ -258,6 +258,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 	successCount := 0
 	failCount := 0
 	searchQueryCount := 0
+	searchTotalQueryEventNum := 0
 
 	for i := 0; i < verifyCount; i++ {
 		// Pick a random event index
@@ -356,7 +357,9 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 					}
 
 					// Verify that our event is in the results
+					// fmt.Printf("  Event %d: Search index query for tag %s=%q returned %d results\n", randomIdx, tagName, tagValue, len(results))
 					found := false
+					searchTotalQueryEventNum += len(results)
 					for _, result := range results {
 						if result.ID == expectedEvent.ID {
 							found = true
@@ -406,6 +409,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 	}
 	fmt.Printf("Time taken: %.2fs\n", verifyDuration.Seconds())
 	fmt.Printf("Read rate: %.0f events/s\n", readRate)
+	fmt.Printf("searchTotalQueryEventNum: %d", searchTotalQueryEventNum)
 
 	if failCount > 0 {
 		return fmt.Errorf("verification failed for %d events", failCount)
@@ -416,30 +420,12 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 func main() {
 	// Parse command-line flags
 	flags := &CommandLineFlags{}
-	simpleDebug := flag.Bool("simple", false, "Run simple debug test")
-	keyDebug := flag.Bool("key", false, "Run key building debug")
-	roundtripTest := flag.Bool("roundtrip", false, "Test string roundtrip")
 	flag.IntVar(&flags.EventCount, "count", 1000000, "Total number of events to generate and write")
 	flag.IntVar(&flags.BatchSize, "batch", 10000, "Batch size for writing events")
 	flag.StringVar(&flags.DataDir, "dir", "./testdata", "Data directory for event store")
 	flag.IntVar(&flags.VerifyCount, "verify", 100, "Number of events to verify after writing (0 to skip)")
 	flag.BoolVar(&flags.UseSearchIndex, "search", false, "Use search index for verification (queries by tags if available)")
 	flag.Parse()
-
-	if *simpleDebug {
-		SimpleTestSearchKey()
-		return
-	}
-
-	if *keyDebug {
-		KeyDebug()
-		return
-	}
-
-	if *roundtripTest {
-		TestStringRoundtrip()
-		return
-	}
 
 	// Debug modes are archived - they're available in the archive/ directory if needed
 
