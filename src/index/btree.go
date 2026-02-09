@@ -201,15 +201,6 @@ func (i *BTreeIndex) buildIterator(ctx context.Context, minKey []byte, maxKey []
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
-	// DEBUG: Log the search range
-	debugSearchType := byte(0)
-	if len(minKey) > 4 {
-		debugSearchType = minKey[4]
-	}
-	fmt.Printf("[btree DEBUG] Range query: searchType=%d, totalKeys=%d\n", debugSearchType, len(i.data))
-	fmt.Printf("[btree DEBUG] minKey: %x\n", minKey)
-	fmt.Printf("[btree DEBUG] maxKey: %x\n", maxKey)
-
 	keys := make([][]byte, 0, len(i.data))
 	for k := range i.data {
 		keys = append(keys, []byte(k))
@@ -219,23 +210,10 @@ func (i *BTreeIndex) buildIterator(ctx context.Context, minKey []byte, maxKey []
 		return bytes.Compare(keys[a], keys[b]) < 0
 	})
 
-	// DEBUG: Log first few keys
-	fmt.Printf("[btree DEBUG] First 5 sorted keys:\n")
-	for i := 0; i < len(keys) && i < 5; i++ {
-		fmt.Printf("  %d: %x\n", i, keys[i])
-	}
-
 	entries := make([]kvPair, 0)
 	for _, k := range keys {
 		cmpMin := bytes.Compare(k, minKey)
 		cmpMax := bytes.Compare(k, maxKey)
-		inRange := cmpMin >= 0 && cmpMax <= 0
-
-		// DEBUG: Log comparison for keys that might match (same searchType)
-		if len(k) > 4 && k[4] == debugSearchType {
-			fmt.Printf("[btree DEBUG]   key=%x: cmpMin=%d, cmpMax=%d, inRange=%v\n", k[:min(len(k), 20)], cmpMin, cmpMax, inRange)
-		}
-
 		if cmpMin < 0 || cmpMax > 0 {
 			continue
 		}
@@ -244,8 +222,6 @@ func (i *BTreeIndex) buildIterator(ctx context.Context, minKey []byte, maxKey []
 		copy(keyCopy, k)
 		entries = append(entries, kvPair{Key: keyCopy, Value: loc})
 	}
-
-	fmt.Printf("[btree DEBUG] Found %d matching entries\n", len(entries))
 
 	if desc {
 		reverse(entries)

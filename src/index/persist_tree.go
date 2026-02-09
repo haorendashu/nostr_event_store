@@ -474,7 +474,7 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	})
 	if desc {
 		idx = sort.Search(len(node.keys), func(i int) bool {
-			return compareKeys(node.keys[i], maxKey) > 0
+			return compareKeys(node.keys[i], maxKey) >= 0
 		}) - 1
 		if idx < 0 {
 			idx = 0
@@ -551,6 +551,38 @@ func (it *btreeIterator) Next() error {
 			if it.index < len(it.current.keys) {
 				key := it.current.keys[it.index]
 				if it.maxKey != nil && compareKeys(key, it.maxKey) > 0 {
+					it.valid = false
+					return nil
+				}
+				it.valid = true
+				return nil
+			}
+		}
+		it.valid = false
+	} else {
+		// Reverse iteration: move backward through the tree
+		it.index--
+		if it.index >= 0 {
+			key := it.current.keys[it.index]
+			if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
+				it.valid = false
+				return nil
+			}
+			it.valid = true
+			return nil
+		}
+
+		if it.current.prev != 0 {
+			node, err := it.tree.loadNode(it.current.prev)
+			if err != nil {
+				it.valid = false
+				return err
+			}
+			it.current = node
+			it.index = len(it.current.keys) - 1
+			if it.index >= 0 {
+				key := it.current.keys[it.index]
+				if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
 					it.valid = false
 					return nil
 				}

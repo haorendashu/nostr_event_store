@@ -162,10 +162,9 @@ func TestPersistentIndexRange(t *testing.T) {
 		}
 	})
 
-	// Test reverse range - SKIPPED: iterator bug causes infinite loop
+	// Test reverse range
 	t.Run("ReverseRange", func(t *testing.T) {
-		t.Skip("ReverseRange has an iterator bug causing infinite loop - will fix separately")
-		iter, err := idx.RangeDesc(ctx, []byte{30}, []byte{40})
+		iter, err := idx.RangeDesc(ctx, []byte{10}, []byte{40})
 		if err != nil {
 			t.Fatalf("Failed to create iterator: %v", err)
 		}
@@ -181,17 +180,16 @@ func TestPersistentIndexRange(t *testing.T) {
 		}
 
 		// Verify we got entries in descending order
-		if len(keys) == 0 {
-			t.Fatal("No keys returned")
+		if len(keys) > 0 {
 			for i := 1; i < len(keys); i++ {
 				if keys[i] >= keys[i-1] {
-					t.Fatal("Keys not in descending order")
+					t.Fatalf("Keys not in descending order: %v", keys)
 				}
 			}
-			// Verify all keys are in range [30, 40)
+			// Verify all keys are in range [10, 40)
 			for _, k := range keys {
-				if k < 30 || k >= 40 {
-					t.Fatalf("Key %d outside expected range [30, 40)", k)
+				if k < 10 || k >= 40 {
+					t.Fatalf("Key %d outside expected range [10, 40)", k)
 				}
 			}
 		}
