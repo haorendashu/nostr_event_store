@@ -36,6 +36,12 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.StorageConfig.EventBufferSize == 0 {
 		return fmt.Errorf("storage.event_buffer_size must be > 0")
 	}
+	if cfg.StorageConfig.WriteBatchSize <= 0 {
+		return fmt.Errorf("storage.write_batch_size must be > 0")
+	}
+	if cfg.StorageConfig.WriteBatchSize > 10000 {
+		return fmt.Errorf("storage.write_batch_size must be <= 10000 (memory constraint)")
+	}
 
 	if cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB <= 0 {
 		return fmt.Errorf("index.cache.primary_index_cache_mb must be > 0")

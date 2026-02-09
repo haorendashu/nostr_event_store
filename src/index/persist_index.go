@@ -40,7 +40,11 @@ func NewPersistentBTreeIndexWithType(path string, config Config, indexType uint3
 	}
 
 	// Create node cache (default: 10MB per index)
-	cache := newNodeCache(file, 10)
+	cacheMB := cacheMBForIndexType(config, indexType)
+	if cacheMB <= 0 {
+		cacheMB = 10
+	}
+	cache := newNodeCache(file, cacheMB)
 
 	// Open B+Tree
 	tree, err := openBTree(file, cache)
@@ -57,6 +61,19 @@ func NewPersistentBTreeIndexWithType(path string, config Config, indexType uint3
 		config: config,
 		closed: false,
 	}, nil
+}
+
+func cacheMBForIndexType(cfg Config, indexType uint32) int {
+	switch indexType {
+	case indexTypePrimary:
+		return cfg.PrimaryIndexCacheMB
+	case indexTypeAuthorTime:
+		return cfg.AuthorTimeIndexCacheMB
+	case indexTypeSearch:
+		return cfg.SearchIndexCacheMB
+	default:
+		return 10
+	}
 }
 
 // Insert adds a key-value pair to the index

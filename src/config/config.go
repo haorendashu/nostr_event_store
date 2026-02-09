@@ -53,6 +53,11 @@ type StorageConfig struct {
 	// EventBufferSize is the size of the in-memory event buffer before flush.
 	// Default: 16 MB (16777216)
 	EventBufferSize uint32 `json:"event_buffer_size,omitempty"`
+
+	// WriteBatchSize is the maximum number of events to process in a single sub-batch.
+	// Smaller values reduce memory usage, larger values improve throughput.
+	// Default: 500
+	WriteBatchSize int `json:"write_batch_size,omitempty"`
 }
 
 // IndexConfig defines indexing parameters including search type configuration.
@@ -277,6 +282,9 @@ func (m *ManagerImpl) LoadFromEnv(ctx context.Context) error {
 	if v, ok := getEnvUint32("NOSTR_STORE_EVENT_BUFFER_SIZE"); ok {
 		m.config.StorageConfig.EventBufferSize = v
 	}
+	if v, ok := getEnvInt("NOSTR_STORE_WRITE_BATCH_SIZE"); ok {
+		m.config.StorageConfig.WriteBatchSize = v
+	}
 
 	if v, ok := getEnvString("NOSTR_STORE_INDEX_DIR"); ok {
 		m.config.IndexConfig.IndexDir = v
@@ -355,6 +363,9 @@ func (m *ManagerImpl) SetDefaults() {
 	}
 	if m.config.StorageConfig.EventBufferSize == 0 {
 		m.config.StorageConfig.EventBufferSize = defaults.StorageConfig.EventBufferSize
+	}
+	if m.config.StorageConfig.WriteBatchSize == 0 {
+		m.config.StorageConfig.WriteBatchSize = defaults.StorageConfig.WriteBatchSize
 	}
 
 	if m.config.IndexConfig.IndexDir == "" {
@@ -541,6 +552,7 @@ func DefaultConfig() *Config {
 			PageSize:        4096,
 			MaxSegmentSize:  1073741824, // 1 GB
 			EventBufferSize: 16777216,   // 16 MB
+			WriteBatchSize:  500,        // 500 events per sub-batch
 		},
 		IndexConfig: IndexConfig{
 			IndexDir:           "./data/indexes",
@@ -681,6 +693,9 @@ func mergeConfig(dst *Config, src *Config) {
 	}
 	if src.StorageConfig.EventBufferSize != 0 {
 		dst.StorageConfig.EventBufferSize = src.StorageConfig.EventBufferSize
+	}
+	if src.StorageConfig.WriteBatchSize != 0 {
+		dst.StorageConfig.WriteBatchSize = src.StorageConfig.WriteBatchSize
 	}
 
 	if src.IndexConfig.IndexDir != "" {

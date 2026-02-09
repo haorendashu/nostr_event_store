@@ -378,7 +378,12 @@ func (e *eventStoreImpl) WriteEvents(ctx context.Context, events []*types.Event)
 	}
 
 	// Process events in sub-batches to control memory usage
-	const subBatchSize = 1000
+	// Use configured batch size (default 500) to balance throughput and memory
+	cfg := e.config.Get()
+	subBatchSize := cfg.StorageConfig.WriteBatchSize
+	if subBatchSize <= 0 {
+		subBatchSize = 500 // Fallback default
+	}
 	allLocations := make([]types.RecordLocation, 0, len(events))
 
 	for batchStart := 0; batchStart < len(events); batchStart += subBatchSize {
