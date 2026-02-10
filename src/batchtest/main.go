@@ -399,6 +399,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 			}
 
 			authorTotalQueryEventNum += len(authorEventResults)
+			successCount++
 		}
 	}
 
@@ -414,7 +415,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 		fmt.Printf("Search index queries: %d\n", searchQueryCount)
 	}
 	fmt.Printf("Time taken: %.2fs\n", verifyDuration.Seconds())
-	fmt.Printf("Read rate: %.0f events/s\n", readRate)
+	fmt.Printf("Read TPS: %.0f\n", readRate)
 	fmt.Printf("searchTotalQueryEventNum: %d\n", searchTotalQueryEventNum)
 	fmt.Printf("authorTotalQueryEventNum: %d\n", authorTotalQueryEventNum)
 
