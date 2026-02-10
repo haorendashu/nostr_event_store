@@ -108,6 +108,12 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.WALConfig.MaxSegmentSize == 0 {
 		return fmt.Errorf("wal.max_segment_size must be > 0")
 	}
+	if cfg.WALConfig.CheckpointIntervalMs < 0 {
+		return fmt.Errorf("wal.checkpoint_interval_ms must be >= 0")
+	}
+	if cfg.WALConfig.CheckpointEventCount < 0 {
+		return fmt.Errorf("wal.checkpoint_event_count must be >= 0")
+	}
 
 	if cfg.CompactionConfig.FragmentationThreshold <= 0 || cfg.CompactionConfig.FragmentationThreshold >= 1 {
 		return fmt.Errorf("compaction.fragmentation_threshold must be between 0 and 1")

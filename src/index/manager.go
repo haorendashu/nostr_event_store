@@ -37,33 +37,22 @@ func (m *manager) Open(ctx context.Context, dir string, cfg Config) error {
 
 	m.keyBuilder = NewKeyBuilder(cfg.TagNameToSearchTypeCode)
 
-	// Validate existing index files for corruption
-	needsRecovery, validationErr := ValidateIndexes(dir, cfg)
-	if validationErr != nil {
-		// Validation failed, but we can still continue with fresh indexes
-		// Error is logged internally by ValidateIndexes
-	}
-	if needsRecovery {
-		// Corrupted index files have been deleted by ValidateIndexes
-		// Fresh indexes will be created below
-	}
-
 	// Create persistent indexes
 	var err error
-	primaryPath := filepath.Join(dir, "indexes", "primary.idx")
+	primaryPath := filepath.Join(dir, "primary.idx")
 	m.primary, err = NewPersistentBTreeIndexWithType(primaryPath, cfg, indexTypePrimary)
 	if err != nil {
 		return err
 	}
 
-	authorTimePath := filepath.Join(dir, "indexes", "author_time.idx")
+	authorTimePath := filepath.Join(dir, "author_time.idx")
 	m.authorTime, err = NewPersistentBTreeIndexWithType(authorTimePath, cfg, indexTypeAuthorTime)
 	if err != nil {
 		m.primary.Close()
 		return err
 	}
 
-	searchPath := filepath.Join(dir, "indexes", "search.idx")
+	searchPath := filepath.Join(dir, "search.idx")
 	m.search, err = NewPersistentBTreeIndexWithType(searchPath, cfg, indexTypeSearch)
 	if err != nil {
 		m.primary.Close()

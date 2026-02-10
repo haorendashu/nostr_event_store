@@ -44,9 +44,11 @@ func ValidateIndexFile(path string, indexType uint32, pageSize uint32) (bool, er
 	return true, nil
 }
 
-// ValidateIndexes checks all index files and returns (needsRecovery, error)
+// ValidateIndexes checks all index files
+// Returns: (allValid, error)
+// Does NOT delete files - caller should check allValid and delete if needed
 func ValidateIndexes(dir string, cfg Config) (bool, error) {
-	indexesDir := filepath.Join(dir, "indexes")
+	indexesDir := dir
 	pageSize := cfg.PageSize
 	if pageSize == 0 {
 		pageSize = 4096
@@ -78,14 +80,33 @@ func ValidateIndexes(dir string, cfg Config) (bool, error) {
 	// If all indexes are valid, no recovery needed
 	if primaryValid && authorTimeValid && searchValid {
 		fmt.Println("[index] All index files validated successfully")
-		return false, nil
+		return true, nil
 	}
 
-	// Some indexes need recovery
-	fmt.Printf("[index] Indexes need recovery (primary=%v, authorTime=%v, search=%v)\n",
+	// Some indexes are invalid
+	fmt.Printf("[index] Indexes validation failed (primary=%v, authorTime=%v, search=%v)\n",
 		primaryValid, authorTimeValid, searchValid)
 
-	// Delete corrupted or missing index files to force clean rebuild
+	return false, nil
+}
+
+// DeleteInvalidIndexes deletes corrupted or missing index files
+func DeleteInvalidIndexes(dir string, cfg Config) error {
+	indexesDir := dir
+	pageSize := cfg.PageSize
+	if pageSize == 0 {
+		pageSize = 4096
+	}
+
+	// Check each index file
+	primaryPath := filepath.Join(indexesDir, "primary.idx")
+	authorTimePath := filepath.Join(indexesDir, "author_time.idx")
+	searchPath := filepath.Join(indexesDir, "search.idx")
+
+	primaryValid, _ := ValidateIndexFile(primaryPath, indexTypePrimary, pageSize)
+	authorTimeValid, _ := ValidateIndexFile(authorTimePath, indexTypeAuthorTime, pageSize)
+	searchValid, _ := ValidateIndexFile(searchPath, indexTypeSearch, pageSize)
+
 	if !primaryValid {
 		fmt.Println("[index] Removing invalid primary.idx")
 		os.Remove(primaryPath)
@@ -99,5 +120,5 @@ func ValidateIndexes(dir string, cfg Config) (bool, error) {
 		os.Remove(searchPath)
 	}
 
-	return true, nil
+	return nil
 }

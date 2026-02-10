@@ -31,17 +31,27 @@ func (m *FileManager) Open(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	checkpoints, err := scanAllCheckpoints(cfg.Dir)
+	segments, err := listWalSegments(cfg.Dir)
 	if err != nil {
 		return err
 	}
-	m.checkpoints = checkpoints
-
-	if len(checkpoints) > 0 {
-		last := checkpoints[len(checkpoints)-1]
-		m.writer.checkpoint = &Checkpoint{
-			LSN:       last.LSN,
-			Timestamp: last.Timestamp,
+	if len(segments) > 0 {
+		last := segments[len(segments)-1]
+		file, err := os.Open(last.path)
+		if err != nil {
+			return fmt.Errorf("open WAL segment for checkpoint: %w", err)
+		}
+		checkpointLSN, readErr := readWalHeaderCheckpoint(file)
+		_ = file.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if checkpointLSN > 0 {
+			m.checkpoints = []Checkpoint{{LSN: checkpointLSN, Timestamp: 0}}
+			m.writer.checkpoint = &Checkpoint{
+				LSN:       checkpointLSN,
+				Timestamp: 0,
+			}
 		}
 	}
 

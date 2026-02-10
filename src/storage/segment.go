@@ -22,6 +22,7 @@ type FileSegment struct {
 	maxSize     uint64
 	currentSize uint64
 	nextOffset  uint32
+	recordCount uint32
 	isReadOnly  bool
 	mu          sync.RWMutex
 }
@@ -51,6 +52,7 @@ func NewFileSegment(id uint32, filePath string, pageSize uint32, maxSize uint64,
 		maxSize:     maxSize,
 		currentSize: uint64(stat.Size()),
 		nextOffset:  pageSize, // Start after header page
+		recordCount: 0,
 		isReadOnly:  readOnly,
 	}
 
@@ -274,11 +276,16 @@ func (s *FileSegment) writeSinglePageRecord(record *Record) error {
 	// Update offsets
 	s.nextOffset += record.Length
 	s.currentSize += uint64(record.Length)
+	s.recordCount++
 
 	// Align to next page if needed
 	if s.nextOffset%s.pageSize != 0 {
 		s.nextOffset = ((s.nextOffset / s.pageSize) + 1) * s.pageSize
 		s.currentSize = uint64(s.nextOffset)
+	}
+
+	if err := s.persistHeaderLocked(); err != nil {
+		return fmt.Errorf("persist header state: %w", err)
 	}
 
 	return nil
@@ -340,7 +347,24 @@ func (s *FileSegment) writeMultiPageRecord(record *Record) error {
 	totalPages := 1 + uint32(record.ContinuationCount)
 	s.nextOffset += totalPages * s.pageSize
 	s.currentSize = uint64(s.nextOffset)
+	s.recordCount++
 
+	if err := s.persistHeaderLocked(); err != nil {
+		return fmt.Errorf("persist header state: %w", err)
+	}
+
+	return nil
+}
+
+// persistNextOffsetLocked writes the next free offset to the segment header.
+// Caller must hold the segment lock.
+func (s *FileSegment) persistHeaderLocked() error {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint32(buf[0:4], s.recordCount)
+	binary.BigEndian.PutUint32(buf[4:8], s.nextOffset)
+	if _, err := s.file.WriteAt(buf, 20); err != nil {
+		return fmt.Errorf("write header state: %w", err)
+	}
 	return nil
 }
 
@@ -453,6 +477,7 @@ func (s *FileSegment) initHeaderPage() error {
 
 	// num_records (initially 0)
 	binary.BigEndian.PutUint32(header[20:24], 0)
+	s.recordCount = 0
 
 	// next_free_offset
 	binary.BigEndian.PutUint32(header[24:28], s.pageSize)
@@ -486,6 +511,9 @@ func (s *FileSegment) loadHeader() error {
 
 	// Load next_free_offset
 	s.nextOffset = binary.BigEndian.Uint32(header[24:28])
+
+	// Load num_records
+	s.recordCount = binary.BigEndian.Uint32(header[20:24])
 
 	return nil
 }

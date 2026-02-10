@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"nostr_event_store/src/compaction"
 	"nostr_event_store/src/config"
@@ -94,6 +95,19 @@ type eventStoreImpl struct {
 
 	// Options
 	opts *Options
+
+	// Index recovery marker
+	indexDir              string
+	indexDirtyOnStart     bool
+	indexFilesInvalidated bool // Set to true if index files were invalid and deleted during manager.Open()
+
+	// WAL checkpoint scheduling
+	checkpointInterval    time.Duration
+	checkpointEveryEvents int64
+	checkpointTicker      *time.Ticker
+	checkpointDone        chan struct{}
+	checkpointEventCount  int64
+	lastCheckpointLSN     uint64
 }
 
 // New creates a new EventStore instance.
@@ -170,6 +184,12 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 		return fmt.Errorf("open wal: %w", err)
 	}
 	e.walMgr = walMgr
+	if checkpoint, err := walMgr.LastCheckpoint(); err == nil {
+		e.logger.Printf("WAL checkpoint from header: LSN=%d", checkpoint.LSN)
+		atomic.StoreUint64(&e.lastCheckpointLSN, checkpoint.LSN)
+	} else {
+		e.logger.Printf("WAL checkpoint from header: none")
+	}
 
 	// Initialize storage (using src/store's EventStore implementation)
 	storageDir := filepath.Join(dir, "data")
@@ -181,9 +201,21 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	e.storage = storeImpl
 
 	// Initialize index manager
-	indexDir := filepath.Join(dir, "indexes")
+	indexDir := cfg.IndexConfig.IndexDir
 	indexCfg := cfg.ToIndexConfig()
 	indexCfg.Dir = indexDir
+	e.indexDir = indexDir
+	if err := e.initIndexDirtyMarker(indexDir); err != nil {
+		return fmt.Errorf("init index dirty marker: %w", err)
+	}
+
+	// Check if index files are valid before opening manager
+	indexFilesValid, _ := index.ValidateIndexes(indexDir, indexCfg)
+	if !indexFilesValid {
+		e.indexFilesInvalidated = true
+		_ = index.DeleteInvalidIndexes(indexDir, indexCfg)
+	}
+
 	indexMgrImpl := index.NewManager()
 	if err := indexMgrImpl.Open(ctx, indexDir, indexCfg); err != nil {
 		return fmt.Errorf("open index: %w", err)
@@ -201,9 +233,16 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 		}
 	}
 
+	// Configure WAL checkpoint scheduling
+	e.checkpointInterval = time.Duration(cfg.WALConfig.CheckpointIntervalMs) * time.Millisecond
+	e.checkpointEveryEvents = int64(cfg.WALConfig.CheckpointEventCount)
+	e.startCheckpointScheduler()
+
 	// Create checkpoint after successful open
-	if _, err := e.walMgr.Writer().CreateCheckpoint(ctx); err != nil {
+	if checkpointLSN, err := e.walMgr.Writer().CreateCheckpoint(ctx); err != nil {
 		e.logger.Printf("Warning: failed to create checkpoint: %v", err)
+	} else {
+		atomic.StoreUint64(&e.lastCheckpointLSN, checkpointLSN)
 	}
 
 	e.opened = true
@@ -225,6 +264,9 @@ func (e *eventStoreImpl) Close(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	e.stopCheckpointScheduler()
+	_ = e.clearIndexDirtyMarker()
 
 	// Flush pending data directly without locking (already holding write lock)
 	// Flush checks opened status but doesn't need the lock for its internal operations
@@ -355,6 +397,8 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 			e.logger.Printf("Warning: search index failed for tag %s: %v", tagName, err)
 		}
 	}
+
+	e.noteEventsWritten(1)
 
 	return loc, nil
 }
@@ -578,6 +622,8 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 			e.logger.Printf("Warning: search index batch update failed: %v", err)
 		}
 	}
+
+	e.noteEventsWritten(len(uniqueEvents))
 
 	return locations, nil
 }
@@ -813,17 +859,19 @@ func (n noOpCompactionManager) Close() error {
 func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	e.logger.Printf("Starting WAL recovery...")
 
-	// If indexes already contain data, avoid WAL replay to prevent overwriting
-	// locations with zero offsets (WAL insert entries currently don't include locations).
-	if stats := e.indexMgr.AllStats(); hasIndexEntries(stats) {
-		e.logger.Printf("WAL recovery skipped: indexes already populated")
+	if e.indexDirtyOnStart {
+		e.logger.Printf("WAL recovery: index dirty marker found, rebuilding from segments")
+		if err := e.rebuildIndexesFromSegments(ctx); err != nil {
+			return fmt.Errorf("rebuild indexes from segments: %w", err)
+		}
+	} else if e.indexFilesInvalidated {
+		e.logger.Printf("WAL recovery: index files were invalid, rebuilding from segments")
+		if err := e.rebuildIndexesFromSegments(ctx); err != nil {
+			return fmt.Errorf("rebuild indexes from segments: %w", err)
+		}
+	} else {
+		e.logger.Printf("WAL recovery skipped: index files present and valid")
 		return nil
-	}
-
-	// Rebuild indexes from segments when indexes are empty.
-	// This is safer than WAL replay because segment scans provide real locations.
-	if err := e.rebuildIndexesFromSegments(ctx); err != nil {
-		return fmt.Errorf("rebuild indexes from segments: %w", err)
 	}
 
 	// Verify after recovery if configured
@@ -835,6 +883,137 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (e *eventStoreImpl) initIndexDirtyMarker(indexDir string) error {
+	if indexDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(indexDir, 0755); err != nil {
+		return err
+	}
+
+	markerPath := filepath.Join(indexDir, ".dirty")
+	if _, err := os.Stat(markerPath); err == nil {
+		e.indexDirtyOnStart = true
+		e.logger.Printf("Detected index dirty marker (crash detected)")
+	} else if !os.IsNotExist(err) {
+		return err
+	} else {
+		e.logger.Printf("No index dirty marker found")
+	}
+
+	markerData := []byte(time.Now().UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(markerPath, markerData, 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (e *eventStoreImpl) clearIndexDirtyMarker() error {
+	if e.indexDir == "" {
+		return nil
+	}
+	markerPath := filepath.Join(e.indexDir, ".dirty")
+	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func hasIndexFiles(indexDir string) bool {
+	if indexDir == "" {
+		return false
+	}
+
+	indexFiles := []string{
+		"primary.idx",
+		"author_time.idx",
+		"search.idx",
+	}
+
+	for _, name := range indexFiles {
+		info, err := os.Stat(filepath.Join(indexDir, name))
+		if err != nil {
+			return false
+		}
+		if info.Size() == 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (e *eventStoreImpl) startCheckpointScheduler() {
+	if e.checkpointInterval <= 0 {
+		return
+	}
+	if e.checkpointTicker != nil {
+		return
+	}
+	e.checkpointTicker = time.NewTicker(e.checkpointInterval)
+	e.checkpointDone = make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-e.checkpointTicker.C:
+				e.createCheckpoint(context.Background(), "interval")
+			case <-e.checkpointDone:
+				return
+			}
+		}
+	}()
+}
+
+func (e *eventStoreImpl) stopCheckpointScheduler() {
+	if e.checkpointTicker != nil {
+		e.checkpointTicker.Stop()
+		e.checkpointTicker = nil
+	}
+	if e.checkpointDone != nil {
+		close(e.checkpointDone)
+		e.checkpointDone = nil
+	}
+}
+
+func (e *eventStoreImpl) noteEventsWritten(count int) {
+	if count <= 0 || e.checkpointEveryEvents <= 0 {
+		return
+	}
+
+	current := atomic.AddInt64(&e.checkpointEventCount, int64(count))
+	if current < e.checkpointEveryEvents {
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&e.checkpointEventCount, current, 0) {
+		return
+	}
+
+	e.createCheckpoint(context.Background(), "event-count")
+}
+
+func (e *eventStoreImpl) createCheckpoint(ctx context.Context, reason string) {
+	if e.walMgr == nil {
+		return
+	}
+
+	writer := e.walMgr.Writer()
+	lastLSN := writer.LastLSN()
+	lastCheckpoint := atomic.LoadUint64(&e.lastCheckpointLSN)
+	if lastLSN == 0 || lastLSN == lastCheckpoint {
+		return
+	}
+
+	checkpointLSN, err := writer.CreateCheckpoint(ctx)
+	if err != nil {
+		e.logger.Printf("Warning: failed to create checkpoint (%s): %v", reason, err)
+		return
+	}
+	atomic.StoreUint64(&e.lastCheckpointLSN, checkpointLSN)
+	e.logger.Printf("WAL checkpoint created (%s): LSN=%d", reason, checkpointLSN)
 }
 
 func hasIndexEntries(stats map[string]index.Stats) bool {

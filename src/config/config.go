@@ -159,6 +159,14 @@ type WALConfig struct {
 	// MaxSegmentSize is the maximum size of a WAL segment before rotation.
 	// Default: 1 GB (1073741824)
 	MaxSegmentSize uint64 `json:"max_segment_size,omitempty"`
+
+	// CheckpointIntervalMs is the periodic interval for WAL checkpoints.
+	// Default: 30000 ms (30 seconds)
+	CheckpointIntervalMs int `json:"checkpoint_interval_ms,omitempty"`
+
+	// CheckpointEventCount is the number of events between WAL checkpoints.
+	// Default: 5000 events
+	CheckpointEventCount int `json:"checkpoint_event_count,omitempty"`
 }
 
 // CompactionConfig defines background compaction parameters.
@@ -323,6 +331,12 @@ func (m *ManagerImpl) LoadFromEnv(ctx context.Context) error {
 	if v, ok := getEnvUint64("NOSTR_STORE_WAL_MAX_SEGMENT_SIZE"); ok {
 		m.config.WALConfig.MaxSegmentSize = v
 	}
+	if v, ok := getEnvInt("NOSTR_STORE_WAL_CHECKPOINT_INTERVAL_MS"); ok {
+		m.config.WALConfig.CheckpointIntervalMs = v
+	}
+	if v, ok := getEnvInt("NOSTR_STORE_WAL_CHECKPOINT_EVENTS"); ok {
+		m.config.WALConfig.CheckpointEventCount = v
+	}
 
 	if v, ok := getEnvBool("NOSTR_STORE_COMPACTION_ENABLED"); ok {
 		m.config.CompactionConfig.Enabled = v
@@ -411,6 +425,12 @@ func (m *ManagerImpl) SetDefaults() {
 	}
 	if m.config.WALConfig.MaxSegmentSize == 0 {
 		m.config.WALConfig.MaxSegmentSize = defaults.WALConfig.MaxSegmentSize
+	}
+	if m.config.WALConfig.CheckpointIntervalMs == 0 {
+		m.config.WALConfig.CheckpointIntervalMs = defaults.WALConfig.CheckpointIntervalMs
+	}
+	if m.config.WALConfig.CheckpointEventCount == 0 {
+		m.config.WALConfig.CheckpointEventCount = defaults.WALConfig.CheckpointEventCount
 	}
 
 	if m.config.CompactionConfig.FragmentationThreshold == 0 {
@@ -589,11 +609,13 @@ func DefaultConfig() *Config {
 			DirtyThreshold:  128,
 		},
 		WALConfig: WALConfig{
-			WALDir:          "./data/wal",
-			SyncMode:        "batch",
-			BatchIntervalMs: 100,
-			BatchSizeBytes:  10485760,   // 10 MB
-			MaxSegmentSize:  1073741824, // 1 GB
+			WALDir:               "./data/wal",
+			SyncMode:             "batch",
+			BatchIntervalMs:      100,
+			BatchSizeBytes:       10485760,   // 10 MB
+			MaxSegmentSize:       1073741824, // 1 GB
+			CheckpointIntervalMs: 30000,
+			CheckpointEventCount: 5000,
 		},
 		CompactionConfig: CompactionConfig{
 			Enabled:                  true,
@@ -740,6 +762,12 @@ func mergeConfig(dst *Config, src *Config) {
 	}
 	if src.WALConfig.MaxSegmentSize != 0 {
 		dst.WALConfig.MaxSegmentSize = src.WALConfig.MaxSegmentSize
+	}
+	if src.WALConfig.CheckpointIntervalMs != 0 {
+		dst.WALConfig.CheckpointIntervalMs = src.WALConfig.CheckpointIntervalMs
+	}
+	if src.WALConfig.CheckpointEventCount != 0 {
+		dst.WALConfig.CheckpointEventCount = src.WALConfig.CheckpointEventCount
 	}
 
 	if src.CompactionConfig.Enabled {
