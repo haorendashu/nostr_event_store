@@ -13,7 +13,7 @@ import (
 // Scanner provides sequential scanning of records in a segment.
 // Handles both single-page and multi-page records transparently.
 type Scanner struct {
-	segment      *FileSegment
+	segment       *FileSegment
 	currentOffset uint32
 	segmentSize   uint64
 	pageSize      uint32
@@ -22,7 +22,7 @@ type Scanner struct {
 // NewScanner creates a new scanner for the given segment.
 func NewScanner(segment *FileSegment) *Scanner {
 	return &Scanner{
-		segment:      segment,
+		segment:       segment,
 		currentOffset: segment.pageSize, // Start after header page
 		segmentSize:   segment.currentSize,
 		pageSize:      segment.pageSize,
@@ -49,6 +49,20 @@ func (s *Scanner) Next(ctx context.Context) (*Record, types.RecordLocation, erro
 
 	recordLen := binary.BigEndian.Uint32(header[0:4])
 	recordFlags := types.EventFlags(header[4])
+
+	// Validate record length
+	if recordLen == 0 {
+		return nil, types.RecordLocation{}, fmt.Errorf("invalid record length 0 at offset %d", s.currentOffset)
+	}
+	if recordLen > 100*1024*1024 { // 100MB max per record
+		return nil, types.RecordLocation{}, fmt.Errorf("record length %d exceeds maximum (100MB) at offset %d", recordLen, s.currentOffset)
+	}
+
+	// Validate record fits within segment
+	if uint64(s.currentOffset)+uint64(recordLen) > s.segmentSize {
+		return nil, types.RecordLocation{}, fmt.Errorf("record length %d at offset %d exceeds segment size %d (would need %d bytes)",
+			recordLen, s.currentOffset, s.segmentSize, uint64(s.currentOffset)+uint64(recordLen))
+	}
 
 	location := types.RecordLocation{
 		SegmentID: s.segment.id,
@@ -99,8 +113,20 @@ func (s *Scanner) Reset() {
 
 // readSinglePageRecord reads a single-page record at current offset.
 func (s *Scanner) readSinglePageRecord(length uint32, flags types.EventFlags) (*Record, error) {
+	// Validate we have enough data in the segment
+	if uint64(s.currentOffset)+uint64(length) > s.segmentSize {
+		return nil, fmt.Errorf("record at offset %d with length %d exceeds segment size %d (possible truncation)",
+			s.currentOffset, length, s.segmentSize)
+	}
+
 	data := make([]byte, length)
-	if _, err := s.segment.file.ReadAt(data, int64(s.currentOffset)); err != nil {
+	n, err := s.segment.file.ReadAt(data, int64(s.currentOffset))
+	if err != nil {
+		if err == io.EOF && n > 0 {
+			// Partial read - file was truncated
+			return nil, fmt.Errorf("read data: partial read %d/%d bytes at offset %d (file truncated): %w",
+				n, length, s.currentOffset, err)
+		}
 		return nil, fmt.Errorf("read data: %w", err)
 	}
 
@@ -114,6 +140,12 @@ func (s *Scanner) readSinglePageRecord(length uint32, flags types.EventFlags) (*
 
 // readMultiPageRecord reads and reconstructs a multi-page record at current offset.
 func (s *Scanner) readMultiPageRecord(length uint32, flags types.EventFlags) (*Record, error) {
+	// Validate offset + length is within bounds (already checked in Next, but double-check)
+	if uint64(s.currentOffset)+uint64(length) > s.segmentSize {
+		return nil, fmt.Errorf("multi-page record at offset %d with length %d exceeds segment size %d",
+			s.currentOffset, length, s.segmentSize)
+	}
+
 	// Read first page
 	firstPage := make([]byte, s.pageSize)
 	if _, err := s.segment.file.ReadAt(firstPage, int64(s.currentOffset)); err != nil {
@@ -185,11 +217,11 @@ func (s *Scanner) readMultiPageRecord(length uint32, flags types.EventFlags) (*R
 // ReverseScanner provides backward scanning of records in a segment.
 // Note: Backward scanning of multi-page records requires reading forward from page boundaries.
 type ReverseScanner struct {
-	segment      *FileSegment
-	currentPage  uint32 // Current page number (counting from 0)
-	totalPages   uint32
-	pageSize     uint32
-	visited      map[uint32]bool // Track visited pages to skip continuation pages
+	segment     *FileSegment
+	currentPage uint32 // Current page number (counting from 0)
+	totalPages  uint32
+	pageSize    uint32
+	visited     map[uint32]bool // Track visited pages to skip continuation pages
 }
 
 // NewReverseScanner creates a new reverse scanner for the given segment.
@@ -217,7 +249,7 @@ func (s *ReverseScanner) Prev(ctx context.Context) (*Record, types.RecordLocatio
 
 		// Check if this page starts a record
 		offset := s.currentPage * s.pageSize
-		
+
 		// Try to read as a record header
 		header := make([]byte, 7)
 		if _, err := s.segment.file.ReadAt(header, int64(offset)); err != nil {
@@ -245,7 +277,7 @@ func (s *ReverseScanner) Prev(ctx context.Context) (*Record, types.RecordLocatio
 		if recordFlags.IsContinued() {
 			// Multi-page record
 			continuationCount := binary.BigEndian.Uint16(header[5:7])
-			
+
 			// Mark all pages of this record as visited
 			for i := uint32(0); i <= uint32(continuationCount); i++ {
 				s.visited[s.currentPage+i] = true
@@ -253,10 +285,10 @@ func (s *ReverseScanner) Prev(ctx context.Context) (*Record, types.RecordLocatio
 
 			// Read the full multi-page record
 			scanner := &Scanner{
-				segment:      s.segment,
+				segment:       s.segment,
 				currentOffset: offset,
 				segmentSize:   s.segment.currentSize,
-				pageSize:     s.pageSize,
+				pageSize:      s.pageSize,
 			}
 			record, err = scanner.readMultiPageRecord(recordLen, recordFlags)
 			if err != nil {
@@ -268,10 +300,10 @@ func (s *ReverseScanner) Prev(ctx context.Context) (*Record, types.RecordLocatio
 			s.visited[s.currentPage] = true
 
 			scanner := &Scanner{
-				segment:      s.segment,
+				segment:       s.segment,
 				currentOffset: offset,
 				segmentSize:   s.segment.currentSize,
-				pageSize:     s.pageSize,
+				pageSize:      s.pageSize,
 			}
 			record, err = scanner.readSinglePageRecord(recordLen, recordFlags)
 			if err != nil {

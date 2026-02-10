@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -184,6 +185,16 @@ func (s *FileSegment) Read(ctx context.Context, location types.RecordLocation) (
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Validate offset is within segment bounds
+	if uint64(location.Offset) >= s.currentSize {
+		return nil, fmt.Errorf("offset %d exceeds segment size %d", location.Offset, s.currentSize)
+	}
+
+	// Ensure we can read at least the minimum header (7 bytes)
+	if uint64(location.Offset)+7 > s.currentSize {
+		return nil, fmt.Errorf("insufficient data for record header at offset %d (segment size: %d)", location.Offset, s.currentSize)
+	}
+
 	// Read record header to determine if multi-page
 	header := make([]byte, 7) // record_len(4) + record_flags(1) + continuation_count(2)
 	if _, err := s.file.ReadAt(header, int64(location.Offset)); err != nil {
@@ -192,6 +203,20 @@ func (s *FileSegment) Read(ctx context.Context, location types.RecordLocation) (
 
 	recordLen := binary.BigEndian.Uint32(header[0:4])
 	recordFlags := types.EventFlags(header[4])
+
+	// Validate record length
+	if recordLen == 0 {
+		return nil, fmt.Errorf("invalid record length 0 at offset %d", location.Offset)
+	}
+	if recordLen > 100*1024*1024 { // 100MB max per record
+		return nil, fmt.Errorf("record length %d exceeds maximum (100MB) at offset %d", recordLen, location.Offset)
+	}
+
+	// Validate record fits within segment
+	if uint64(location.Offset)+uint64(recordLen) > s.currentSize {
+		return nil, fmt.Errorf("record length %d at offset %d exceeds segment size %d (would need %d bytes)",
+			recordLen, location.Offset, s.currentSize, uint64(location.Offset)+uint64(recordLen))
+	}
 
 	if recordFlags.IsContinued() {
 		// Multi-page record
@@ -321,8 +346,19 @@ func (s *FileSegment) writeMultiPageRecord(record *Record) error {
 
 // readSinglePageRecord reads a single-page record.
 func (s *FileSegment) readSinglePageRecord(offset, length uint32, flags types.EventFlags) (*Record, error) {
+	// Double-check boundaries (should have been validated by caller)
+	if uint64(offset)+uint64(length) > s.currentSize {
+		return nil, fmt.Errorf("record at offset %d with length %d exceeds segment size %d",
+			offset, length, s.currentSize)
+	}
+
 	data := make([]byte, length)
-	if _, err := s.file.ReadAt(data, int64(offset)); err != nil {
+	n, err := s.file.ReadAt(data, int64(offset))
+	if err != nil {
+		if err == io.EOF && n > 0 {
+			// Partial read - file was truncated
+			return nil, fmt.Errorf("read data: partial read %d/%d bytes (file truncated): %w", n, length, err)
+		}
 		return nil, fmt.Errorf("read data: %w", err)
 	}
 
@@ -336,6 +372,12 @@ func (s *FileSegment) readSinglePageRecord(offset, length uint32, flags types.Ev
 
 // readMultiPageRecord reads and reconstructs a multi-page record.
 func (s *FileSegment) readMultiPageRecord(offset, length uint32, flags types.EventFlags) (*Record, error) {
+	// Validate offset + length is within bounds
+	if uint64(offset)+uint64(length) > s.currentSize {
+		return nil, fmt.Errorf("multi-page record at offset %d with length %d exceeds segment size %d",
+			offset, length, s.currentSize)
+	}
+
 	// Read first page
 	firstPage := make([]byte, s.pageSize)
 	if _, err := s.file.ReadAt(firstPage, int64(offset)); err != nil {

@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	walHeaderSize  = 24
-	walMagic       = 0x574C414F
-	walVersion     = 1
-	walBaseName    = "wal.log"
-	walReadBufSize = 1024 * 1024
+	walHeaderSize    = 24
+	walMagic         = 0x574C414F
+	walVersion       = 1
+	walBaseName      = "wal.log"
+	walReadBufSize   = 1024 * 1024       // 1MB initial read buffer
+	walMaxRecordSize = 100 * 1024 * 1024 // 100MB max record size
 )
 
 // FileWriter implements the Writer interface using file-based storage.
@@ -148,6 +149,11 @@ func (w *FileWriter) Write(ctx context.Context, entry *Entry) (LSN, error) {
 	// Serialize entry
 	data := w.serializeEntry(entry)
 
+	// Validate record size
+	if len(data) > walMaxRecordSize {
+		return 0, fmt.Errorf("WAL entry too large: %d bytes (max %d)", len(data), walMaxRecordSize)
+	}
+
 	if err := w.ensureCapacityLocked(len(data)); err != nil {
 		return 0, err
 	}
@@ -198,7 +204,14 @@ func (w *FileWriter) WriteBatch(ctx context.Context, entries []*Entry) ([]LSN, e
 			entry.Timestamp = now
 		}
 		// Estimate size (header + data + checksum)
-		totalSize += 1 + 8 + 8 + 4 + len(entry.EventDataOrMetadata) + 8
+		entrySize := 1 + 8 + 8 + 4 + len(entry.EventDataOrMetadata) + 8
+
+		// Validate record size
+		if entrySize > walMaxRecordSize {
+			return nil, fmt.Errorf("WAL entry at index %d too large: %d bytes (max %d)", len(lsns), entrySize, walMaxRecordSize)
+		}
+
+		totalSize += entrySize
 	}
 
 	// Ensure buffer capacity
@@ -597,70 +610,166 @@ func (r *FileReader) openSegment(index int) error {
 	r.buffer = r.buffer[:0]
 	r.offset = 0
 
+	if os.Getenv("WAL_DIAG") == "1" {
+		msg := fmt.Sprintf("[wal/DIAG] openSegment: index=%d bufCap=%d (reset len to 0)\n",
+			index, cap(r.buffer))
+		os.Stderr.WriteString(msg)
+		os.Stderr.Sync()
+	}
+
 	return nil
 }
 
 func (r *FileReader) readNextInternal() (*Entry, error) {
-	if err := r.ensureBuffer(21); err != nil {
-		return nil, err
+	// ULTRA CRITICAL: Check if r.offset is invalid BEFORE anything else
+	if r.offset > len(r.buffer) {
+		msg := fmt.Sprintf("[wal/CRITICAL] Invalid state: offset=%d > bufLen=%d bufCap=%d\n",
+			r.offset, len(r.buffer), cap(r.buffer))
+		os.Stderr.WriteString(msg)
+		os.Stderr.Sync()
+		// Fix the state
+		r.offset = len(r.buffer)
 	}
 
-	offset := r.offset
-	opType := OpType(r.buffer[offset])
-	offset++
+	for {
+		if _, err := r.ensureBuffer(21); err != nil {
+			return nil, err
+		}
 
-	lsn := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
-	offset += 8
+		offset := r.offset
+		opType := OpType(r.buffer[offset])
+		offset++
 
-	timestamp := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
-	offset += 8
+		lsn := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
+		offset += 8
 
-	dataLen := binary.BigEndian.Uint32(r.buffer[offset : offset+4])
-	offset += 4
+		timestamp := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
+		offset += 8
 
-	entrySize := 21 + int(dataLen) + 8
-	if err := r.ensureBuffer(entrySize); err != nil {
-		return nil, err
+		dataLen := binary.BigEndian.Uint32(r.buffer[offset : offset+4])
+		offset += 4
+
+		// Validate dataLen to detect corruption or invalid records early
+		if dataLen > uint32(walMaxRecordSize) {
+			return nil, fmt.Errorf("WAL record data length too large: %d bytes (max %d) at LSN %d - possible corruption", dataLen, walMaxRecordSize, lsn)
+		}
+
+		entrySize := 21 + int(dataLen) + 8
+
+		// CRITICAL: Verify we have the required buffer space BEFORE calling ensureBuffer
+		requiredBytes := r.offset + entrySize
+		if requiredBytes > walMaxRecordSize+1000 { // Sanity check
+			return nil, fmt.Errorf("insane buffer requirement: offset=%d entrySize=%d required=%d for LSN=%d dataLen=%d - likely corruption",
+				r.offset, entrySize, requiredBytes, lsn, dataLen)
+		}
+
+		compacted, err := r.ensureBuffer(entrySize)
+		if err != nil {
+			return nil, err
+		}
+		if compacted {
+			if os.Getenv("WAL_DIAG") == "1" {
+				msg := fmt.Sprintf("[wal/DIAG] compacted buffer; re-reading header at offset=%d\n", r.offset)
+				os.Stderr.WriteString(msg)
+				os.Stderr.Sync()
+			}
+			// Buffer shifted; re-read header from the new offset to keep dataLen consistent
+			continue
+		}
+
+		// CRITICAL: Verify buffer actually has the bytes we need
+		if len(r.buffer) < r.offset+entrySize {
+			return nil, fmt.Errorf("ensureBuffer failed to provide enough data: have %d need %d (offset=%d entrySize=%d LSN=%d)",
+				len(r.buffer), r.offset+entrySize, r.offset, entrySize, lsn)
+		}
+
+		// Verify all slice operations will be valid
+		if offset+int(dataLen) > len(r.buffer) {
+			return nil, fmt.Errorf("dataLen slice would exceed buffer: offset=%d dataLen=%d bufLen=%d LSN=%d",
+				offset, dataLen, len(r.buffer), lsn)
+		}
+		if offset+int(dataLen)+8 > len(r.buffer) {
+			return nil, fmt.Errorf("checksum slice would exceed buffer: offset=%d dataLen=%d bufLen=%d LSN=%d",
+				offset, dataLen, len(r.buffer), lsn)
+		}
+
+		eventData := make([]byte, dataLen)
+		copy(eventData, r.buffer[offset:offset+int(dataLen)])
+		offset += int(dataLen)
+
+		storedChecksum := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
+		offset += 8
+
+		calculatedChecksum := crc64.Checksum(r.buffer[r.offset:offset-8], r.tableECMA)
+		if calculatedChecksum != storedChecksum {
+			return nil, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculatedChecksum, storedChecksum)
+		}
+
+		// CRITICAL: Verify offset doesn't exceed buffer before assignment
+		if offset > len(r.buffer) {
+			return nil, fmt.Errorf("offset calculation error: offset=%d exceeds bufLen=%d (LSN=%d dataLen=%d)",
+				offset, len(r.buffer), lsn, dataLen)
+		}
+
+		r.offset = offset
+		r.lastValidLSN = lsn
+
+		return &Entry{
+			Type:                opType,
+			LSN:                 lsn,
+			Timestamp:           timestamp,
+			EventDataOrMetadata: eventData,
+			Checksum:            storedChecksum,
+		}, nil
 	}
-
-	eventData := make([]byte, dataLen)
-	copy(eventData, r.buffer[offset:offset+int(dataLen)])
-	offset += int(dataLen)
-
-	storedChecksum := binary.BigEndian.Uint64(r.buffer[offset : offset+8])
-	offset += 8
-
-	calculatedChecksum := crc64.Checksum(r.buffer[r.offset:offset-8], r.tableECMA)
-	if calculatedChecksum != storedChecksum {
-		return nil, fmt.Errorf("checksum mismatch: got 0x%X, want 0x%X", calculatedChecksum, storedChecksum)
-	}
-
-	r.offset = offset
-	r.lastValidLSN = lsn
-
-	return &Entry{
-		Type:                opType,
-		LSN:                 lsn,
-		Timestamp:           timestamp,
-		EventDataOrMetadata: eventData,
-		Checksum:            storedChecksum,
-	}, nil
 }
 
-func (r *FileReader) ensureBuffer(minBytes int) error {
+func (r *FileReader) ensureBuffer(minBytes int) (bool, error) {
+	shifted := false
+
 	for len(r.buffer)-r.offset < minBytes {
+		// Step 1: Compact buffer to reclaim space
 		if r.offset > 0 && r.offset < len(r.buffer) {
 			remaining := len(r.buffer) - r.offset
+			// Safety check before compaction slice
+			if remaining < 0 || remaining > len(r.buffer) {
+				return false, fmt.Errorf("invalid remaining calculation: len=%d offset=%d remaining=%d",
+					len(r.buffer), r.offset, remaining)
+			}
+
+			if os.Getenv("WAL_DIAG") == "1" {
+				msg := fmt.Sprintf("[wal/DIAG] compact: offset=%d bufLen=%d remaining=%d\n",
+					r.offset, len(r.buffer), remaining)
+				os.Stderr.WriteString(msg)
+				os.Stderr.Sync()
+			}
+
 			copy(r.buffer, r.buffer[r.offset:])
+			// Safety check before reslice
+			if remaining > cap(r.buffer) {
+				return false, fmt.Errorf("compaction would exceed capacity: remaining=%d cap=%d minBytes=%d",
+					remaining, cap(r.buffer), minBytes)
+			}
 			r.buffer = r.buffer[:remaining]
 			r.offset = 0
+			shifted = true
+
+			if os.Getenv("WAL_DIAG") == "1" {
+				msg := fmt.Sprintf("[wal/DIAG] compacted: bufLen=%d bufCap=%d offset_reset=0\n",
+					len(r.buffer), cap(r.buffer))
+				os.Stderr.WriteString(msg)
+				os.Stderr.Sync()
+			}
 		} else if r.offset >= len(r.buffer) {
 			r.buffer = r.buffer[:0]
 			r.offset = 0
+			shifted = true
 		}
 
+		// Step 2: Grow buffer capacity FIRST if needed
+		// After compaction, r.offset is always 0, so we need minBytes total capacity
 		if cap(r.buffer) < minBytes {
-			// Need to grow buffer capacity
+			// Need to grow buffer capacity to at least minBytes
 			newCap := minBytes
 			if newCap < cap(r.buffer)*2 {
 				newCap = cap(r.buffer) * 2
@@ -668,36 +777,61 @@ func (r *FileReader) ensureBuffer(minBytes int) error {
 			newBuf := make([]byte, len(r.buffer), newCap)
 			copy(newBuf, r.buffer)
 			r.buffer = newBuf
+			// Verify the buffer was actually grown
+			if cap(r.buffer) < minBytes {
+				return false, fmt.Errorf("buffer growth failed: cap=%d minBytes=%d", cap(r.buffer), minBytes)
+			}
 		}
 
-		// Read more data to fill buffer up to capacity
+		// Step 4: Read more data into the available space
+		availableSpace := cap(r.buffer) - len(r.buffer)
+		if availableSpace <= 0 {
+			// Buffer is full but we still need more data
+			return false, fmt.Errorf("buffer full: cap=%d len=%d minBytes=%d", cap(r.buffer), len(r.buffer), minBytes)
+		}
+
+		// Step 4: Read more data into the available space
 		readInto := r.buffer[len(r.buffer):cap(r.buffer)]
 		n, err := r.file.Read(readInto)
+
 		if n > 0 {
-			r.buffer = r.buffer[:len(r.buffer)+n]
+			// Calculate new length BEFORE attempting slice operation
+			newLen := len(r.buffer) + n
+			// Defensive check AND detailed error to prevent panic
+			if newLen > cap(r.buffer) {
+				return false, fmt.Errorf("buffer overflow prevented: newLen=%d cap=%d len=%d n=%d minBytes=%d", newLen, cap(r.buffer), len(r.buffer), n, minBytes)
+			}
+			r.buffer = r.buffer[:newLen]
 		}
 
+		// Step 5: Handle EOF and segment boundaries
 		if err == io.EOF {
 			if len(r.buffer)-r.offset >= minBytes {
-				return nil
+				return shifted, nil
+			}
+			if os.Getenv("WAL_DIAG") == "1" {
+				msg := fmt.Sprintf("[wal/DIAG] EOF, trying next segment: minBytes=%d available=%d\n",
+					minBytes, len(r.buffer)-r.offset)
+				os.Stderr.WriteString(msg)
+				os.Stderr.Sync()
 			}
 			if err := r.openSegment(r.segmentIndex + 1); err != nil {
 				if err == io.EOF {
-					return io.EOF
+					return shifted, io.EOF
 				}
-				return err
+				return shifted, err
 			}
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("read buffer: %w", err)
+			return shifted, fmt.Errorf("read buffer: %w", err)
 		}
 		if n == 0 {
-			return io.EOF
+			return shifted, io.EOF
 		}
 	}
 
-	return nil
+	return shifted, nil
 }
 
 type walSegment struct {
