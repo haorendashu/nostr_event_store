@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -812,44 +813,17 @@ func (n noOpCompactionManager) Close() error {
 func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	e.logger.Printf("Starting WAL recovery...")
 
-	// Get reader from last checkpoint
-	reader, err := e.walMgr.Reader(ctx)
-	if err != nil {
-		return fmt.Errorf("create WAL reader: %w", err)
-	}
-	defer reader.Close()
-
-	// Create replayer with index manager
-	replayer := &indexReplayer{
-		storage:    e.storage,
-		indexMgr:   e.indexMgr,
-		keyBuilder: e.keyBuilder,
-		serializer: e.storage.Serializer(),
-		logger:     e.logger,
+	// If indexes already contain data, avoid WAL replay to prevent overwriting
+	// locations with zero offsets (WAL insert entries currently don't include locations).
+	if stats := e.indexMgr.AllStats(); hasIndexEntries(stats) {
+		e.logger.Printf("WAL recovery skipped: indexes already populated")
+		return nil
 	}
 
-	// Replay WAL entries
-	opts := wal.ReplayOptions{
-		StartLSN:    0, // Reader already positioned at checkpoint
-		StopOnError: false,
-		Serializer:  e.storage.Serializer(),
-	}
-
-	stats, err := wal.ReplayWAL(ctx, reader, replayer, opts)
-	if err != nil {
-		return fmt.Errorf("replay WAL: %w", err)
-	}
-
-	e.logger.Printf("WAL recovery completed: %d entries processed, %d inserts, %d updates",
-		stats.EntriesProcessed, stats.InsertsReplayed, stats.UpdatesReplayed)
-
-	if len(stats.Errors) > 0 {
-		e.logger.Printf("Warning: %d errors during recovery", len(stats.Errors))
-		for i, err := range stats.Errors {
-			if i < 10 { // Log first 10 errors
-				e.logger.Printf("  Recovery error %d: %v", i+1, err)
-			}
-		}
+	// Rebuild indexes from segments when indexes are empty.
+	// This is safer than WAL replay because segment scans provide real locations.
+	if err := e.rebuildIndexesFromSegments(ctx); err != nil {
+		return fmt.Errorf("rebuild indexes from segments: %w", err)
 	}
 
 	// Verify after recovery if configured
@@ -858,6 +832,72 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 		// Basic verification: check that indexes are readable
 		_ = e.indexMgr.AllStats()
 		e.logger.Printf("Index verification passed")
+	}
+
+	return nil
+}
+
+func hasIndexEntries(stats map[string]index.Stats) bool {
+	for _, stat := range stats {
+		if stat.EntryCount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
+	segmentIDs, err := e.storage.SegmentManager().ListSegments(ctx)
+	if err != nil {
+		return fmt.Errorf("list segments: %w", err)
+	}
+	if len(segmentIDs) == 0 {
+		return nil
+	}
+
+	replayer := &indexReplayer{
+		storage:    e.storage,
+		indexMgr:   e.indexMgr,
+		keyBuilder: e.keyBuilder,
+		serializer: e.storage.Serializer(),
+		logger:     e.logger,
+	}
+
+	for _, segmentID := range segmentIDs {
+		segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
+		if err != nil {
+			e.logger.Printf("Recovery warning: open segment %d failed: %v", segmentID, err)
+			continue
+		}
+
+		fileSeg, ok := segment.(*storage.FileSegment)
+		if !ok {
+			e.logger.Printf("Recovery warning: segment %d is not file-based", segmentID)
+			continue
+		}
+
+		scanner := storage.NewScanner(fileSeg)
+		for {
+			record, location, err := scanner.Next(ctx)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				e.logger.Printf("Recovery warning: segment %d offset %d read error: %v", segmentID, location.Offset, err)
+				continue
+			}
+
+			event, err := replayer.serializer.Deserialize(record)
+			if err != nil {
+				e.logger.Printf("Recovery warning: segment %d offset %d deserialize error: %v", segmentID, location.Offset, err)
+				continue
+			}
+
+			if err := replayer.OnInsert(ctx, event, location); err != nil {
+				e.logger.Printf("Recovery warning: segment %d offset %d index insert error: %v", segmentID, location.Offset, err)
+				continue
+			}
+		}
 	}
 
 	return nil
