@@ -103,14 +103,14 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 		switch impl.strategy {
 		case "author_time":
 			indexesUsed = append(indexesUsed, "author_time")
-			locationsWithTime, err = e.getAuthorTimeIndexResultsWithTime(ctx, impl)
+			locationsWithTime, err = e.getAuthorTimeIndexResults(ctx, impl, true)
 			if err != nil {
 				return nil, err
 			}
 
 		case "search":
 			indexesUsed = append(indexesUsed, "search")
-			locationsWithTime, err = e.getSearchIndexResultsWithTime(ctx, impl)
+			locationsWithTime, err = e.getSearchIndexResults(ctx, impl, true)
 			if err != nil {
 				return nil, err
 			}
@@ -189,12 +189,12 @@ regularPath:
 	case "author_time":
 		// Use author_time index for author + time queries
 		indexesUsed = append(indexesUsed, "author_time")
-		locations, err := e.getAuthorTimeIndexResults(ctx, impl)
+		locationsWithTime, err := e.getAuthorTimeIndexResults(ctx, impl, false)
 		if err != nil {
 			return nil, err
 		}
-		for _, loc := range locations {
-			event, err := e.store.ReadEvent(ctx, loc)
+		for _, locWithTime := range locationsWithTime {
+			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
 			if err != nil {
 				continue // Skip corrupted events
 			}
@@ -204,12 +204,12 @@ regularPath:
 	case "search":
 		// Use search index for tag queries
 		indexesUsed = append(indexesUsed, "search")
-		locations, err := e.getSearchIndexResults(ctx, impl)
+		locationsWithTime, err := e.getSearchIndexResults(ctx, impl, false)
 		if err != nil {
 			return nil, err
 		}
-		for _, loc := range locations {
-			event, err := e.store.ReadEvent(ctx, loc)
+		for _, locWithTime := range locationsWithTime {
+			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
 			if err != nil {
 				continue // Skip corrupted events
 			}
@@ -281,126 +281,35 @@ func (e *executorImpl) getPrimaryIndexResults(ctx context.Context, plan *planImp
 }
 
 // getAuthorTimeIndexResults gets locations from author_time index.
-func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *planImpl) ([]types.RecordLocation, error) {
+// Results are deduplicated based on SegmentID:Offset.
+// If extractTime is true, timestamps are extracted from index keys.
+func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *planImpl, extractTime bool) ([]types.LocationWithTime, error) {
 	atIdx := e.indexMgr.AuthorTimeIndex()
 	if atIdx == nil {
 		return nil, fmt.Errorf("author_time index not available")
 	}
-	keyBuilder := e.indexMgr.KeyBuilder()
-	if keyBuilder == nil {
+	if e.indexMgr.KeyBuilder() == nil {
 		return nil, fmt.Errorf("key builder not available")
 	}
 
-	var results []types.RecordLocation
-	kinds := plan.filter.Kinds
-
-	// For each author, build key range
-	for _, author := range plan.filter.Authors {
-		if len(kinds) == 0 {
-			startKey := keyBuilder.BuildAuthorTimeKey(author, 0, plan.filter.Since)
-			endTime := plan.filter.Until
-			if endTime == 0 {
-				endTime = ^uint32(0)
-			}
-			endKey := keyBuilder.BuildAuthorTimeKey(author, ^uint16(0), endTime)
-
-			iter, err := atIdx.Range(ctx, startKey, endKey)
-			if err != nil {
-				continue
-			}
-
-			for iter.Valid() {
-				results = append(results, iter.Value())
-				if err := iter.Next(); err != nil {
-					break
-				}
-			}
-			iter.Close()
-			continue
-		}
-
-		for _, kind := range kinds {
-			startKey := keyBuilder.BuildAuthorTimeKey(author, kind, plan.filter.Since)
-			endTime := plan.filter.Until
-			if endTime == 0 {
-				endTime = ^uint32(0)
-			}
-			endKey := keyBuilder.BuildAuthorTimeKey(author, kind, endTime)
-
-			iter, err := atIdx.Range(ctx, startKey, endKey)
-			if err != nil {
-				continue
-			}
-
-			for iter.Valid() {
-				results = append(results, iter.Value())
-				if err := iter.Next(); err != nil {
-					break
-				}
-			}
-			iter.Close()
-		}
-	}
-
-	return results, nil
+	ranges := e.buildAuthorTimeRanges(plan)
+	return e.queryIndexRanges(ctx, atIdx, ranges, extractTime)
 }
 
 // getSearchIndexResults gets locations from search index.
-func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl) ([]types.RecordLocation, error) {
+// Results are deduplicated based on SegmentID:Offset.
+// If extractTime is true, timestamps are extracted from index keys.
+func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl, extractTime bool) ([]types.LocationWithTime, error) {
 	searchIdx := e.indexMgr.SearchIndex()
 	if searchIdx == nil {
 		return nil, fmt.Errorf("search index not available")
 	}
-
-	keyBuilder := e.indexMgr.KeyBuilder()
-	if keyBuilder == nil {
+	if e.indexMgr.KeyBuilder() == nil {
 		return nil, fmt.Errorf("key builder not available")
 	}
-	searchTypeCodes := keyBuilder.TagNameToSearchTypeCode()
 
-	var results []types.RecordLocation
-
-	kinds := plan.filter.Kinds
-	if len(kinds) == 0 {
-		kinds = []uint16{0}
-	}
-
-	// Process generic Tags map
-	for tagName, tagValues := range plan.filter.Tags {
-		searchType, ok := searchTypeCodes[tagName]
-		if !ok {
-			// Skip unmapped tag names
-			continue
-		}
-
-		for _, tagValue := range tagValues {
-			for _, kind := range kinds {
-				startKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Since)
-				endKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Until)
-				if plan.filter.Until == 0 {
-					endKey = keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint32(0))
-				}
-				if shouldLogSearchIndexRange(tagName, tagValue) {
-					log.Printf("search index range: kind=%d tag=%s value_len=%d start=%s end=%s", kind, tagName, len(tagValue), hex.EncodeToString(startKey), hex.EncodeToString(endKey))
-				}
-
-				iter, err := searchIdx.Range(ctx, startKey, endKey)
-				if err != nil {
-					continue
-				}
-
-				for iter.Valid() {
-					results = append(results, iter.Value())
-					if err := iter.Next(); err != nil {
-						break
-					}
-				}
-				iter.Close()
-			}
-		}
-	}
-
-	return results, nil
+	ranges := e.buildSearchRanges(plan)
+	return e.queryIndexRanges(ctx, searchIdx, ranges, extractTime)
 }
 
 // extractTimestampFromKey extracts the timestamp from the last 4 bytes of an index key.
@@ -412,99 +321,94 @@ func extractTimestampFromKey(key []byte) uint32 {
 	return binary.BigEndian.Uint32(key[len(key)-4:])
 }
 
-// getAuthorTimeIndexResultsWithTime gets locations with timestamps from author_time index.
-// This is an optimized version that extracts timestamps from index keys.
-func (e *executorImpl) getAuthorTimeIndexResultsWithTime(ctx context.Context, plan *planImpl) ([]types.LocationWithTime, error) {
-	atIdx := e.indexMgr.AuthorTimeIndex()
-	if atIdx == nil {
-		return nil, fmt.Errorf("author_time index not available")
-	}
-	keyBuilder := e.indexMgr.KeyBuilder()
-	if keyBuilder == nil {
-		return nil, fmt.Errorf("key builder not available")
+// keyRange represents a range of keys to query from an index
+type keyRange struct {
+	start []byte
+	end   []byte
+}
+
+// queryIndexRanges performs a common index range query with deduplication.
+// It queries an index using multiple key ranges and deduplicates results
+// based on SegmentID:Offset. If extractTimestamp is true, it extracts
+// the timestamp from the index key.
+func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ranges []keyRange, extractTimestamp bool) ([]types.LocationWithTime, error) {
+	var results []types.LocationWithTime
+	seen := make(map[string]bool) // key: "SegmentID:Offset"
+
+	for _, r := range ranges {
+		iter, err := idx.Range(ctx, r.start, r.end)
+		if err != nil {
+			continue
+		}
+
+		for iter.Valid() {
+			loc := iter.Value()
+			// Create dedup key from RecordLocation
+			dedupKey := fmt.Sprintf("%d:%d", loc.SegmentID, loc.Offset)
+
+			if !seen[dedupKey] {
+				seen[dedupKey] = true
+				locWithTime := types.LocationWithTime{
+					RecordLocation: loc,
+				}
+				if extractTimestamp {
+					locWithTime.CreatedAt = extractTimestampFromKey(iter.Key())
+				}
+				results = append(results, locWithTime)
+			}
+
+			if err := iter.Next(); err != nil {
+				break
+			}
+		}
+		iter.Close()
 	}
 
-	var results []types.LocationWithTime
+	return results, nil
+}
+
+// buildAuthorTimeRanges builds key ranges for author_time index queries.
+// Returns filtered results if authors is empty, otherwise builds ranges for
+// each (author, kind) combination.
+func (e *executorImpl) buildAuthorTimeRanges(plan *planImpl) []keyRange {
+	keyBuilder := e.indexMgr.KeyBuilder()
+	var ranges []keyRange
 	kinds := plan.filter.Kinds
 
 	// For each author, build key range
 	for _, author := range plan.filter.Authors {
 		if len(kinds) == 0 {
+			// No specific kinds, query all kinds for this author
 			startKey := keyBuilder.BuildAuthorTimeKey(author, 0, plan.filter.Since)
 			endTime := plan.filter.Until
 			if endTime == 0 {
 				endTime = ^uint32(0)
 			}
 			endKey := keyBuilder.BuildAuthorTimeKey(author, ^uint16(0), endTime)
-
-			iter, err := atIdx.Range(ctx, startKey, endKey)
-			if err != nil {
-				continue
-			}
-
-			for iter.Valid() {
-				loc := iter.Value()
-				// Extract timestamp from key (last 4 bytes of author_time key)
-				timestamp := extractTimestampFromKey(iter.Key())
-				results = append(results, types.LocationWithTime{
-					RecordLocation: loc,
-					CreatedAt:      timestamp,
-				})
-				if err := iter.Next(); err != nil {
-					break
+			ranges = append(ranges, keyRange{start: startKey, end: endKey})
+		} else {
+			// Query specific kinds for this author
+			for _, kind := range kinds {
+				startKey := keyBuilder.BuildAuthorTimeKey(author, kind, plan.filter.Since)
+				endTime := plan.filter.Until
+				if endTime == 0 {
+					endTime = ^uint32(0)
 				}
+				endKey := keyBuilder.BuildAuthorTimeKey(author, kind, endTime)
+				ranges = append(ranges, keyRange{start: startKey, end: endKey})
 			}
-			iter.Close()
-			continue
-		}
-
-		for _, kind := range kinds {
-			startKey := keyBuilder.BuildAuthorTimeKey(author, kind, plan.filter.Since)
-			endTime := plan.filter.Until
-			if endTime == 0 {
-				endTime = ^uint32(0)
-			}
-			endKey := keyBuilder.BuildAuthorTimeKey(author, kind, endTime)
-
-			iter, err := atIdx.Range(ctx, startKey, endKey)
-			if err != nil {
-				continue
-			}
-
-			for iter.Valid() {
-				loc := iter.Value()
-				// Extract timestamp from key (last 4 bytes of author_time key)
-				timestamp := extractTimestampFromKey(iter.Key())
-				results = append(results, types.LocationWithTime{
-					RecordLocation: loc,
-					CreatedAt:      timestamp,
-				})
-				if err := iter.Next(); err != nil {
-					break
-				}
-			}
-			iter.Close()
 		}
 	}
 
-	return results, nil
+	return ranges
 }
 
-// getSearchIndexResultsWithTime gets locations with timestamps from search index.
-// This is an optimized version that extracts timestamps from index keys.
-func (e *executorImpl) getSearchIndexResultsWithTime(ctx context.Context, plan *planImpl) ([]types.LocationWithTime, error) {
-	searchIdx := e.indexMgr.SearchIndex()
-	if searchIdx == nil {
-		return nil, fmt.Errorf("search index not available")
-	}
-
+// buildSearchRanges builds key ranges for search index queries.
+// Returns key ranges for each (kind, tag) combination.
+func (e *executorImpl) buildSearchRanges(plan *planImpl) []keyRange {
 	keyBuilder := e.indexMgr.KeyBuilder()
-	if keyBuilder == nil {
-		return nil, fmt.Errorf("key builder not available")
-	}
 	searchTypeCodes := keyBuilder.TagNameToSearchTypeCode()
-
-	var results []types.LocationWithTime
+	var ranges []keyRange
 
 	kinds := plan.filter.Kinds
 	if len(kinds) == 0 {
@@ -530,30 +434,12 @@ func (e *executorImpl) getSearchIndexResultsWithTime(ctx context.Context, plan *
 				if shouldLogSearchIndexRange(tagName, tagValue) {
 					log.Printf("search index range: kind=%d tag=%s value_len=%d start=%s end=%s", kind, tagName, len(tagValue), hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 				}
-
-				iter, err := searchIdx.Range(ctx, startKey, endKey)
-				if err != nil {
-					continue
-				}
-
-				for iter.Valid() {
-					loc := iter.Value()
-					// Extract timestamp from key (last 4 bytes of search key)
-					timestamp := extractTimestampFromKey(iter.Key())
-					results = append(results, types.LocationWithTime{
-						RecordLocation: loc,
-						CreatedAt:      timestamp,
-					})
-					if err := iter.Next(); err != nil {
-						break
-					}
-				}
-				iter.Close()
+				ranges = append(ranges, keyRange{start: startKey, end: endKey})
 			}
 		}
 	}
 
-	return results, nil
+	return ranges
 }
 
 // Valid returns true if iterator is valid.
