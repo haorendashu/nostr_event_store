@@ -25,17 +25,17 @@ Indexes are the query engine's backbone. They map search keys to record location
 
 **Name**: `pubkey_time.idx` or `idx_author_time`
 
-**Key**: `(pubkey: [32]byte, created_at: uint64)` = 40 bytes
+**Key**: `(pubkey: [32]byte, kind: uint32, created_at: uint64)` = 44 bytes
 
 **Value**: `(segment_id, offset)` = 8 bytes
 
 **Purpose**:
-- Retrieve all events by one author: `pubkey_time.Range(pubkey || 0, pubkey || MAX_UINT64)`.
+- Retrieve all events by one author and kind: `pubkey_time.Range(pubkey || kind || 0, pubkey || kind || MAX_UINT64)`.
 - User feeds (reverse chronological): iterate in descending `created_at` order.
 - Timeline pagination (e.g., "last 50 events by user X").
 
 **B+Tree Properties**:
-- **Key format**: `pubkey (32 B) | created_at (8 B)` as binary, compared lexicographically.
+- **Key format**: `pubkey (32 B) | kind (4 B) | created_at (8 B)` as binary, compared lexicographically.
 - **Branching factor**: ~200 (slightly lower due to longer keys).
 - **Depth**: ~4–5 levels for 1M events.
 
@@ -44,8 +44,8 @@ Indexes are the query engine's backbone. They map search keys to record location
 
 **Query Example**:
 ```
-// Fetch 20 most recent events by pubkey "abc123def456..."
-key_start := pubkey || created_at_min
+// Fetch 20 most recent events by pubkey "abc123def456..." for kind=1
+key_start := pubkey || kind || created_at_min
     loc := iter.Value()
     events.append(fetch(loc))
     iter.Prev()
@@ -279,7 +279,7 @@ for event := range incomingBatch {
 When a new event is inserted:
 
 1. **Primary Index**: Add `(id → location)` entry.
-2. **Author+Time**: Add `(pubkey || created_at → location)`.
+2. **Author+Time**: Add `(pubkey || kind || created_at → location)`.
 3. **Search Index**: For each configured tag type (e, p, t, a, d, etc.):
    - Extract tag values from the event's tags array.
    - For each tag value, add `(kind, search_type_code, tag_value, created_at → location)` entry.

@@ -38,7 +38,7 @@ nostr_event_store/
 │   │   ├── index.go              # 核心接口：Index、Iterator、Manager、KeyBuilder
 │   │   ├── btree.go              # B+Tree 节点结构和操作
 │   │   ├── primary.go            # Primary Index (id → location) 实现
-│   │   ├── author_time.go        # Author+Time Index ((pubkey, created_at) → location) 实现
+│   │   ├── author_time.go        # Author+Time Index ((pubkey, kind, created_at) → location) 实现
 │   │   ├── search.go             # Search Index (kind, search_type, tag_value, created_at → locations) 实现
 │   │   └── manager.go            # Index Manager 实现（多索引协调）
 │   │
@@ -197,7 +197,7 @@ nostr_event_store/
 
 **三个索引**：
 1. **Primary Index** - id → location（唯一性检查）
-2. **Author+Time Index** - (pubkey, created_at) → location（用户 feed）
+2. **Author+Time Index** - (pubkey, kind, created_at) → location（用户 feed）
 3. **Search Index** - 可配置，支持 kind 时间线、标签查询、可替换事件
 
 **实现特点**：

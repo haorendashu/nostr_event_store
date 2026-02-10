@@ -365,7 +365,7 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 
 	// Step 5: Update author-time index
 	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
-	authorTimeKey := e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+	authorTimeKey := e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	if err := authorTimeIdx.Insert(ctx, authorTimeKey, loc); err != nil {
 		e.logger.Printf("Warning: author-time index update failed: %v", err)
 	}
@@ -578,7 +578,7 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
 	authorTimeKeys := make([][]byte, len(uniqueEvents))
 	for i, event := range uniqueEvents {
-		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	}
 
 	if err := authorTimeIdx.InsertBatch(ctx, authorTimeKeys, primaryLocs); err != nil {
@@ -723,7 +723,7 @@ func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) erro
 
 	// Step 4: Remove from author-time index
 	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
-	authorTimeKey := e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+	authorTimeKey := e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	if err := authorTimeIdx.Delete(ctx, authorTimeKey); err != nil {
 		e.logger.Printf("Warning: failed to remove from author-time index: %v", err)
 		// Continue anyway; don't fail the entire delete operation
@@ -851,7 +851,7 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 	// Step 4: Delete from author-time index
 	authorTimeKeys := make([][]byte, len(events))
 	for i, event := range events {
-		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	}
 	// Note: No batch delete for author-time, delete individually
 	for _, key := range authorTimeKeys {
@@ -1330,7 +1330,7 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 
 	// Update author-time index
 	authorTimeIdx := r.indexMgr.AuthorTimeIndex()
-	authorTimeKey := r.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+	authorTimeKey := r.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	if err := authorTimeIdx.Insert(ctx, authorTimeKey, location); err != nil {
 		return fmt.Errorf("author-time index insert: %w", err)
 	}

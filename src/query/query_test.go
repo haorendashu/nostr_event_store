@@ -355,13 +355,13 @@ func TestCompiler(t *testing.T) {
 			strategy: "scan",
 		},
 		{
-			name: "Single event ID - use primary index",
+			name: "Single event ID - use search",
 			filter: &types.QueryFilter{
 				Tags: map[string][]string{
 					"e": {eventIDToString([32]byte{1, 2, 3})},
 				},
 			},
-			strategy: "primary",
+			strategy: "search",
 		},
 		{
 			name: "Multiple ETags - use search",

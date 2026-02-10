@@ -128,7 +128,7 @@ Updated `manager.go` to instantiate persistent indexes:
 - **Use case**: Direct event lookup by ID
 
 #### AuthorTime Index (author_time.idx)
-- **Key**: Pubkey(32B) + created_at(8B) 
+- **Key**: Pubkey(32B) + kind(4B) + created_at(8B)
 - **Value**: (SegmentID:uint32, Offset:uint32)
 - **Branching factor**: ~200
 - **Use case**: List events by author with time range

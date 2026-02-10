@@ -174,7 +174,7 @@ type Manager interface {
 	// Used for idempotency checking and direct event lookups.
 	PrimaryIndex() Index
 
-	// AuthorTimeIndex returns the author+time index ((pubkey, created_at) → location).
+	// AuthorTimeIndex returns the author+time index ((pubkey, kind, created_at) → location).
 	// Used for user feed queries.
 	AuthorTimeIndex() Index
 
@@ -273,8 +273,8 @@ type KeyBuilder interface {
 	BuildPrimaryKey(id [32]byte) []byte
 
 	// BuildAuthorTimeKey constructs a key for the author+time index.
-	// Key format: (pubkey [32]byte, created_at uint64)
-	BuildAuthorTimeKey(pubkey [32]byte, createdAt uint64) []byte
+	// Key format: (pubkey [32]byte, kind uint32, created_at uint64)
+	BuildAuthorTimeKey(pubkey [32]byte, kind uint32, createdAt uint64) []byte
 
 	// BuildSearchKey constructs a key for the search index.
 	// Parameters:
@@ -327,10 +327,11 @@ func (kb *KeyBuilderImpl) BuildPrimaryKey(id [32]byte) []byte {
 }
 
 // BuildAuthorTimeKey constructs an author+time index key.
-func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, createdAt uint64) []byte {
-	key := make([]byte, 32+8)
+func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, kind uint32, createdAt uint64) []byte {
+	key := make([]byte, 32+4+8)
 	copy(key[:32], pubkey[:])
-	binary.BigEndian.PutUint64(key[32:], createdAt)
+	binary.BigEndian.PutUint32(key[32:36], kind)
+	binary.BigEndian.PutUint64(key[36:], createdAt)
 	return key
 }
 

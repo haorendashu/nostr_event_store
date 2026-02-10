@@ -16,18 +16,24 @@
 
 **执行**：
 ```
-key_max := pubkey || UINT64_MAX  // 最大 created_at
-key_min := pubkey || UINT64_MIN  // 最小 created_at
-
-iter := pubkey_time.RangeDesc(key_max, key_min)  // 逆序迭代
+kinds := []uint32{1, 2, 3}
 events := []
-for i := 0; i < 20 && iter.Valid(); i++ {
-    loc := iter.Value()  // (segment_id, offset)
-    event := fetchEvent(loc)
-    events.append(event)
-    iter.Prev()
+
+for _, kind := range kinds {
+    key_max := pubkey || kind || UINT64_MAX  // 该 kind 下最大 created_at
+    key_min := pubkey || kind || UINT64_MIN  // 该 kind 下最小 created_at
+
+    iter := pubkey_time.RangeDesc(key_max, key_min)
+    for i := 0; i < 20 && iter.Valid(); i++ {
+        loc := iter.Value()  // (segment_id, offset)
+        event := fetchEvent(loc)
+        events.append(event)
+        iter.Prev()
+    }
 }
-return events
+
+events.sort_by_created_at_desc()
+return events[0:20]
 ```
 
 **I/O 成本**：
@@ -38,8 +44,10 @@ return events
 **分页**：
 ```
 // 游标 offset：created_at 时间戳
-// 第 2 页：取 timestamp T 之前的 20 条
-cursor_key := pubkey || cursor_timestamp  // 来自客户端
+// 第 2 页：取 timestamp T 之前的 20 条（按 kind）
+kind := uint32(1)
+cursor_key := pubkey || kind || cursor_timestamp  // 来自客户端
+key_min := pubkey || kind || UINT64_MIN
 iter := pubkey_time.RangeDesc(cursor_key, key_min)
 iter.Prev()  // 跳过已展示的首条
 // 继续如上...
@@ -288,15 +296,13 @@ all_events := []
 
 for _, user := range users {
     for _, kind := range kinds {
-        key_min := user || since
-        key_max := user || now
+        key_min := user || kind || since
+        key_max := user || kind || now
         
         iter := pubkey_time.Range(key_min, key_max)
         for iter.Valid() {
             event := fetchEvent(iter.Value())
-            if event.kind in kinds {
-                all_events.append(event)
-            }
+            all_events.append(event)
             iter.Next()
         }
     }
@@ -313,8 +319,9 @@ return all_events[0:100]
 ### 正向范围扫描
 
 ```
-key_start := alice_pubkey || T1
-key_end   := alice_pubkey || T2
+kind := uint32(1)
+key_start := alice_pubkey || kind || T1
+key_end   := alice_pubkey || kind || T2
 
 iter := pubkey_time.Range(key_start, key_end)
 events := []
@@ -330,8 +337,9 @@ return events
 ### 逆向范围扫描
 
 ```
-key_max := alice_pubkey || UINT64_MAX
-key_min := alice_pubkey || 0
+kind := uint32(1)
+key_max := alice_pubkey || kind || UINT64_MAX
+key_min := alice_pubkey || kind || 0
 
 iter := pubkey_time.RangeDesc(key_max, key_min)
 events := []
@@ -378,8 +386,9 @@ limit := 50
 
 offset := (page - 1) * limit
 
-key_max := pubkey || UINT64_MAX
-iter := pubkey_time.RangeDesc(key_max, 0)
+kind := uint32(1)
+key_max := pubkey || kind || UINT64_MAX
+iter := pubkey_time.RangeDesc(key_max, pubkey || kind || 0)
 
 for i := 0; i < offset && iter.Valid(); i++ {
     iter.Prev()
@@ -404,14 +413,15 @@ return {
 ```
 cursor := request.cursor
 
+kind := uint32(1)
 if cursor == "" {
-    key_start := pubkey || UINT64_MAX
+    key_start := pubkey || kind || UINT64_MAX
 } else {
     cursor_ts, cursor_id := parseCursor(cursor)
-    key_start := pubkey || cursor_ts
+    key_start := pubkey || kind || cursor_ts
 }
 
-iter := pubkey_time.RangeDesc(key_start, 0)
+iter := pubkey_time.RangeDesc(key_start, pubkey || kind || 0)
 if cursor != "" {
     iter.Prev()
 }

@@ -204,33 +204,60 @@ func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *plan
 	if atIdx == nil {
 		return nil, fmt.Errorf("author_time index not available")
 	}
+	keyBuilder := e.indexMgr.KeyBuilder()
+	if keyBuilder == nil {
+		return nil, fmt.Errorf("key builder not available")
+	}
 
 	var results []types.RecordLocation
+	kinds := plan.filter.Kinds
 
 	// For each author, build key range
 	for _, author := range plan.filter.Authors {
-		// Build start key (author + since)
-		startKey := buildAuthorTimeKey(author, plan.filter.Since)
-		// Build end key (author + until, or max timestamp)
-		endKey := buildAuthorTimeKey(author, plan.filter.Until)
-		if plan.filter.Until == 0 {
-			// Use max timestamp as end
-			endKey = buildAuthorTimeKey(author, ^uint64(0))
-		}
+		if len(kinds) == 0 {
+			startKey := keyBuilder.BuildAuthorTimeKey(author, 0, plan.filter.Since)
+			endTime := plan.filter.Until
+			if endTime == 0 {
+				endTime = ^uint64(0)
+			}
+			endKey := keyBuilder.BuildAuthorTimeKey(author, ^uint32(0), endTime)
 
-		// Query index range
-		iter, err := atIdx.Range(ctx, startKey, endKey)
-		if err != nil {
+			iter, err := atIdx.Range(ctx, startKey, endKey)
+			if err != nil {
+				continue
+			}
+
+			for iter.Valid() {
+				results = append(results, iter.Value())
+				if err := iter.Next(); err != nil {
+					break
+				}
+			}
+			iter.Close()
 			continue
 		}
 
-		for iter.Valid() {
-			results = append(results, iter.Value())
-			if err := iter.Next(); err != nil {
-				break
+		for _, kind := range kinds {
+			startKey := keyBuilder.BuildAuthorTimeKey(author, kind, plan.filter.Since)
+			endTime := plan.filter.Until
+			if endTime == 0 {
+				endTime = ^uint64(0)
 			}
+			endKey := keyBuilder.BuildAuthorTimeKey(author, kind, endTime)
+
+			iter, err := atIdx.Range(ctx, startKey, endKey)
+			if err != nil {
+				continue
+			}
+
+			for iter.Valid() {
+				results = append(results, iter.Value())
+				if err := iter.Next(); err != nil {
+					break
+				}
+			}
+			iter.Close()
 		}
-		iter.Close()
 	}
 
 	return results, nil
@@ -292,17 +319,6 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 	}
 
 	return results, nil
-}
-
-// buildAuthorTimeKey builds a key for author_time index: pubkey (32) + timestamp (8).
-func buildAuthorTimeKey(pubkey [32]byte, timestamp uint64) []byte {
-	key := make([]byte, 40)
-	copy(key[0:32], pubkey[:])
-	// Big-endian encoding of timestamp
-	for i := 0; i < 8; i++ {
-		key[32+7-i] = byte((timestamp >> (i * 8)) & 0xff)
-	}
-	return key
 }
 
 // Valid returns true if iterator is valid.

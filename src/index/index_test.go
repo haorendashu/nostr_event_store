@@ -25,14 +25,17 @@ func TestKeyBuilderAuthorTime(t *testing.T) {
 	kb := NewKeyBuilder(DefaultSearchTypeCodes())
 	var pub [32]byte
 	pub[0] = 0x01
-	key := kb.BuildAuthorTimeKey(pub, 42)
-	if len(key) != 40 {
-		t.Fatalf("expected key length 40, got %d", len(key))
+	key := kb.BuildAuthorTimeKey(pub, 7, 42)
+	if len(key) != 44 {
+		t.Fatalf("expected key length 44, got %d", len(key))
 	}
 	if key[0] != 0x01 {
 		t.Fatalf("expected pubkey byte, got %x", key[0])
 	}
-	if binary.BigEndian.Uint64(key[32:]) != 42 {
+	if binary.BigEndian.Uint32(key[32:36]) != 7 {
+		t.Fatalf("expected kind 7")
+	}
+	if binary.BigEndian.Uint64(key[36:]) != 42 {
 		t.Fatalf("expected created_at 42")
 	}
 }

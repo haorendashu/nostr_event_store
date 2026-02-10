@@ -73,7 +73,7 @@ func (m *manager) PrimaryIndex() Index {
 	return m.primary
 }
 
-// AuthorTimeIndex returns the author+time index ((pubkey, created_at) → location).
+// AuthorTimeIndex returns the author+time index ((pubkey, kind, created_at) → location).
 func (m *manager) AuthorTimeIndex() Index {
 	return m.authorTime
 }

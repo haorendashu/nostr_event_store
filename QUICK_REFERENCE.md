@@ -4,7 +4,7 @@
 
 **Status**: ✅ Implemented and tested
 - **Primary Index** (primary.idx): Event ID → location lookup
-- **AuthorTime Index** (author_time.idx): Pubkey + timestamp → location  
+- **AuthorTime Index** (author_time.idx): Pubkey + kind + timestamp → location  
 - **Search Index** (search.idx): Tag-based queries (kind + searchType + tagValue + timestamp)
 
 **Features**:
@@ -79,7 +79,7 @@ See [PERSISTENT_INDEX_IMPLEMENTATION.md](PERSISTENT_INDEX_IMPLEMENTATION.md) for
 | `index.go` | Index、Iterator、Manager、KeyBuilder 核心接口 |
 | `btree.go` | B+Tree 节点元数据和基础操作 |
 | `primary.go` | Primary Index (id → location) 实现 |
-| `author_time.go` | Author+Time Index ((pubkey, created_at) → location) 实现 |
+| `author_time.go` | Author+Time Index ((pubkey, kind, created_at) → location) 实现 |
 | `search.go` | Search Index (kind, search_type, tag_value, created_at → locations) 实现 |
 | `manager.go` | Index Manager（3 个索引的协调、缓存管理） |
 
@@ -390,7 +390,7 @@ for _, tt := range tests {
 - [x] **index** - B+Tree 索引、三索引管理器（完成，5 个测试，Phase 11）✨
   - [x] btree.go (403 行) - 内存 B+Tree 实现
   - [x] primary.go (22 行) - ID 索引辅助函数
-  - [x] author_time.go (22 行) - (pubkey, created_at) 索引辅助函数
+  - [x] author_time.go (22 行) - (pubkey, kind, created_at) 索引辅助函数
   - [x] search.go (22 行) - 统一搜索索引辅助函数
   - [x] manager.go (176 行) - 三索引管理器协调
   - [x] 测试：主键构建、作者时间键、搜索键、B+Tree 操作、索引管理器

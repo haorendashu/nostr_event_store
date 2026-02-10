@@ -26,17 +26,17 @@
 
 **名称**：`pubkey_time.idx` 或 `idx_author_time`
 
-**Key**：`(pubkey: [32]byte, created_at: uint64)` = 40 字节
+**Key**：`(pubkey: [32]byte, kind: uint32, created_at: uint64)` = 44 字节
 
 **Value**：`(segment_id, offset)` = 8 字节
 
 **用途**：
-- 作者全部事件：`pubkey_time.Range(pubkey || 0, pubkey || MAX_UINT64)`
+- 作者某 kind 的事件：`pubkey_time.Range(pubkey || kind || 0, pubkey || kind || MAX_UINT64)`
 - 用户时间线（逆序）
 - 时间线分页（如“最近 50 条”）
 
 **B+Tree 属性**：
-- **Key 格式**：`pubkey (32 B) | created_at (8 B)`，按字典序比较
+- **Key 格式**：`pubkey (32 B) | kind (4 B) | created_at (8 B)`，按字典序比较
 - **分支因子**：~200（key 较长）
 - **深度**：1M 事件约 4–5 层
 
@@ -46,30 +46,23 @@
 
 **查询示例**：
 ```
-// 获取 pubkey "abc123def456..." 最近 20 条
-key_start := pubkey || created_at_min
-key_end   := pubkey || created_at_max
+// 获取 pubkey "abc123def456..." 的 kind=1 最新 20 条
+key_start := pubkey || kind || created_at_min
+key_end   := pubkey || kind || created_at_max
 iter := pubkey_time.RangeDesc(key_start, key_end)  // 逆序
 events := []
 for i := 0; i < 20 && iter.Valid(); i++ {
-    loc := iter.Value()
-    events.append(fetch(loc))
-    iter.Prev()
+  loc := iter.Value()
+  events.append(fetch(loc))
+  iter.Prev()
 }
 ```
 
 ### 3. 统一搜索索引（可配置）
-
-**名称**：`search.idx` 或 `idx_search`
-
 **Key**：`(kind: uint32, search_type: uint8, tag_value: string, created_at: uint64)`
 
-**Value**：`(segment_id: uint32, offset: uint32)` = 8 字节
-
-**注意**：所有 `tag_value` 字段都以 UTF-8 字符串存储。事件 ID 和 pubkey 是十六进制字符串，不是二进制格式。
 
 **用途**：
-- 将所有按 kind 的查询路径合并为一个索引
 - `search_type` **可配置**，非固定枚举；映射来自配置，变化需重建 `search.idx`
 
 **默认标签集合**：
