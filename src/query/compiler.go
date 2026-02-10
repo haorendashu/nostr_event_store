@@ -15,12 +15,13 @@ type compilerImpl struct {
 
 // planImpl implements ExecutionPlan interface.
 type planImpl struct {
-	strategy    string // "primary", "author_time", "search", "scan"
-	filter      *types.QueryFilter
-	indexName   string
-	startKey    []byte
-	endKey      []byte
-	estimatedIO int
+	strategy     string // "primary", "author_time", "search", "scan"
+	filter       *types.QueryFilter
+	indexName    string
+	startKey     []byte
+	endKey       []byte
+	estimatedIO  int
+	fullyIndexed bool // true if all filter conditions are satisfied by the index
 }
 
 // Compile creates an execution plan for the given filter.
@@ -35,34 +36,49 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 		filter: filter,
 	}
 
-	// Strategy: If authors + time range, use author_time index
-	if len(filter.Authors) > 0 && (filter.Since > 0 || filter.Until > 0) {
+	// Strategy: If authors specified, use author_time index
+	// The author_time index key is (pubkey, kind, created_at), so we can use it
+	// whenever we have authors, regardless of whether time range is specified
+	if len(filter.Authors) > 0 {
 		plan.strategy = "author_time"
 		plan.indexName = "author_time"
-		// startKey = first author + since, endKey = last author + until
-		if len(filter.Authors) > 0 {
-			plan.estimatedIO = 5 // Higher cost than primary (multiple authors)
+		// Adjust cost based on number of authors
+		if len(filter.Authors) == 1 {
+			plan.estimatedIO = 4 // Lower cost for single author
 		} else {
-			plan.estimatedIO = 8
+			plan.estimatedIO = 5 // Higher cost for multiple authors
 		}
-		return plan, nil
-	}
-
-	// Strategy: If single author, use author_time index
-	if len(filter.Authors) == 1 {
-		plan.strategy = "author_time"
-		plan.indexName = "author_time"
-		plan.estimatedIO = 4
+		// Check if fully indexed: authors + optional time are covered, no other conditions
+		plan.fullyIndexed = len(filter.Tags) == 0 && filter.Search == ""
 		return plan, nil
 	}
 
 	// Strategy: If any tags, use search index
-	hasTagFilter := len(filter.Tags) > 0
-	if hasTagFilter {
-		plan.strategy = "search"
-		plan.indexName = "search"
-		plan.estimatedIO = 6
-		return plan, nil
+	// But only if all tag names are in the indexable tags list
+	if len(filter.Tags) > 0 {
+		// Get the current mapping of indexable tags
+		indexableTagsMapping := c.indexMgr.KeyBuilder().TagNameToSearchTypeCode()
+
+		// Check if all tag names in filter.Tags are indexable
+		canUseSearchIndex := false
+		allTagsIndexable := true
+		for tagName := range filter.Tags {
+			if _, exists := indexableTagsMapping[tagName]; exists {
+				canUseSearchIndex = true
+			} else {
+				allTagsIndexable = false
+			}
+		}
+
+		if canUseSearchIndex {
+			plan.strategy = "search"
+			plan.indexName = "search"
+			plan.estimatedIO = 6
+			// Check if fully indexed: all tags are indexable, no other unindexed conditions
+			plan.fullyIndexed = allTagsIndexable && len(filter.Authors) == 0 && filter.Search == ""
+			return plan, nil
+		}
+		// If not all tags are indexable, fall through to full scan
 	}
 
 	// Default: Full scan with filtering

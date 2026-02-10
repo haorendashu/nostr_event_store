@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -92,7 +93,83 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	var results []*types.Event
 	indexesUsed := []string{}
 
-	// Execute based on strategy
+	// Optimization: If all conditions are satisfied by index and we have a limit,
+	// get locations with timestamps, sort, apply limit, then read only needed events
+	if impl.fullyIndexed && impl.filter.Limit > 0 {
+		var locationsWithTime []types.LocationWithTime
+		var err error
+
+		// Execute based on strategy to get locations with timestamps
+		switch impl.strategy {
+		case "author_time":
+			indexesUsed = append(indexesUsed, "author_time")
+			locationsWithTime, err = e.getAuthorTimeIndexResultsWithTime(ctx, impl)
+			if err != nil {
+				return nil, err
+			}
+
+		case "search":
+			indexesUsed = append(indexesUsed, "search")
+			locationsWithTime, err = e.getSearchIndexResultsWithTime(ctx, impl)
+			if err != nil {
+				return nil, err
+			}
+
+		default:
+			// Fall back to regular path for other strategies
+			goto regularPath
+		}
+
+		// Sort by timestamp (most recent first)
+		sort.Slice(locationsWithTime, func(i, j int) bool {
+			if locationsWithTime[i].CreatedAt != locationsWithTime[j].CreatedAt {
+				return locationsWithTime[i].CreatedAt > locationsWithTime[j].CreatedAt
+			}
+			return false
+		})
+
+		// Deduplicate locations (same event location should only appear once)
+		// This is important because when there are multiple tag conditions,
+		// the same event may be returned multiple times
+		seen := make(map[string]bool) // Use SegmentID:Offset as key
+		var uniqueLocations []types.LocationWithTime
+		for _, locWithTime := range locationsWithTime {
+			key := fmt.Sprintf("%d:%d", locWithTime.SegmentID, locWithTime.Offset)
+			if !seen[key] {
+				seen[key] = true
+				uniqueLocations = append(uniqueLocations, locWithTime)
+			}
+		}
+		locationsWithTime = uniqueLocations
+
+		// Apply limit early (huge optimization!)
+		if len(locationsWithTime) > impl.filter.Limit {
+			locationsWithTime = locationsWithTime[:impl.filter.Limit]
+		}
+
+		// Now read only the limited events from storage
+		for _, locWithTime := range locationsWithTime {
+			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
+			if err != nil {
+				continue // Skip corrupted events
+			}
+			// Since fullyIndexed is true, no need to call MatchesFilter
+			results = append(results, event)
+		}
+
+		duration := time.Since(start).Milliseconds()
+		return &resultIteratorImpl{
+			events:      results,
+			index:       0,
+			count:       0,
+			startTime:   start,
+			durationMs:  duration,
+			indexesUsed: indexesUsed,
+		}, nil
+	}
+
+regularPath:
+	// Regular path: Execute based on strategy
 	switch impl.strategy {
 	case "primary":
 		// Use primary index for exact ID match
@@ -149,11 +226,16 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 		return nil, fmt.Errorf("unknown strategy: %s", impl.strategy)
 	}
 
-	// Post-filter results
+	// Post-filter results (only if not fully indexed)
 	var filtered []*types.Event
-	for _, event := range results {
-		if MatchesFilter(event, impl.filter) {
-			filtered = append(filtered, event)
+	if impl.fullyIndexed {
+		// Skip MatchesFilter if all conditions are in the index
+		filtered = results
+	} else {
+		for _, event := range results {
+			if MatchesFilter(event, impl.filter) {
+				filtered = append(filtered, event)
+			}
 		}
 	}
 
@@ -309,6 +391,159 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 
 				for iter.Valid() {
 					results = append(results, iter.Value())
+					if err := iter.Next(); err != nil {
+						break
+					}
+				}
+				iter.Close()
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// extractTimestampFromKey extracts the timestamp from the last 4 bytes of an index key.
+// Both author_time and search index keys have the timestamp as the last 4 bytes.
+func extractTimestampFromKey(key []byte) uint32 {
+	if len(key) < 4 {
+		return 0
+	}
+	return binary.BigEndian.Uint32(key[len(key)-4:])
+}
+
+// getAuthorTimeIndexResultsWithTime gets locations with timestamps from author_time index.
+// This is an optimized version that extracts timestamps from index keys.
+func (e *executorImpl) getAuthorTimeIndexResultsWithTime(ctx context.Context, plan *planImpl) ([]types.LocationWithTime, error) {
+	atIdx := e.indexMgr.AuthorTimeIndex()
+	if atIdx == nil {
+		return nil, fmt.Errorf("author_time index not available")
+	}
+	keyBuilder := e.indexMgr.KeyBuilder()
+	if keyBuilder == nil {
+		return nil, fmt.Errorf("key builder not available")
+	}
+
+	var results []types.LocationWithTime
+	kinds := plan.filter.Kinds
+
+	// For each author, build key range
+	for _, author := range plan.filter.Authors {
+		if len(kinds) == 0 {
+			startKey := keyBuilder.BuildAuthorTimeKey(author, 0, plan.filter.Since)
+			endTime := plan.filter.Until
+			if endTime == 0 {
+				endTime = ^uint32(0)
+			}
+			endKey := keyBuilder.BuildAuthorTimeKey(author, ^uint16(0), endTime)
+
+			iter, err := atIdx.Range(ctx, startKey, endKey)
+			if err != nil {
+				continue
+			}
+
+			for iter.Valid() {
+				loc := iter.Value()
+				// Extract timestamp from key (last 4 bytes of author_time key)
+				timestamp := extractTimestampFromKey(iter.Key())
+				results = append(results, types.LocationWithTime{
+					RecordLocation: loc,
+					CreatedAt:      timestamp,
+				})
+				if err := iter.Next(); err != nil {
+					break
+				}
+			}
+			iter.Close()
+			continue
+		}
+
+		for _, kind := range kinds {
+			startKey := keyBuilder.BuildAuthorTimeKey(author, kind, plan.filter.Since)
+			endTime := plan.filter.Until
+			if endTime == 0 {
+				endTime = ^uint32(0)
+			}
+			endKey := keyBuilder.BuildAuthorTimeKey(author, kind, endTime)
+
+			iter, err := atIdx.Range(ctx, startKey, endKey)
+			if err != nil {
+				continue
+			}
+
+			for iter.Valid() {
+				loc := iter.Value()
+				// Extract timestamp from key (last 4 bytes of author_time key)
+				timestamp := extractTimestampFromKey(iter.Key())
+				results = append(results, types.LocationWithTime{
+					RecordLocation: loc,
+					CreatedAt:      timestamp,
+				})
+				if err := iter.Next(); err != nil {
+					break
+				}
+			}
+			iter.Close()
+		}
+	}
+
+	return results, nil
+}
+
+// getSearchIndexResultsWithTime gets locations with timestamps from search index.
+// This is an optimized version that extracts timestamps from index keys.
+func (e *executorImpl) getSearchIndexResultsWithTime(ctx context.Context, plan *planImpl) ([]types.LocationWithTime, error) {
+	searchIdx := e.indexMgr.SearchIndex()
+	if searchIdx == nil {
+		return nil, fmt.Errorf("search index not available")
+	}
+
+	keyBuilder := e.indexMgr.KeyBuilder()
+	if keyBuilder == nil {
+		return nil, fmt.Errorf("key builder not available")
+	}
+	searchTypeCodes := keyBuilder.TagNameToSearchTypeCode()
+
+	var results []types.LocationWithTime
+
+	kinds := plan.filter.Kinds
+	if len(kinds) == 0 {
+		kinds = []uint16{0}
+	}
+
+	// Process generic Tags map
+	for tagName, tagValues := range plan.filter.Tags {
+		searchType, ok := searchTypeCodes[tagName]
+		if !ok {
+			// Skip unmapped tag names
+			continue
+		}
+
+		for _, tagValue := range tagValues {
+			for _, kind := range kinds {
+				startKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Since)
+				until := plan.filter.Until
+				if until == 0 {
+					until = ^uint32(0)
+				}
+				endKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), until)
+				if shouldLogSearchIndexRange(tagName, tagValue) {
+					log.Printf("search index range: kind=%d tag=%s value_len=%d start=%s end=%s", kind, tagName, len(tagValue), hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+				}
+
+				iter, err := searchIdx.Range(ctx, startKey, endKey)
+				if err != nil {
+					continue
+				}
+
+				for iter.Valid() {
+					loc := iter.Value()
+					// Extract timestamp from key (last 4 bytes of search key)
+					timestamp := extractTimestampFromKey(iter.Key())
+					results = append(results, types.LocationWithTime{
+						RecordLocation: loc,
+						CreatedAt:      timestamp,
+					})
 					if err := iter.Next(); err != nil {
 						break
 					}

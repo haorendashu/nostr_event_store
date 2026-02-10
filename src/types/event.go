@@ -49,6 +49,15 @@ type RecordLocation struct {
 	Offset uint32
 }
 
+// LocationWithTime represents a RecordLocation with extracted timestamp.
+// Used for query optimization to avoid reading full events when only ordering is needed.
+type LocationWithTime struct {
+	RecordLocation
+	// CreatedAt is the event timestamp extracted from index key (last 4 bytes).
+	// Allows sorting and limiting results before reading from storage.
+	CreatedAt uint32
+}
+
 // Tag represents a single Nostr tag within an event.
 // Each tag is a variable-length array of strings (the first element is the tag name).
 //
