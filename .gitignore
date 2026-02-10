@@ -9,3 +9,4 @@ cmd/wal-hexdump/wal-hexdump
 cmd/wal-hexdump/wal-hexdump.exe
 cmd/wal-validator/wal-validator
 cmd/wal-validator/wal-validator.exe
+tempdocs/
