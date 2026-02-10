@@ -15,13 +15,13 @@ type Event struct {
 	// Pubkey is the author's public key (32 bytes), used for author-based queries.
 	Pubkey [32]byte
 
-	// CreatedAt is the UNIX timestamp in seconds when the event was created.
+	// CreatedAt is the UNIX timestamp in seconds when the event was created (4 bytes).
 	// Critical for time-ordered range scans and replaceable event semantics.
-	CreatedAt uint64
+	CreatedAt uint32
 
-	// Kind is the event type (4 bytes). Determines replaceable vs non-replaceable semantics.
+	// Kind is the event type (2 bytes). Determines replaceable vs non-replaceable semantics.
 	// Ranges: 0-3 (replaceable), 10000-19999 (replaceable), 30000-39999 (parameterized replaceable).
-	Kind uint32
+	Kind uint16
 
 	// Tags is a variable-length array of tags, each tag is an array of strings.
 	// Common tags: "e" (event ref), "p" (person ref), "t" (hashtag), "d" (identifier),
@@ -155,7 +155,7 @@ type ReplacementKey struct {
 	Pubkey [32]byte
 
 	// Kind is the event kind (must be in replaceable range).
-	Kind uint32
+	Kind uint16
 
 	// DTag is the "d" tag value for parameterized replaceable events (kind 30000-39999).
 	// For non-parameterized replaceable (kind 0, 3, 10000-19999), this is empty.
@@ -164,7 +164,7 @@ type ReplacementKey struct {
 
 // IsReplaceable returns true if the given kind is replaceable according to Nostr spec.
 // Replaceable kinds: 0, 3, 10000-19999, 30000-39999.
-func IsReplaceable(kind uint32) bool {
+func IsReplaceable(kind uint16) bool {
 	switch {
 	case kind == 0 || kind == 3:
 		return true
@@ -178,7 +178,7 @@ func IsReplaceable(kind uint32) bool {
 }
 
 // IsParameterizedReplaceable returns true if the kind is parameterized replaceable (30000-39999).
-func IsParameterizedReplaceable(kind uint32) bool {
+func IsParameterizedReplaceable(kind uint16) bool {
 	return kind >= 30000 && kind < 40000
 }
 
@@ -186,16 +186,16 @@ func IsParameterizedReplaceable(kind uint32) bool {
 // Used to build complex queries across multiple indexes.
 type QueryFilter struct {
 	// Kinds is a list of event kinds to filter by. If nil/empty, all kinds accepted.
-	Kinds []uint32
+	Kinds []uint16
 
 	// Authors is a list of pubkeys to filter by. If nil/empty, all authors accepted.
 	Authors [][32]byte
 
 	// Since is the minimum created_at timestamp (inclusive). If 0, no minimum.
-	Since uint64
+	Since uint32
 
 	// Until is the maximum created_at timestamp (inclusive). If 0, no maximum.
-	Until uint64
+	Until uint32
 
 	// Limit is the maximum number of events to return. If 0, no limit.
 	Limit int

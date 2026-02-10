@@ -162,7 +162,7 @@ func (ms *mockStore) Flush(ctx context.Context) error {
 
 // Helper to create a test event.
 
-func createTestEvent(id [32]byte, pubkey [32]byte, kind uint32, createdAt uint64, content string, tags ...[]string) *types.Event {
+func createTestEvent(id [32]byte, pubkey [32]byte, kind uint16, createdAt uint32, content string, tags ...[]string) *types.Event {
 	event := &types.Event{
 		ID:        id,
 		Pubkey:    pubkey,
@@ -198,14 +198,14 @@ func TestFilterMatching(t *testing.T) {
 		{
 			name: "Kind match",
 			filter: &types.QueryFilter{
-				Kinds: []uint32{1},
+				Kinds: []uint16{1},
 			},
 			match: true,
 		},
 		{
 			name: "Kind no match",
 			filter: &types.QueryFilter{
-				Kinds: []uint32{2, 3},
+				Kinds: []uint16{2, 3},
 			},
 			match: false,
 		},
@@ -241,7 +241,7 @@ func TestFilterMatching(t *testing.T) {
 		{
 			name: "Combined filters",
 			filter: &types.QueryFilter{
-				Kinds:   []uint32{1},
+				Kinds:   []uint16{1},
 				Authors: [][32]byte{pubkey},
 				Since:   500,
 			},
@@ -452,7 +452,7 @@ func TestExecutor(t *testing.T) {
 	plan := &planImpl{
 		strategy: "scan",
 		filter: &types.QueryFilter{
-			Kinds: []uint32{1},
+			Kinds: []uint16{1},
 			Limit: 10,
 		},
 	}
@@ -483,7 +483,7 @@ func TestEngine(t *testing.T) {
 		[32]byte{10, 20, 30},
 		pubkey,
 		1,
-		uint64(time.Now().Unix()),
+		uint32(time.Now().Unix()),
 		"test content",
 	)
 	store.events[event.ID] = event
@@ -497,7 +497,7 @@ func TestEngine(t *testing.T) {
 		{
 			name: "Query with kind",
 			filter: &types.QueryFilter{
-				Kinds: []uint32{1},
+				Kinds: []uint16{1},
 				Limit: 10,
 			},
 		},
@@ -511,7 +511,7 @@ func TestEngine(t *testing.T) {
 		{
 			name: "Query with time range",
 			filter: &types.QueryFilter{
-				Since: uint64(time.Now().Unix()) - 3600,
+				Since: uint32(time.Now().Unix()) - 3600,
 				Limit: 10,
 			},
 		},
@@ -556,7 +556,7 @@ func TestCompilerValidation(t *testing.T) {
 		},
 		{
 			name:    "Too many kinds",
-			filter:  &types.QueryFilter{Kinds: make([]uint32, 200)},
+			filter:  &types.QueryFilter{Kinds: make([]uint16, 200)},
 			wantErr: "too many kinds",
 		},
 		{

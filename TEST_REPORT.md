@@ -121,8 +121,8 @@
 **关键特性**：
 - 三索引架构：
   - **Primary Index**: ID (32 bytes) → location
-  - **AuthorTime Index**: pubkey (32) + kind (4) + created_at (8) → location
-  - **Search Index**: kind (4) + searchType (1) + tagValue (var) + created_at (8) → locations
+  - **AuthorTime Index**: pubkey (32) + kind (2) + created_at (4) → location
+  - **Search Index**: kind (2) + searchType (1) + tagValue (var) + created_at (4) → locations
 - B+Tree 实现（order=128，内存存储）
 - KeyBuilder（二进制键编码）
 - 正向/反向迭代器

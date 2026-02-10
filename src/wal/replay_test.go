@@ -313,7 +313,7 @@ func TestReplayStartLSN(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i)},
 			Pubkey:    [32]byte{byte(i + 1)},
-			CreatedAt: uint64(1655000000 + i),
+			CreatedAt: uint32(1655000000 + i),
 			Kind:      1,
 			Tags:      [][]string{},
 			Content:   "Event",

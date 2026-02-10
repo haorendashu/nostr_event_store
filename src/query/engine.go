@@ -352,9 +352,9 @@ func UserTimelineFilter(pubkey [32]byte, limit int) *types.QueryFilter {
 }
 
 // KindTimelineFilter creates a filter for a kind's timeline.
-func KindTimelineFilter(kind uint32, limit int) *types.QueryFilter {
+func KindTimelineFilter(kind uint16, limit int) *types.QueryFilter {
 	return &types.QueryFilter{
-		Kinds: []uint32{kind},
+		Kinds: []uint16{kind},
 		Limit: limit,
 	}
 }
@@ -388,7 +388,7 @@ func HashtagFilter(hashtag string, limit int) *types.QueryFilter {
 }
 
 // BoundedTimelineFilter creates a filter for events within a time range.
-func BoundedTimelineFilter(since uint64, until uint64, kinds []uint32, limit int) *types.QueryFilter {
+func BoundedTimelineFilter(since uint32, until uint32, kinds []uint16, limit int) *types.QueryFilter {
 	return &types.QueryFilter{
 		Since: since,
 		Until: until,

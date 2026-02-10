@@ -37,9 +37,9 @@ func (s *TLVSerializer) Serialize(event *types.Event) (*Record, error) {
 	contentData := []byte(event.Content)
 
 	// Calculate total record length
-	// Layout: record_len(4) + record_flags(1) + id(32) + pubkey(32) + created_at(8) + 
-	//         kind(4) + tags_len(4) + tags_data + content_len(4) + content_data + sig(64) + reserved(1)
-	baseSize := uint32(4 + 1 + 32 + 32 + 8 + 4 + 4 + 4 + 64 + 1) // 154 bytes
+	// Layout: record_len(4) + record_flags(1) + id(32) + pubkey(32) + created_at(4) +
+	//         kind(2) + tags_len(4) + tags_data + content_len(4) + content_data + sig(64) + reserved(1)
+	baseSize := uint32(4 + 1 + 32 + 32 + 4 + 2 + 4 + 4 + 64 + 1) // 148 bytes
 	totalSize := baseSize + uint32(len(tagsData)) + uint32(len(contentData))
 
 	// Determine if this is a multi-page record
@@ -51,11 +51,11 @@ func (s *TLVSerializer) Serialize(event *types.Event) (*Record, error) {
 		totalSize += 2
 		// Multi-page record
 		flags.SetContinued(true)
-		
+
 		// First page has: record_len(4) + record_flags(1) + continuation_count(2) = 7 bytes header
 		firstPageData := s.pageSize - 7
 		remainingData := totalSize - 7 - firstPageData
-		
+
 		// Each continuation page has: magic(4) + chunk_len(2) = 6 bytes header
 		continuationPageData := s.pageSize - 6
 		continuationCount = uint16((remainingData + continuationPageData - 1) / continuationPageData)
@@ -87,13 +87,13 @@ func (s *TLVSerializer) Serialize(event *types.Event) (*Record, error) {
 	copy(data[offset:], event.Pubkey[:])
 	offset += 32
 
-	// created_at (8 bytes)
-	binary.BigEndian.PutUint64(data[offset:], event.CreatedAt)
-	offset += 8
-
-	// kind (4 bytes)
-	binary.BigEndian.PutUint32(data[offset:], event.Kind)
+	// created_at (4 bytes)
+	binary.BigEndian.PutUint32(data[offset:], event.CreatedAt)
 	offset += 4
+
+	// kind (2 bytes)
+	binary.BigEndian.PutUint16(data[offset:], event.Kind)
+	offset += 2
 
 	// tags_len (4 bytes)
 	binary.BigEndian.PutUint32(data[offset:], uint32(len(tagsData)))
@@ -135,7 +135,7 @@ func (s *TLVSerializer) Deserialize(record *Record) (*types.Event, error) {
 	}
 
 	data := record.Data
-	if len(data) < 154 {
+	if len(data) < 148 {
 		return nil, fmt.Errorf("record too short: %d bytes", len(data))
 	}
 
@@ -157,13 +157,13 @@ func (s *TLVSerializer) Deserialize(record *Record) (*types.Event, error) {
 	copy(event.Pubkey[:], data[offset:offset+32])
 	offset += 32
 
-	// created_at (8 bytes)
-	event.CreatedAt = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
-
-	// kind (4 bytes)
-	event.Kind = binary.BigEndian.Uint32(data[offset : offset+4])
+	// created_at (4 bytes)
+	event.CreatedAt = binary.BigEndian.Uint32(data[offset : offset+4])
 	offset += 4
+
+	// kind (2 bytes)
+	event.Kind = binary.BigEndian.Uint16(data[offset : offset+2])
+	offset += 2
 
 	// tags_len (4 bytes)
 	tagsLen := binary.BigEndian.Uint32(data[offset : offset+4])
@@ -209,8 +209,8 @@ func (s *TLVSerializer) Deserialize(record *Record) (*types.Event, error) {
 
 // SizeHint returns the approximate size of a serialized event.
 func (s *TLVSerializer) SizeHint(event *types.Event) uint32 {
-	baseSize := uint32(154) // Fixed fields
-	
+	baseSize := uint32(148) // Fixed fields (created_at uses 4 bytes)
+
 	// Estimate tags size (conservative: 3 bytes overhead per tag + avg 20 bytes per value)
 	tagsSize := uint32(0)
 	for _, tag := range event.Tags {
@@ -219,9 +219,9 @@ func (s *TLVSerializer) SizeHint(event *types.Event) uint32 {
 			tagsSize += uint32(len(val))
 		}
 	}
-	
+
 	contentSize := uint32(len(event.Content))
-	
+
 	return baseSize + tagsSize + contentSize
 }
 
@@ -246,7 +246,7 @@ func (s *TLVSerializer) serializeTags(tags [][]string) ([]byte, error) {
 	}
 
 	data := make([]byte, 0, estimatedSize)
-	
+
 	// tag_count (2 bytes)
 	tagCountBuf := make([]byte, 2)
 	binary.BigEndian.PutUint16(tagCountBuf, uint16(len(tags)))

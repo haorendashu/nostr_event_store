@@ -22,8 +22,8 @@ import (
 type EventDTO struct {
 	ID        string     `json:"id"`
 	Pubkey    string     `json:"pubkey"`
-	CreatedAt int64      `json:"created_at"`
-	Kind      int        `json:"kind"`
+	CreatedAt uint32     `json:"created_at"`
+	Kind      uint16     `json:"kind"`
 	Tags      [][]string `json:"tags"`
 	Content   string     `json:"content"`
 	Sig       string     `json:"sig"`
@@ -118,8 +118,8 @@ func hexToBytes64(hexStr string) ([64]byte, error) {
 // generateEvent creates a unique event based on a seed event template
 func generateEvent(seed *EventDTO, index int) (*types.Event, error) {
 	event := &types.Event{
-		CreatedAt: uint64(seed.CreatedAt) + uint64(index),
-		Kind:      uint32(seed.Kind),
+		CreatedAt: seed.CreatedAt + uint32(index),
+		Kind:      seed.Kind,
 		Content:   seed.Content,
 		Tags:      seed.Tags,
 	}
@@ -345,7 +345,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 				for _, tagValue := range tagValues {
 					// Create a query filter for this tag, including the event kind
 					filter := &types.QueryFilter{
-						Kinds: []uint32{storedEvent.Kind},
+						Kinds: []uint16{storedEvent.Kind},
 						Tags:  map[string][]string{tagName: {tagValue}},
 					}
 

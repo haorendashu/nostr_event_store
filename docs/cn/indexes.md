@@ -26,7 +26,7 @@
 
 **名称**：`pubkey_time.idx` 或 `idx_author_time`
 
-**Key**：`(pubkey: [32]byte, kind: uint32, created_at: uint64)` = 44 字节
+**Key**：`(pubkey: [32]byte, kind: uint16, created_at: uint32)` = 38 字节
 
 **Value**：`(segment_id, offset)` = 8 字节
 
@@ -36,7 +36,7 @@
 - 时间线分页（如“最近 50 条”）
 
 **B+Tree 属性**：
-- **Key 格式**：`pubkey (32 B) | kind (4 B) | created_at (8 B)`，按字典序比较
+- **Key 格式**：`pubkey (32 B) | kind (2 B) | created_at (4 B)`，按字典序比较
 - **分支因子**：~200（key 较长）
 - **深度**：1M 事件约 4–5 层
 
@@ -59,7 +59,7 @@ for i := 0; i < 20 && iter.Valid(); i++ {
 ```
 
 ### 3. 统一搜索索引（可配置）
-**Key**：`(kind: uint32, search_type: uint8, tag_value: string, created_at: uint64)`
+**Key**：`(kind: uint16, search_type: uint8, tag_value: string, created_at: uint32)`
 
 
 **用途**：
@@ -87,7 +87,7 @@ for i := 0; i < 20 && iter.Valid(); i++ {
 
 **Key 编码**（v2 格式，带长度前缀）：
 ```
-Key = [4 B: kind] [1 B: search_type] [1 B: tag_value_len] [≤255 B: tag_value_utf8] [8 B: created_at]
+Key = [2 B: kind] [1 B: search_type] [1 B: tag_value_len] [≤255 B: tag_value_utf8] [4 B: created_at]
 
 注意：
 - tag_value 用单字节长度前缀（0-255），最大 255 字节。

@@ -70,7 +70,7 @@ func TestEventStoreWriteAndGet(t *testing.T) {
 	event := &types.Event{
 		ID:        [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32},
 		Pubkey:    [32]byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-		CreatedAt: uint64(time.Now().Unix()),
+		CreatedAt: uint32(time.Now().Unix()),
 		Kind:      1,
 		Content:   "Hello, Nostr!",
 		Tags:      [][]string{{"e", "ref123"}, {"p", "pubkey456"}},
@@ -128,21 +128,21 @@ func TestEventStoreWriteMultiple(t *testing.T) {
 		{
 			ID:        [32]byte{1},
 			Pubkey:    [32]byte{1},
-			CreatedAt: uint64(time.Now().Unix()),
+			CreatedAt: uint32(time.Now().Unix()),
 			Kind:      1,
 			Content:   "Event 1",
 		},
 		{
 			ID:        [32]byte{2},
 			Pubkey:    [32]byte{1},
-			CreatedAt: uint64(time.Now().Unix()),
+			CreatedAt: uint32(time.Now().Unix()),
 			Kind:      1,
 			Content:   "Event 2",
 		},
 		{
 			ID:        [32]byte{3},
 			Pubkey:    [32]byte{2},
-			CreatedAt: uint64(time.Now().Unix()),
+			CreatedAt: uint32(time.Now().Unix()),
 			Kind:      2,
 			Content:   "Event 3",
 		},
@@ -194,21 +194,21 @@ func TestEventStoreQuery(t *testing.T) {
 		{
 			ID:        [32]byte{1},
 			Pubkey:    pubkey1,
-			CreatedAt: 1000,
+			CreatedAt: uint32(1000),
 			Kind:      1,
 			Content:   "Kind 1 Event 1",
 		},
 		{
 			ID:        [32]byte{2},
 			Pubkey:    pubkey1,
-			CreatedAt: 2000,
+			CreatedAt: uint32(2000),
 			Kind:      1,
 			Content:   "Kind 1 Event 2",
 		},
 		{
 			ID:        [32]byte{3},
 			Pubkey:    [32]byte{2},
-			CreatedAt: 3000,
+			CreatedAt: uint32(3000),
 			Kind:      2,
 			Content:   "Kind 2 Event",
 		},
@@ -222,7 +222,7 @@ func TestEventStoreQuery(t *testing.T) {
 
 	// Query by kind (for now, just verify it doesn't error - query implementation is in query package)
 	filter := &types.QueryFilter{
-		Kinds: []uint32{1},
+		Kinds: []uint16{1},
 	}
 	results, err := store.QueryAll(ctx, filter)
 	if err != nil {
@@ -269,7 +269,7 @@ func TestEventStoreFlush(t *testing.T) {
 	event := &types.Event{
 		ID:        [32]byte{1},
 		Pubkey:    [32]byte{1},
-		CreatedAt: uint64(time.Now().Unix()),
+		CreatedAt: uint32(time.Now().Unix()),
 		Kind:      1,
 		Content:   "Test",
 	}
@@ -305,7 +305,7 @@ func TestEventStoreStats(t *testing.T) {
 
 	// Get stats
 	stats := store.Stats()
-	
+
 	// Stats should be empty initially (no real stats implementation yet)
 	_ = stats
 
@@ -313,7 +313,7 @@ func TestEventStoreStats(t *testing.T) {
 	event := &types.Event{
 		ID:        [32]byte{1},
 		Pubkey:    [32]byte{1},
-		CreatedAt: uint64(time.Now().Unix()),
+		CreatedAt: uint32(time.Now().Unix()),
 		Kind:      1,
 		Content:   "Test",
 	}
@@ -396,7 +396,7 @@ func TestEventStoreErrorHandling(t *testing.T) {
 	event := &types.Event{
 		ID:        [32]byte{1},
 		Pubkey:    [32]byte{1},
-		CreatedAt: uint64(time.Now().Unix()),
+		CreatedAt: uint32(time.Now().Unix()),
 		Kind:      1,
 		Content:   "Test",
 	}

@@ -128,13 +128,13 @@ Updated `manager.go` to instantiate persistent indexes:
 - **Use case**: Direct event lookup by ID
 
 #### AuthorTime Index (author_time.idx)
-- **Key**: Pubkey(32B) + kind(4B) + created_at(8B)
+- **Key**: Pubkey(32B) + kind(2B) + created_at(4B)
 - **Value**: (SegmentID:uint32, Offset:uint32)
 - **Branching factor**: ~200
 - **Use case**: List events by author with time range
 
 #### Search Index (search.idx)
-- **Key**: kind(4B) + searchType(1B) + tagValue(variable) + createdAt(8B)
+- **Key**: kind(2B) + searchType(1B) + tagValue(variable) + createdAt(4B)
 - **Value**: (SegmentID:uint32, Offset:uint32)
 - **Branching factor**: ~180
 - **Use case**: Tag-based queries (e-tag replies, p-tag mentions, hashtags)

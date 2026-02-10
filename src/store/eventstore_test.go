@@ -91,8 +91,8 @@ func TestEventStoreMultipleEvents(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i), byte(i + 1)},
 			Pubkey:    [32]byte{byte(i + 2), byte(i + 3)},
-			CreatedAt: uint64(1655000000 + i),
-			Kind:      uint32(i),
+			CreatedAt: uint32(1655000000 + i),
+			Kind:      uint16(i),
 			Tags: [][]string{
 				{"event", "test"},
 			},
@@ -114,10 +114,10 @@ func TestEventStoreMultipleEvents(t *testing.T) {
 			t.Fatalf("ReadEvent %d failed: %v", i, err)
 		}
 
-		if readEvent.CreatedAt != uint64(1655000000+i) {
+		if readEvent.CreatedAt != uint32(1655000000+i) {
 			t.Errorf("Event %d: CreatedAt mismatch", i)
 		}
-		if readEvent.Kind != uint32(i) {
+		if readEvent.Kind != uint16(i) {
 			t.Errorf("Event %d: Kind mismatch", i)
 		}
 	}

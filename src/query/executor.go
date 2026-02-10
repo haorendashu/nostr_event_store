@@ -218,9 +218,9 @@ func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *plan
 			startKey := keyBuilder.BuildAuthorTimeKey(author, 0, plan.filter.Since)
 			endTime := plan.filter.Until
 			if endTime == 0 {
-				endTime = ^uint64(0)
+				endTime = ^uint32(0)
 			}
-			endKey := keyBuilder.BuildAuthorTimeKey(author, ^uint32(0), endTime)
+			endKey := keyBuilder.BuildAuthorTimeKey(author, ^uint16(0), endTime)
 
 			iter, err := atIdx.Range(ctx, startKey, endKey)
 			if err != nil {
@@ -241,7 +241,7 @@ func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *plan
 			startKey := keyBuilder.BuildAuthorTimeKey(author, kind, plan.filter.Since)
 			endTime := plan.filter.Until
 			if endTime == 0 {
-				endTime = ^uint64(0)
+				endTime = ^uint32(0)
 			}
 			endKey := keyBuilder.BuildAuthorTimeKey(author, kind, endTime)
 
@@ -280,7 +280,7 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 
 	kinds := plan.filter.Kinds
 	if len(kinds) == 0 {
-		kinds = []uint32{0}
+		kinds = []uint16{0}
 	}
 
 	// Process generic Tags map
@@ -296,7 +296,7 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 				startKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Since)
 				endKey := keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), plan.filter.Until)
 				if plan.filter.Until == 0 {
-					endKey = keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint64(0))
+					endKey = keyBuilder.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint32(0))
 				}
 				if shouldLogSearchIndexRange(tagName, tagValue) {
 					log.Printf("search index range: kind=%d tag=%s value_len=%d start=%s end=%s", kind, tagName, len(tagValue), hex.EncodeToString(startKey), hex.EncodeToString(endKey))

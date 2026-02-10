@@ -55,16 +55,16 @@ Offset | Size    | Field          | Type        | Notes
 4      | 1       | record_flags   | uint8       | CONTINUED=0 (single page), DELETED, REPLACED
 5      | 32      | id             | [32]byte    | Event ID (SHA-256)
 37     | 32      | pubkey         | [32]byte    | Author public key
-69     | 8       | created_at     | uint64      | UNIX timestamp (seconds)
-77     | 4       | kind           | uint32      | Event kind
-81     | 4       | tags_len       | uint32      | Total bytes of serialized tags
-85     | tags_len| tags_data      | []byte      | Serialized tags (TLV or JSON)
+69     | 4       | created_at     | uint32      | UNIX timestamp (seconds)
+73     | 2       | kind           | uint16      | Event kind
+75     | 4       | tags_len       | uint32      | Total bytes of serialized tags
+79     | tags_len| tags_data      | []byte      | Serialized tags (TLV or JSON)
        | 4       | content_len    | uint32      | Content string byte length
        | content_len | content    | []byte      | Event content (UTF-8)
        | 64      | sig            | [64]byte    | Ed25519 signature
        | 1       | reserved       | uint8       | Future flags
 
-Total: 4 + 1 + 32 + 32 + 8 + 4 + 4 + tags_len + 4 + content_len + 64 + 1 = 154 + tags_len + content_len bytes
+Total: 4 + 1 + 32 + 32 + 4 + 2 + 4 + tags_len + 4 + content_len + 64 + 1 = 148 + tags_len + content_len bytes
 ```
 
 **Multi-Page Record (record_len >= page_size, e.g., long-form articles, large follow lists)**:

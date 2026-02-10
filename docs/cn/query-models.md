@@ -16,7 +16,7 @@
 
 **执行**：
 ```
-kinds := []uint32{1, 2, 3}
+kinds := []uint16{1, 2, 3}
 events := []
 
 for _, kind := range kinds {
@@ -45,7 +45,7 @@ return events[0:20]
 ```
 // 游标 offset：created_at 时间戳
 // 第 2 页：取 timestamp T 之前的 20 条（按 kind）
-kind := uint32(1)
+kind := uint16(1)
 cursor_key := pubkey || kind || cursor_timestamp  // 来自客户端
 key_min := pubkey || kind || UINT64_MIN
 iter := pubkey_time.RangeDesc(cursor_key, key_min)
@@ -67,7 +67,7 @@ iter.Prev()  // 跳过已展示的首条
 ```
 // 假设用户希望 kinds [1, 6, 7]（文本、转发、反应）
 events := []
-for _, kind := range []uint32{1, 6, 7} {
+for _, kind := range []uint16{1, 6, 7} {
     key_max := (kind, TIME, empty, UINT64_MAX)
     key_min := (kind, TIME, empty, UINT64_MIN)
     
@@ -104,7 +104,7 @@ return events[0:50]
 
 **执行**：
 ```
-kind := uint32(1)  // 应用默认 kind
+kind := uint16(1)  // 应用默认 kind
 event_id := 0xabcd...  // 目标事件
 st_e := searchTypeCode("e")  // 运行时映射，来自 manifest.json
 
@@ -153,7 +153,7 @@ for _, reply_event := range replies {
 
 **执行**：
 ```
-kind := uint32(1)
+kind := uint16(1)
 hashtag := "bitcoin"  // 统一转小写
 st_t := searchTypeCode("t")  // 运行时映射
 
@@ -187,7 +187,7 @@ return events
 
 **执行**：
 ```
-kind := uint32(1)
+kind := uint16(1)
 pubkey := 0xfedc...  // 目标用户公钥
 st_p := searchTypeCode("p")  // 运行时映射
 
@@ -223,7 +223,7 @@ if event.tags.contains_p(client_user_pubkey):
 **执行**：
 ```
 pubkey := 0xfedc...
-kind := 0  // profile
+kind := uint16(1)  // profile
 
 key := (kind, REPL, pubkey||kind, UINT64_MAX)
 loc := search.Get(key)
@@ -247,7 +247,7 @@ return profile
 **执行**：
 ```
 pubkey := 0xfedc...
-kind := 30000
+kind := uint16(30000)
  d_tag := "favorites"
 
 key := (kind, PREPL, pubkey||kind||d_tag, UINT64_MAX)
@@ -319,7 +319,7 @@ return all_events[0:100]
 ### 正向范围扫描
 
 ```
-kind := uint32(1)
+kind := uint16(1)
 key_start := alice_pubkey || kind || T1
 key_end   := alice_pubkey || kind || T2
 
@@ -337,7 +337,7 @@ return events
 ### 逆向范围扫描
 
 ```
-kind := uint32(1)
+kind := uint16(1)
 key_max := alice_pubkey || kind || UINT64_MAX
 key_min := alice_pubkey || kind || 0
 
@@ -355,7 +355,7 @@ return events
 ### 前缀扫描
 
 ```
-kind := uint32(1)
+kind := uint16(1)
 st_t := searchTypeCode("t")
 key_prefix := (kind, st_t, "bit")
 
@@ -386,7 +386,7 @@ limit := 50
 
 offset := (page - 1) * limit
 
-kind := uint32(1)
+kind := uint16(1)
 key_max := pubkey || kind || UINT64_MAX
 iter := pubkey_time.RangeDesc(key_max, pubkey || kind || 0)
 
@@ -413,7 +413,7 @@ return {
 ```
 cursor := request.cursor
 
-kind := uint32(1)
+kind := uint16(1)
 if cursor == "" {
     key_start := pubkey || kind || UINT64_MAX
 } else {

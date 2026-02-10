@@ -273,8 +273,8 @@ type KeyBuilder interface {
 	BuildPrimaryKey(id [32]byte) []byte
 
 	// BuildAuthorTimeKey constructs a key for the author+time index.
-	// Key format: (pubkey [32]byte, kind uint32, created_at uint64)
-	BuildAuthorTimeKey(pubkey [32]byte, kind uint32, createdAt uint64) []byte
+	// Key format: (pubkey [32]byte, kind uint16, created_at uint32) = 38 bytes
+	BuildAuthorTimeKey(pubkey [32]byte, kind uint16, createdAt uint32) []byte
 
 	// BuildSearchKey constructs a key for the search index.
 	// Parameters:
@@ -282,8 +282,8 @@ type KeyBuilder interface {
 	//   searchTypeCode: the search type code (from runtime config, e.g., code for "e" tag)
 	//   tagValue: tag value (e.g., event ID for e-tags, pubkey for p-tags, hashtag for t-tags)
 	//   createdAt: event creation time
-	// Key format: (kind uint32, searchTypeCode uint8, tagValue []byte, created_at uint64)
-	BuildSearchKey(kind uint32, searchTypeCode SearchType, tagValue []byte, createdAt uint64) []byte
+	// Key format: (kind uint16, searchTypeCode uint8, tagValue []byte, created_at uint32)
+	BuildSearchKey(kind uint16, searchTypeCode SearchType, tagValue []byte, createdAt uint32) []byte
 
 	// BuildSearchKeyRange constructs a range for search index queries.
 	// Returns (minKey, maxKey) for a range query that matches all entries with given kind and searchTypeCode.
@@ -291,7 +291,7 @@ type KeyBuilder interface {
 	//   kind: event kind
 	//   searchTypeCode: the search type code
 	//   tagValuePrefix: optional tag value prefix (empty matches all tag values, specific prefix narrows the range)
-	BuildSearchKeyRange(kind uint32, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte)
+	BuildSearchKeyRange(kind uint16, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte)
 
 	// TagNameToSearchTypeCode returns the current mapping from tag names to SearchType codes.
 	// This is loaded from manifest.json and can change if users modify their configuration.
@@ -327,18 +327,18 @@ func (kb *KeyBuilderImpl) BuildPrimaryKey(id [32]byte) []byte {
 }
 
 // BuildAuthorTimeKey constructs an author+time index key.
-func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, kind uint32, createdAt uint64) []byte {
-	key := make([]byte, 32+4+8)
+func (kb *KeyBuilderImpl) BuildAuthorTimeKey(pubkey [32]byte, kind uint16, createdAt uint32) []byte {
+	key := make([]byte, 32+2+4)
 	copy(key[:32], pubkey[:])
-	binary.BigEndian.PutUint32(key[32:36], kind)
-	binary.BigEndian.PutUint64(key[36:], createdAt)
+	binary.BigEndian.PutUint16(key[32:34], kind)
+	binary.BigEndian.PutUint32(key[34:], createdAt)
 	return key
 }
 
 // BuildSearchKey constructs a search index key with configurable search type code.
-// Format: kind(4) + searchType(1) + tagValueLen(1) + tagValue(max 255) + createdAt(8)
+// Format: kind(2) + searchType(1) + tagValueLen(1) + tagValue(max 255) + createdAt(4)
 // tagValue is truncated to 255 bytes to fit in uint8 length field.
-func (kb *KeyBuilderImpl) BuildSearchKey(kind uint32, searchTypeCode SearchType, tagValue []byte, createdAt uint64) []byte {
+func (kb *KeyBuilderImpl) BuildSearchKey(kind uint16, searchTypeCode SearchType, tagValue []byte, createdAt uint32) []byte {
 	// Truncate tagValue to 255 bytes max
 	maxLen := 255
 	if len(tagValue) > maxLen {
@@ -346,12 +346,12 @@ func (kb *KeyBuilderImpl) BuildSearchKey(kind uint32, searchTypeCode SearchType,
 	}
 
 	tagLen := uint8(len(tagValue))
-	key := make([]byte, 4+1+1+len(tagValue)+8)
-	binary.BigEndian.PutUint32(key[0:4], kind)
-	key[4] = byte(searchTypeCode)
-	key[5] = tagLen
-	copy(key[6:6+len(tagValue)], tagValue)
-	binary.BigEndian.PutUint64(key[6+len(tagValue):], createdAt)
+	key := make([]byte, 2+1+1+len(tagValue)+4)
+	binary.BigEndian.PutUint16(key[0:2], kind)
+	key[2] = byte(searchTypeCode)
+	key[3] = tagLen
+	copy(key[4:4+len(tagValue)], tagValue)
+	binary.BigEndian.PutUint32(key[4+len(tagValue):], createdAt)
 	return key
 }
 
@@ -359,7 +359,7 @@ func (kb *KeyBuilderImpl) BuildSearchKey(kind uint32, searchTypeCode SearchType,
 // Note: Prefix matching is NOT supported with the new length-prefixed key format.
 // This function returns a range [minKey, maxKey] for all entries with the exact tagValue,
 // where minKey has createdAt=0 and maxKey has createdAt=MAX.
-func (kb *KeyBuilderImpl) BuildSearchKeyRange(kind uint32, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte) {
+func (kb *KeyBuilderImpl) BuildSearchKeyRange(kind uint16, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte) {
 	// Truncate to 255 bytes max (same as BuildSearchKey)
 	maxLen := 255
 	if len(tagValuePrefix) > maxLen {
@@ -370,7 +370,7 @@ func (kb *KeyBuilderImpl) BuildSearchKeyRange(kind uint32, searchTypeCode Search
 	minKey := kb.BuildSearchKey(kind, searchTypeCode, tagValuePrefix, 0)
 
 	// Build max key: kind + searchType + tagValueLen + tagValue + time(MAX)
-	maxKey := kb.BuildSearchKey(kind, searchTypeCode, tagValuePrefix, ^uint64(0))
+	maxKey := kb.BuildSearchKey(kind, searchTypeCode, tagValuePrefix, ^uint32(0))
 
 	return minKey, maxKey
 }

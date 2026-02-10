@@ -10,7 +10,7 @@ import (
 // MatchesFilter checks if an event matches the given filter.
 func MatchesFilter(event *types.Event, filter *types.QueryFilter) bool {
 	// Check kind
-	if len(filter.Kinds) > 0 && !containsUint32(filter.Kinds, event.Kind) {
+	if len(filter.Kinds) > 0 && !containsUint16(filter.Kinds, event.Kind) {
 		return false
 	}
 
@@ -42,8 +42,8 @@ func MatchesFilter(event *types.Event, filter *types.QueryFilter) bool {
 	return true
 }
 
-// containsUint32 checks if slice contains value.
-func containsUint32(slice []uint32, value uint32) bool {
+// containsUint16 checks if slice contains value.
+func containsUint16(slice []uint16, value uint16) bool {
 	for _, v := range slice {
 		if v == value {
 			return true

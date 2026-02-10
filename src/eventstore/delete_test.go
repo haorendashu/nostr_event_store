@@ -93,7 +93,7 @@ func TestDeleteEvents(t *testing.T) {
 		events[i] = &types.Event{
 			ID:        eventIDs[i],
 			Pubkey:    [32]byte{4, 5, 6},
-			CreatedAt: uint64(1000 + i),
+			CreatedAt: uint32(1000 + i),
 			Kind:      1,
 			Content:   "test content",
 			Sig:       [64]byte{},

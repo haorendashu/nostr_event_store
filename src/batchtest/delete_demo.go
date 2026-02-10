@@ -45,7 +45,7 @@ func demonstrateDelete() {
 		events[i] = &types.Event{
 			ID:        eventIDs[i],
 			Pubkey:    [32]byte{10, 20, 30},
-			CreatedAt: uint64(1000 + i),
+			CreatedAt: uint32(1000 + i),
 			Kind:      1,
 			Content:   fmt.Sprintf("Event %d content", i+1),
 			Sig:       [64]byte{},

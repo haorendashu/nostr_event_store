@@ -35,7 +35,7 @@ A Nostr event is the fundamental unit. Core fields:
 Events are serialized into variable-length binary records:
 
 ```
-[4 B: record_len] [32 B: id] [32 B: pubkey] [8 B: created_at] [4 B: kind]
+[4 B: record_len] [32 B: id] [32 B: pubkey] [4 B: created_at] [2 B: kind]
 [4 B: tags_len] [tags_len: tags_data] [4 B: content_len] [content_len: content_data]
 [64 B: sig] [1 B: flags]
 ```

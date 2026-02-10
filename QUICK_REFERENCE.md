@@ -341,7 +341,7 @@ func (m *mockStorage) ReadEvent(ctx context.Context, loc types.RecordLocation) (
 ```go
 tests := []struct {
     name      string
-    kind      uint32
+  kind      uint16
     expected  bool
 }{
     {"replaceable kind 0", 0, true},

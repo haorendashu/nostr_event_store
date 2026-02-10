@@ -25,7 +25,7 @@ Indexes are the query engine's backbone. They map search keys to record location
 
 **Name**: `pubkey_time.idx` or `idx_author_time`
 
-**Key**: `(pubkey: [32]byte, kind: uint32, created_at: uint64)` = 44 bytes
+**Key**: `(pubkey: [32]byte, kind: uint16, created_at: uint32)` = 38 bytes
 
 **Value**: `(segment_id, offset)` = 8 bytes
 
@@ -35,7 +35,7 @@ Indexes are the query engine's backbone. They map search keys to record location
 - Timeline pagination (e.g., "last 50 events by user X").
 
 **B+Tree Properties**:
-- **Key format**: `pubkey (32 B) | kind (4 B) | created_at (8 B)` as binary, compared lexicographically.
+- **Key format**: `pubkey (32 B) | kind (2 B) | created_at (4 B)` as binary, compared lexicographically.
 - **Branching factor**: ~200 (slightly lower due to longer keys).
 - **Depth**: ~4–5 levels for 1M events.
 
@@ -56,7 +56,7 @@ key_start := pubkey || kind || created_at_min
 
 **Name**: `search.idx` or `idx_search`
 
-**Key**: `(kind: uint32, search_type: uint8, tag_value: string, created_at: uint64)`
+**Key**: `(kind: uint16, search_type: uint8, tag_value: string, created_at: uint32)`
 
 **Value**: `(segment_id: uint32, offset: uint32)` = 8 bytes
 
@@ -88,7 +88,7 @@ The system predefines 14 common Nostr tags with SearchType codes (1-14):
 
 **Key Encoding** (v2 format with length-prefix):
 ```
-Key = [4 B: kind] [1 B: search_type] [1 B: tag_value_len] [≤255 B: tag_value_utf8] [8 B: created_at]
+Key = [2 B: kind] [1 B: search_type] [1 B: tag_value_len] [≤255 B: tag_value_utf8] [4 B: created_at]
 
 Note: 
 - tag_value is length-prefixed with a single byte (0-255), limiting max value to 255 bytes.

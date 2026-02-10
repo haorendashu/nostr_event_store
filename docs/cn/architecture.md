@@ -22,8 +22,8 @@ Nostr 事件是系统的基本单位，核心字段如下：
 |-------|------|------|-------|
 | `id` | bytes (32) | 32 B | 事件的 SHA-256 哈希；主键 |
 | `pubkey` | bytes (32) | 32 B | 作者公钥 |
-| `created_at` | uint64 | 8 B | UNIX 时间戳（秒） |
-| `kind` | uint32 | 4 B | 事件类型 |
+| `created_at` | uint32 | 4 B | UNIX 时间戳（秒） |
+| `kind` | uint16 | 2 B | 事件类型 |
 | `tags` | array of arrays | 可变 | 元数据：`["e", id, ...]`、`["p", pubkey, ...]`、`["t", hashtag]`、`["d", identifier]` 等 |
 | `content` | string | 可变 | 事件负载（文本、JSON 等） |
 | `sig` | bytes (64) | 64 B | Ed25519 签名 |
@@ -35,7 +35,7 @@ Nostr 事件是系统的基本单位，核心字段如下：
 事件被序列化为可变长度二进制记录：
 
 ```
-[4 B: record_len] [32 B: id] [32 B: pubkey] [8 B: created_at] [4 B: kind]
+[4 B: record_len] [32 B: id] [32 B: pubkey] [4 B: created_at] [2 B: kind]
 [4 B: tags_len] [tags_len: tags_data] [4 B: content_len] [content_len: content_data]
 [64 B: sig] [1 B: flags]
 ```

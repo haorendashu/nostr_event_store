@@ -36,39 +36,39 @@ func TestDebugSerialization(t *testing.T) {
 	// Parse header
 	recordLen := binary.BigEndian.Uint32(record.Data[0:4])
 	recordFlags := types.EventFlags(record.Data[4])
-	
+
 	t.Logf("Parsed record_len: %d", recordLen)
 	t.Logf("Parsed record_flags: 0x%02X", recordFlags)
 
 	// Check offset calculation
 	offset := 5 // record_len(4) + record_flags(1)
-	
+
 	// ID
 	t.Logf("ID at offset %d: %02X", offset, record.Data[offset])
 	offset += 32
-	
+
 	// Pubkey
 	t.Logf("Pubkey at offset %d: %02X", offset, record.Data[offset])
 	offset += 32
-	
+
 	// created_at
-	createdAt := binary.BigEndian.Uint64(record.Data[offset : offset+8])
+	createdAt := binary.BigEndian.Uint32(record.Data[offset : offset+4])
 	t.Logf("CreatedAt at offset %d: %d", offset, createdAt)
-	offset += 8
-	
-	// kind
-	kind := binary.BigEndian.Uint32(record.Data[offset : offset+4])
-	t.Logf("Kind at offset %d: %d", offset, kind)
 	offset += 4
-	
+
+	// kind
+	kind := binary.BigEndian.Uint16(record.Data[offset : offset+2])
+	t.Logf("Kind at offset %d: %d", offset, kind)
+	offset += 2
+
 	// tags_len
 	tagsLen := binary.BigEndian.Uint32(record.Data[offset : offset+4])
 	t.Logf("Tags_len at offset %d: %d", offset, tagsLen)
 	offset += 4
-	
+
 	t.Logf("Tags data starts at offset %d, ends at %d", offset, offset+int(tagsLen))
 	t.Logf("Data length: %d, available: %d", len(record.Data), len(record.Data)-offset)
-	
+
 	if offset+int(tagsLen) > len(record.Data) {
 		t.Errorf("Tags data would exceed bounds!")
 	}

@@ -52,7 +52,7 @@ func TestDeleteIntegrationWALIndexStorage(t *testing.T) {
 		events[i] = &types.Event{
 			ID:        id,
 			Pubkey:    pubkey,
-			CreatedAt: uint64(1000 + i),
+			CreatedAt: uint32(1000 + i),
 			Kind:      1,
 			Content:   "test content " + string(rune(i)),
 			Sig:       [64]byte{},
@@ -196,7 +196,7 @@ func TestDeleteIntegrationWALIndexStorage(t *testing.T) {
 	newEvent := &types.Event{
 		ID:        newID,
 		Pubkey:    [32]byte{99, 99},
-		CreatedAt: 9999,
+		CreatedAt: uint32(9999),
 		Kind:      1,
 		Content:   "new event after deletion",
 		Sig:       [64]byte{},

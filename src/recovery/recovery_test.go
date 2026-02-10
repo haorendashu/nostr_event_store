@@ -29,8 +29,8 @@ func TestRecoveryBasic(t *testing.T) {
 		events[i] = &types.Event{
 			ID:        [32]byte{byte(i), 1},
 			Pubkey:    [32]byte{byte(i), 2},
-			CreatedAt: uint64(1655000000 + i),
-			Kind:      uint32(i),
+			CreatedAt: uint32(1655000000 + i),
+			Kind:      uint16(i),
 			Tags:      [][]string{{"test", "tag"}},
 			Content:   "Event content",
 			Sig:       [64]byte{},
@@ -105,7 +105,7 @@ func TestRecoveryWithMultiPageEvents(t *testing.T) {
 	largeEvent := &types.Event{
 		ID:        [32]byte{1},
 		Pubkey:    [32]byte{2},
-		CreatedAt: 1655000000,
+		CreatedAt: uint32(1655000000),
 		Kind:      1,
 		Tags:      make([][]string, 0),
 		Content:   "Large event",
@@ -176,8 +176,8 @@ func TestSegmentIntegrityValidation(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i)},
 			Pubkey:    [32]byte{byte(i)},
-			CreatedAt: uint64(1655000000 + i),
-			Kind:      uint32(i),
+			CreatedAt: uint32(1655000000 + i),
+			Kind:      uint16(i),
 			Tags:      [][]string{{"test", "tag"}},
 			Content:   "Content",
 			Sig:       [64]byte{},
@@ -236,7 +236,7 @@ func TestRecoveryFromCheckpoint(t *testing.T) {
 	event1 := &types.Event{
 		ID:        [32]byte{1},
 		Pubkey:    [32]byte{1},
-		CreatedAt: 1655000000,
+		CreatedAt: uint32(1655000000),
 		Kind:      1,
 		Tags:      [][]string{{"test", "1"}},
 		Content:   "Event 1",
@@ -250,7 +250,7 @@ func TestRecoveryFromCheckpoint(t *testing.T) {
 	event2 := &types.Event{
 		ID:        [32]byte{2},
 		Pubkey:    [32]byte{2},
-		CreatedAt: 1655000001,
+		CreatedAt: uint32(1655000001),
 		Kind:      2,
 		Tags:      [][]string{{"test", "2"}},
 		Content:   "Event 2",

@@ -27,7 +27,7 @@ func TestAnalyzeSegments(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i), 1},
 			Pubkey:    [32]byte{byte(i), 2},
-			CreatedAt: uint64(1655000000 + i),
+			CreatedAt: uint32(1655000000 + i),
 			Kind:      1,
 			Tags:      [][]string{{"test", "tag"}},
 			Content:   "Event " + string(rune('0'+byte(i))),
@@ -91,7 +91,7 @@ func TestSelectCompactionCandidates(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i), 1},
 			Pubkey:    [32]byte{byte(i), 2},
-			CreatedAt: uint64(1655000000 + i),
+			CreatedAt: uint32(1655000000 + i),
 			Kind:      1,
 			Tags:      [][]string{{"test", "tag"}},
 			Content:   "Event " + string(rune('0'+(byte(i)%10))),
@@ -150,7 +150,7 @@ func TestTotalWasteAnalysis(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i)},
 			Pubkey:    [32]byte{byte(i)},
-			CreatedAt: uint64(1655000000 + i),
+			CreatedAt: uint32(1655000000 + i),
 			Kind:      1,
 			Tags:      [][]string{{"test", "tag"}},
 			Content:   "Event",
@@ -213,7 +213,7 @@ func TestCompactionFlow(t *testing.T) {
 		event := &types.Event{
 			ID:        eventID,
 			Pubkey:    [32]byte{byte(i)},
-			CreatedAt: uint64(1655000000 + i),
+			CreatedAt: uint32(1655000000 + i),
 			Kind:      1,
 			Tags:      [][]string{},
 			Content:   "Event",
@@ -284,7 +284,7 @@ func TestCompactionWithSmallSegmentSize(t *testing.T) {
 		event := &types.Event{
 			ID:        [32]byte{byte(i)},
 			Pubkey:    [32]byte{byte(i)},
-			CreatedAt: uint64(1655000000 + i),
+			CreatedAt: uint32(1655000000 + i),
 			Kind:      1,
 			Tags:      [][]string{{"test", string(rune(i))}},
 			Content:   "Content",

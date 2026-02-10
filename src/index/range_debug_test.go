@@ -39,10 +39,10 @@ func TestSearchIndexRangeWithSpecialCharacters(t *testing.T) {
 	kb := NewKeyBuilder(cfg.TagNameToSearchTypeCode)
 
 	// Test case 1: URL with "url " prefix
-	kind := uint32(1)
+	kind := uint16(1)
 	searchType := SearchType(11) // "i" tag
 	tagValue := "url https://blossom.primal.net/4b3dbcba861afdf017282314a0a326e5d2148edb0dc5ebc0374ad59327b2039b.jpg"
-	createdAt := uint64(1000000)
+	createdAt := uint32(1000000)
 
 	// Insert the key
 	key := kb.BuildSearchKey(kind, searchType, []byte(tagValue), createdAt)
@@ -56,9 +56,9 @@ func TestSearchIndexRangeWithSpecialCharacters(t *testing.T) {
 		t.Fatalf("Failed to flush: %v", err)
 	}
 
-	// Query with Since=0, Until=maxUint64
+	// Query with Since=0, Until=maxUint32
 	startKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), 0)
-	endKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint64(0))
+	endKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint32(0))
 
 	t.Logf("Searching for key:")
 	t.Logf("  Kind: %d", kind)
@@ -120,10 +120,10 @@ func TestSearchIndexRangeWithSpace(t *testing.T) {
 	kb := NewKeyBuilder(cfg.TagNameToSearchTypeCode)
 
 	// Test "Mute List" with space
-	kind := uint32(10000)
+	kind := uint16(10000)
 	searchType := SearchType(3) // "a" tag
 	tagValue := "Mute List"
-	createdAt := uint64(2000000)
+	createdAt := uint32(2000000)
 
 	key := kb.BuildSearchKey(kind, searchType, []byte(tagValue), createdAt)
 	loc := types.RecordLocation{SegmentID: 2, Offset: 200}
@@ -137,7 +137,7 @@ func TestSearchIndexRangeWithSpace(t *testing.T) {
 
 	// Query
 	startKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), 0)
-	endKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint64(0))
+	endKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint32(0))
 
 	t.Logf("Searching for: %q", tagValue)
 	t.Logf("  StartKey: %x", startKey)
@@ -193,14 +193,14 @@ func TestSearchIndexMultipleEntriesSameTag(t *testing.T) {
 	ctx := context.Background()
 	kb := NewKeyBuilder(cfg.TagNameToSearchTypeCode)
 
-	kind := uint32(5)
+	kind := uint16(5)
 	searchType := SearchType(1) // "e" tag
 	tagValue := "06197f13751e89165e9add9147fe1af8de3b5a3ce9719b8bdd8168c78e9e2768"
 
 	// Insert 10 entries with different timestamps
 	insertedKeys := make([][]byte, 10)
 	for i := 0; i < 10; i++ {
-		createdAt := uint64(1000000 + i*10000)
+		createdAt := uint32(1000000 + i*10000)
 		key := kb.BuildSearchKey(kind, searchType, []byte(tagValue), createdAt)
 		insertedKeys[i] = key
 		loc := types.RecordLocation{SegmentID: uint32(i + 1), Offset: uint32(i * 100)}
@@ -215,7 +215,7 @@ func TestSearchIndexMultipleEntriesSameTag(t *testing.T) {
 
 	// Query all entries
 	startKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), 0)
-	endKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint64(0))
+	endKey := kb.BuildSearchKey(kind, searchType, []byte(tagValue), ^uint32(0))
 
 	t.Logf("Searching for tag value: %q", tagValue)
 
@@ -281,9 +281,9 @@ func TestSearchIndexTruncation(t *testing.T) {
 	}
 	longValueStr := string(longValue)
 
-	kind := uint32(1)
+	kind := uint16(1)
 	searchType := SearchType(11) // "i" tag
-	createdAt := uint64(1000000)
+	createdAt := uint32(1000000)
 
 	// Insert the long value
 	key := kb.BuildSearchKey(kind, searchType, longValue, createdAt)
@@ -298,8 +298,8 @@ func TestSearchIndexTruncation(t *testing.T) {
 	}
 
 	// The key should be truncated to 255 bytes max
-	// Key format: kind(4) + type(1) + len(1) + value(<=255) + time(8) = 4+1+1+255+8 = 269 bytes max
-	expectedMaxKeyLen := 4 + 1 + 1 + 255 + 8
+	// Key format: kind(2) + type(1) + len(1) + value(<=255) + time(4) = 2+1+1+255+4 = 263 bytes max
+	expectedMaxKeyLen := 2 + 1 + 1 + 255 + 4
 	if len(key) > expectedMaxKeyLen {
 		t.Errorf("Key length %d exceeds max truncated length %d", len(key), expectedMaxKeyLen)
 	}
@@ -313,7 +313,7 @@ func TestSearchIndexTruncation(t *testing.T) {
 
 	// Query with the same (long) value should find it
 	startKey := kb.BuildSearchKey(kind, searchType, longValue, 0)
-	endKey := kb.BuildSearchKey(kind, searchType, longValue, ^uint64(0))
+	endKey := kb.BuildSearchKey(kind, searchType, longValue, ^uint32(0))
 
 	iter, err := idx.Range(ctx, startKey, endKey)
 	if err != nil {
@@ -328,5 +328,5 @@ func TestSearchIndexTruncation(t *testing.T) {
 	}
 
 	t.Logf("Truncation test passed: value of %d bytes was truncated to %d bytes",
-		len(longValue), len(expectedKey)-4-1-1-8)
+		len(longValue), len(expectedKey)-2-1-1-4)
 }

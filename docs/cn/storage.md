@@ -54,16 +54,16 @@ Offset | Size    | Field          | Type        | Notes
 4      | 1       | record_flags   | uint8       | CONTINUED=0（单页），DELETED，REPLACED
 5      | 32      | id             | [32]byte    | 事件 ID（SHA-256）
 37     | 32      | pubkey         | [32]byte    | 作者公钥
-69     | 8       | created_at     | uint64      | UNIX 时间戳（秒）
-77     | 4       | kind           | uint32      | 事件类型
-81     | 4       | tags_len       | uint32      | 序列化 tags 总字节数
-85     | tags_len| tags_data      | []byte      | 序列化 tags（TLV 或 JSON）
+69     | 4       | created_at     | uint32      | UNIX 时间戳（秒）
+73     | 2       | kind           | uint16      | 事件类型
+75     | 4       | tags_len       | uint32      | 序列化 tags 总字节数
+79     | tags_len| tags_data      | []byte      | 序列化 tags（TLV 或 JSON）
        | 4       | content_len    | uint32      | content 字节长度
        | content_len | content    | []byte      | 事件内容（UTF-8）
        | 64      | sig            | [64]byte    | Ed25519 签名
        | 1       | reserved       | uint8       | 预留字段
 
-总计: 4 + 1 + 32 + 32 + 8 + 4 + 4 + tags_len + 4 + content_len + 64 + 1 = 154 + tags_len + content_len 字节
+总计: 4 + 1 + 32 + 32 + 4 + 2 + 4 + tags_len + 4 + content_len + 64 + 1 = 148 + tags_len + content_len 字节
 ```
 
 **多页记录（record_len >= page_size，如长文、大关注列表）**：
