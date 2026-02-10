@@ -57,6 +57,28 @@ type EventStore interface {
 	// ctx is used for cancellation and timeouts.
 	GetEvent(ctx context.Context, eventID [32]byte) (*types.Event, error)
 
+	// DeleteEvent logically deletes an event by setting the DELETED flag.
+	// The operation is recorded in WAL for crash recovery.
+	// After deletion:
+	// - The event is marked as deleted in storage (in-place flag update)
+	// - The event is removed from all indexes (primary, author-time, search)
+	// - The event will be skipped in future query results
+	// - The event can be physically deleted during compaction
+	//
+	// Returns error if:
+	// - The event doesn't exist
+	// - The store is not open
+	// - WAL or index operations fail
+	// ctx is used for cancellation and timeouts.
+	DeleteEvent(ctx context.Context, eventID [32]byte) error
+
+	// DeleteEvents deletes multiple events in a batch.
+	// More efficient than calling DeleteEvent repeatedly.
+	// Returns error if any event fails to delete.
+	// Partial success is possible: some events may be deleted before an error occurs.
+	// ctx is used for cancellation and timeouts.
+	DeleteEvents(ctx context.Context, eventIDs [][32]byte) error
+
 	// Query executes a complex query with filters and returns results.
 	// Supports constraints on kind, author, time range, tags, and more.
 	// Automatically selects optimal indexes for the given filter.
@@ -104,23 +126,23 @@ type EventStore interface {
 // Stats captures overall store statistics.
 type Stats struct {
 	// Event stats
-	TotalEvents      uint64
-	DeletedEvents    uint64
-	ReplacedEvents   uint64
-	LiveEvents       uint64
+	TotalEvents    uint64
+	DeletedEvents  uint64
+	ReplacedEvents uint64
+	LiveEvents     uint64
 
 	// Storage stats
-	TotalDataSizeBytes uint64
+	TotalDataSizeBytes  uint64
 	TotalIndexSizeBytes uint64
-	TotalWALSizeBytes  uint64
+	TotalWALSizeBytes   uint64
 
 	// Index stats
-	PrimaryIndexStats   index.Stats
+	PrimaryIndexStats    index.Stats
 	AuthorTimeIndexStats index.Stats
 	SearchIndexStats     index.Stats
 
 	// Cache stats
-	PrimaryIndexCacheStats   cache.Stats
+	PrimaryIndexCacheStats    cache.Stats
 	AuthorTimeIndexCacheStats cache.Stats
 	SearchIndexCacheStats     cache.Stats
 
@@ -182,10 +204,10 @@ type Metrics interface {
 // NoOpMetrics is a no-op metrics implementation.
 type NoOpMetrics struct{}
 
-func (m NoOpMetrics) RecordWrite(durationMs int64, eventCount int) {}
-func (m NoOpMetrics) RecordQuery(durationMs int64, resultCount int) {}
+func (m NoOpMetrics) RecordWrite(durationMs int64, eventCount int)                        {}
+func (m NoOpMetrics) RecordQuery(durationMs int64, resultCount int)                       {}
 func (m NoOpMetrics) RecordIndexLookup(indexName string, durationMs int64, cacheHit bool) {}
-func (m NoOpMetrics) RecordCacheStat(indexName string, stat cache.Stats) {}
+func (m NoOpMetrics) RecordCacheStat(indexName string, stat cache.Stats)                  {}
 
 // OpenDefault creates, initializes, and opens an EventStore at the given directory.
 // Convenience function that creates a store and opens it in one call.
@@ -265,10 +287,10 @@ type Listener interface {
 // NoOpListener is a no-op listener implementation.
 type NoOpListener struct{}
 
-func (l NoOpListener) OnOpened(ctx context.Context)                                            {}
-func (l NoOpListener) OnClosed(ctx context.Context)                                            {}
-func (l NoOpListener) OnRecoveryStarted(ctx context.Context)                                   {}
+func (l NoOpListener) OnOpened(ctx context.Context)                                           {}
+func (l NoOpListener) OnClosed(ctx context.Context)                                           {}
+func (l NoOpListener) OnRecoveryStarted(ctx context.Context)                                  {}
 func (l NoOpListener) OnRecoveryCompleted(ctx context.Context, stats *recovery.RecoveryState) {}
-func (l NoOpListener) OnCompactionStarted(ctx context.Context, segmentID uint32)               {}
-func (l NoOpListener) OnCompactionCompleted(ctx context.Context, segmentID uint32)             {}
-func (l NoOpListener) OnError(ctx context.Context, err error)                           {}
+func (l NoOpListener) OnCompactionStarted(ctx context.Context, segmentID uint32)              {}
+func (l NoOpListener) OnCompactionCompleted(ctx context.Context, segmentID uint32)            {}
+func (l NoOpListener) OnError(ctx context.Context, err error)                                 {}

@@ -90,6 +90,10 @@ func (mi *mockIndex) Delete(ctx context.Context, key []byte) error {
 	return nil
 }
 
+func (mi *mockIndex) DeleteBatch(ctx context.Context, keys [][]byte) error {
+	return nil
+}
+
 func (mi *mockIndex) DeleteRange(ctx context.Context, begin, end []byte) error {
 	return nil
 }

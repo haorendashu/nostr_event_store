@@ -4,6 +4,7 @@ src/batchtest/testevents/nostr_event_collector.exe
 src/batchtest/testdata/
 src/batchtest/batchtest
 src/batchtest/batchtest.exe
+src/eventstore/data/
 cmd/wal-hexdump/wal-hexdump
 cmd/wal-hexdump/wal-hexdump.exe
 cmd/wal-validator/wal-validator

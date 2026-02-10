@@ -166,6 +166,27 @@ func (idx *PersistentBTreeIndex) Delete(ctx context.Context, key []byte) error {
 	return idx.tree.delete(ctx, key)
 }
 
+// DeleteBatch removes multiple keys from the index efficiently
+func (idx *PersistentBTreeIndex) DeleteBatch(ctx context.Context, keys [][]byte) error {
+	if idx.closed {
+		return errors.ErrIndexClosed
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// Delete all entries individually
+	// TODO: Could be optimized with bulk deletion for sorted keys
+	for i := range keys {
+		if err := idx.tree.delete(ctx, keys[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Flush persists all dirty nodes to disk
 func (idx *PersistentBTreeIndex) Flush(ctx context.Context) error {
 	if idx.closed {

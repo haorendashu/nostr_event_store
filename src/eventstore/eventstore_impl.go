@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -659,6 +660,233 @@ func (e *eventStoreImpl) GetEvent(ctx context.Context, eventID [32]byte) (*types
 	}
 
 	return event, nil
+}
+
+// DeleteEvent marks an event as deleted by updating its flags in storage and removing from indexes.
+func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) error {
+	e.mu.RLock()
+	if !e.opened {
+		e.mu.RUnlock()
+		return fmt.Errorf("store not opened")
+	}
+	e.mu.RUnlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Look up event in primary index
+	primaryIdx := e.indexMgr.PrimaryIndex()
+	eventKeyBytes := e.keyBuilder.BuildPrimaryKey(eventID)
+	loc, exists, err := primaryIdx.Get(ctx, eventKeyBytes)
+	if err != nil {
+		return fmt.Errorf("primary index lookup: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("event not found: %x", eventID)
+	}
+
+	// Read event to get metadata (needed for index cleanup)
+	event, err := e.storage.ReadEvent(ctx, loc)
+	if err != nil {
+		return fmt.Errorf("read event: %w", err)
+	}
+
+	// Step 1: Write to WAL (for durability and recovery)
+	walEntry := &wal.Entry{
+		Type: wal.OpTypeUpdateFlags,
+		EventDataOrMetadata: func() []byte {
+			// WAL format for UpdateFlags: location (8 bytes) + flags (1 byte)
+			data := make([]byte, 9)
+			binary.BigEndian.PutUint32(data[0:4], loc.SegmentID)
+			binary.BigEndian.PutUint32(data[4:8], loc.Offset)
+			data[8] = byte(types.FlagDeleted)
+			return data
+		}(),
+	}
+	_, err = e.walMgr.Writer().Write(ctx, walEntry)
+	if err != nil {
+		return fmt.Errorf("wal write: %w", err)
+	}
+
+	// Step 2: Update storage (set deleted flag in-place)
+	var flags types.EventFlags
+	flags.SetDeleted(true)
+	if err := e.storage.UpdateEventFlags(ctx, loc, flags); err != nil {
+		return fmt.Errorf("update event flags: %w", err)
+	}
+
+	// Step 3: Remove from primary index
+	if err := primaryIdx.Delete(ctx, eventKeyBytes); err != nil {
+		return fmt.Errorf("primary index delete: %w", err)
+	}
+
+	// Step 4: Remove from author-time index
+	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
+	authorTimeKey := e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+	if err := authorTimeIdx.Delete(ctx, authorTimeKey); err != nil {
+		e.logger.Printf("Warning: failed to remove from author-time index: %v", err)
+		// Continue anyway; don't fail the entire delete operation
+	}
+
+	// Step 5: Remove from search indexes (for all tags)
+	searchIdx := e.indexMgr.SearchIndex()
+	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
+
+	for _, tag := range event.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		tagName := tag[0]
+		tagValue := tag[1]
+
+		searchTypeCode, ok := tagMapping[tagName]
+		if !ok {
+			continue
+		}
+
+		searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+		if err := searchIdx.Delete(ctx, searchKey); err != nil {
+			e.logger.Printf("Warning: failed to remove from search index (tag=%s): %v", tagName, err)
+			// Continue anyway
+		}
+	}
+
+	return nil
+}
+
+// DeleteEvents deletes multiple events in a batch.
+func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) error {
+	e.mu.RLock()
+	if !e.opened {
+		e.mu.RUnlock()
+		return fmt.Errorf("store not opened")
+	}
+	e.mu.RUnlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	primaryIdx := e.indexMgr.PrimaryIndex()
+	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
+	searchIdx := e.indexMgr.SearchIndex()
+	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
+
+	// Prepare keys for batch lookup
+	eventKeys := make([][]byte, len(eventIDs))
+	for i, id := range eventIDs {
+		eventKeys[i] = e.keyBuilder.BuildPrimaryKey(id)
+	}
+
+	// Batch lookup in primary index
+	locs, existsFlags, err := primaryIdx.GetBatch(ctx, eventKeys)
+	if err != nil {
+		return fmt.Errorf("batch primary index lookup: %w", err)
+	}
+
+	// Read all events in batch
+	events := make([]*types.Event, 0, len(eventIDs))
+	validLocs := make([]types.RecordLocation, 0, len(eventIDs))
+	validKeys := make([][]byte, 0, len(eventIDs))
+
+	for i := range eventIDs {
+		if !existsFlags[i] {
+			continue // Skip non-existent events
+		}
+
+		event, err := e.storage.ReadEvent(ctx, locs[i])
+		if err != nil {
+			e.logger.Printf("Warning: failed to read event %x: %v", eventIDs[i], err)
+			continue
+		}
+
+		events = append(events, event)
+		validLocs = append(validLocs, locs[i])
+		validKeys = append(validKeys, eventKeys[i])
+	}
+
+	if len(events) == 0 {
+		return fmt.Errorf("no valid events found to delete")
+	}
+
+	// Step 1: Batch WAL writes
+	walEntries := make([]*wal.Entry, len(events))
+	for i := range events {
+		loc := validLocs[i]
+		data := make([]byte, 9)
+		binary.BigEndian.PutUint32(data[0:4], loc.SegmentID)
+		binary.BigEndian.PutUint32(data[4:8], loc.Offset)
+		data[8] = byte(types.FlagDeleted)
+
+		walEntries[i] = &wal.Entry{
+			Type:                wal.OpTypeUpdateFlags,
+			EventDataOrMetadata: data,
+		}
+	}
+
+	_, err = e.walMgr.Writer().WriteBatch(ctx, walEntries)
+	if err != nil {
+		return fmt.Errorf("batch wal write: %w", err)
+	}
+
+	// Step 2: Batch update flags in storage
+	var flags types.EventFlags
+	flags.SetDeleted(true)
+	for _, loc := range validLocs {
+		if err := e.storage.UpdateEventFlags(ctx, loc, flags); err != nil {
+			e.logger.Printf("Warning: failed to update flags for event at %v: %v", loc, err)
+		}
+	}
+
+	// Step 3: Batch delete from primary index
+	if err := primaryIdx.DeleteBatch(ctx, validKeys); err != nil {
+		e.logger.Printf("Warning: batch primary index delete failed: %v", err)
+	}
+
+	// Step 4: Delete from author-time index
+	authorTimeKeys := make([][]byte, len(events))
+	for i, event := range events {
+		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.CreatedAt)
+	}
+	// Note: No batch delete for author-time, delete individually
+	for _, key := range authorTimeKeys {
+		if err := authorTimeIdx.Delete(ctx, key); err != nil {
+			e.logger.Printf("Warning: failed to delete from author-time index: %v", err)
+		}
+	}
+
+	// Step 5: Delete from search indexes
+	searchKeysToDelete := make([][]byte, 0)
+	for _, event := range events {
+		for _, tag := range event.Tags {
+			if len(tag) < 2 {
+				continue
+			}
+			tagName := tag[0]
+			tagValue := tag[1]
+
+			searchTypeCode, ok := tagMapping[tagName]
+			if !ok {
+				continue
+			}
+
+			searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+			searchKeysToDelete = append(searchKeysToDelete, searchKey)
+		}
+	}
+
+	for _, key := range searchKeysToDelete {
+		if err := searchIdx.Delete(ctx, key); err != nil {
+			e.logger.Printf("Warning: failed to delete from search index: %v", err)
+		}
+	}
+
+	return nil
 }
 
 // Query executes a query and returns an iterator.

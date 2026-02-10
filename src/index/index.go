@@ -93,6 +93,13 @@ type Index interface {
 	// ctx is used for cancellation and timeouts.
 	Delete(ctx context.Context, key []byte) error
 
+	// DeleteBatch removes multiple entries by exact key matches efficiently.
+	// Does nothing for keys that don't exist.
+	// More efficient than calling Delete repeatedly as it minimizes lock overhead.
+	// Returns nil on success, or error if any delete fails.
+	// ctx is used for cancellation and timeouts.
+	DeleteBatch(ctx context.Context, keys [][]byte) error
+
 	// DeleteRange removes all entries with keys in [minKey, maxKey].
 	// Used for cleanup during compaction.
 	// ctx is used for cancellation and timeouts.
