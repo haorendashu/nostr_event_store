@@ -408,7 +408,6 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 				continue
 			}
 			filter := &types.QueryFilter{
-				Kinds:   []uint32{1, 6, 16, 1111, 30023},
 				Authors: [][32]byte{pubkeyBytes},
 				Limit:   10,
 			}
@@ -436,8 +435,8 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locati
 	}
 	fmt.Printf("Time taken: %.2fs\n", verifyDuration.Seconds())
 	fmt.Printf("Read rate: %.0f events/s\n", readRate)
-	fmt.Printf("searchTotalQueryEventNum: %d", searchTotalQueryEventNum)
-	fmt.Printf("authorTotalQueryEventNum: %d", authorTotalQueryEventNum)
+	fmt.Printf("searchTotalQueryEventNum: %d\n", searchTotalQueryEventNum)
+	fmt.Printf("authorTotalQueryEventNum: %d\n", authorTotalQueryEventNum)
 
 	if failCount > 0 {
 		return fmt.Errorf("verification failed for %d events", failCount)
