@@ -110,9 +110,9 @@ func (c *compilerImpl) ValidateFilter(filter *types.QueryFilter) error {
 	if len(filter.Kinds) > 100 {
 		return fmt.Errorf("too many kinds (max 100, got %d)", len(filter.Kinds))
 	}
-	if len(filter.Authors) > 100 {
-		return fmt.Errorf("too many authors (max 100, got %d)", len(filter.Authors))
-	}
+	// if len(filter.Authors) > 100 {
+	// 	return fmt.Errorf("too many authors (max 100, got %d)", len(filter.Authors))
+	// }
 
 	// Validate generic Tags field
 	for tagName, tagValues := range filter.Tags {
