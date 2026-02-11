@@ -1,6 +1,7 @@
 package query
 
 import (
+	"container/heap"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -293,7 +294,7 @@ func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *plan
 	}
 
 	ranges := e.buildAuthorTimeRanges(plan)
-	return e.queryIndexRanges(ctx, atIdx, ranges, extractTime)
+	return e.queryIndexRanges(ctx, atIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
 }
 
 // getSearchIndexResults gets locations from search index.
@@ -309,7 +310,7 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 	}
 
 	ranges := e.buildSearchRanges(plan)
-	return e.queryIndexRanges(ctx, searchIdx, ranges, extractTime)
+	return e.queryIndexRanges(ctx, searchIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
 }
 
 // extractTimestampFromKey extracts the timestamp from the last 4 bytes of an index key.
@@ -327,16 +328,52 @@ type keyRange struct {
 	end   []byte
 }
 
+// heapItem represents an item in the merge heap for multi-range queries
+type heapItem struct {
+	createdAt  uint32                 // Timestamp for comparison (max heap)
+	location   types.LocationWithTime // Event location with timestamp
+	iterator   index.Iterator         // Iterator this item came from
+	rangeIndex int                    // Which range this item belongs to
+}
+
+// mergeHeap implements heap.Interface for max-heap based on createdAt (descending)
+type mergeHeap []heapItem
+
+func (h mergeHeap) Len() int { return len(h) }
+func (h mergeHeap) Less(i, j int) bool {
+	// Max heap: larger timestamp comes first
+	return h[i].createdAt > h[j].createdAt
+}
+func (h mergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *mergeHeap) Push(x interface{}) {
+	*h = append(*h, x.(heapItem))
+}
+func (h *mergeHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[0 : n-1]
+	return item
+}
+
 // queryIndexRanges performs a common index range query with deduplication.
-// It queries an index using multiple key ranges and deduplicates results
-// based on SegmentID:Offset. If extractTimestamp is true, it extracts
-// the timestamp from the index key.
-func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ranges []keyRange, extractTimestamp bool) ([]types.LocationWithTime, error) {
+// It queries an index using multiple key ranges (in descending order) and deduplicates results
+// based on SegmentID:Offset. If extractTimestamp is true, it extracts the timestamp from the index key.
+// If fullyIndexed is true and limit > 0, uses merge algorithm to collect only the most recent
+// limit results across all ranges efficiently.
+func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ranges []keyRange, extractTimestamp bool, limit int, fullyIndexed bool) ([]types.LocationWithTime, error) {
+	// Optimization: Use merge algorithm with max-heap when fullyIndexed and limit are set
+	// This allows us to collect only the most recent 'limit' events across all ranges
+	if fullyIndexed && limit > 0 && extractTimestamp && len(ranges) > 0 {
+		return e.queryIndexRangesMerge(ctx, idx, ranges, limit)
+	}
+
+	// Fallback: Simple mode - collect all results from all ranges
 	var results []types.LocationWithTime
 	seen := make(map[string]bool) // key: "SegmentID:Offset"
 
 	for _, r := range ranges {
-		iter, err := idx.Range(ctx, r.start, r.end)
+		iter, err := idx.RangeDesc(ctx, r.start, r.end)
 		if err != nil {
 			continue
 		}
@@ -362,6 +399,83 @@ func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ra
 			}
 		}
 		iter.Close()
+	}
+
+	return results, nil
+}
+
+// queryIndexRangesMerge uses a merge algorithm with max-heap to efficiently collect
+// the most recent 'limit' results from multiple descending ranges.
+func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Index, ranges []keyRange, limit int) ([]types.LocationWithTime, error) {
+	// Create descending iterators for each range
+	var iterators []index.Iterator
+	for _, r := range ranges {
+		iter, err := idx.RangeDesc(ctx, r.start, r.end)
+		if err != nil {
+			continue
+		}
+		iterators = append(iterators, iter)
+	}
+
+	if len(iterators) == 0 {
+		return nil, nil
+	}
+
+	defer func() {
+		for _, iter := range iterators {
+			iter.Close()
+		}
+	}()
+
+	// Initialize heap with first item from each iterator
+	h := &mergeHeap{}
+	heap.Init(h)
+
+	for i, iter := range iterators {
+		if iter.Valid() {
+			loc := iter.Value()
+			createdAt := extractTimestampFromKey(iter.Key())
+			heap.Push(h, heapItem{
+				createdAt: createdAt,
+				location: types.LocationWithTime{
+					RecordLocation: loc,
+					CreatedAt:      createdAt,
+				},
+				iterator:   iter,
+				rangeIndex: i,
+			})
+		}
+	}
+
+	// Merge: repeatedly take the max item (most recent) and advance that iterator
+	var results []types.LocationWithTime
+	seen := make(map[string]bool) // key: "SegmentID:Offset"
+
+	for h.Len() > 0 && len(results) < limit {
+		// Get the item with the largest timestamp (most recent)
+		item := heap.Pop(h).(heapItem)
+
+		// Deduplicate
+		dedupKey := fmt.Sprintf("%d:%d", item.location.SegmentID, item.location.Offset)
+		if !seen[dedupKey] {
+			seen[dedupKey] = true
+			results = append(results, item.location)
+		}
+
+		// Advance the iterator that provided this item
+		if err := item.iterator.Next(); err == nil && item.iterator.Valid() {
+			loc := item.iterator.Value()
+			createdAt := extractTimestampFromKey(item.iterator.Key())
+			heap.Push(h, heapItem{
+				createdAt: createdAt,
+				location: types.LocationWithTime{
+					RecordLocation: loc,
+					CreatedAt:      createdAt,
+				},
+				iterator:   item.iterator,
+				rangeIndex: item.rangeIndex,
+			})
+		}
 	}
 
 	return results, nil
