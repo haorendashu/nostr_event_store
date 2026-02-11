@@ -214,18 +214,14 @@ func (s *EventStore) UpdateEventFlags(ctx context.Context, location types.Record
 		return fmt.Errorf("get segment: %w", err)
 	}
 
-	// Read the record
-	record, err := segment.Read(ctx, location)
-	if err != nil {
-		return fmt.Errorf("segment read: %w", err)
+	fileSeg, ok := segment.(*storage.FileSegment)
+	if !ok {
+		return fmt.Errorf("segment is not file-based")
 	}
 
-	// Update flags in the record (byte 4)
-	if len(record.Data) < 5 {
-		return fmt.Errorf("record data too short for flags update")
+	if err := fileSeg.UpdateRecordFlags(location.Offset, flags); err != nil {
+		return fmt.Errorf("update record flags: %w", err)
 	}
-	record.Flags = flags
-	record.Data[4] = byte(flags)
 
 	return nil
 }

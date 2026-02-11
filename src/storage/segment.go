@@ -265,6 +265,24 @@ func (s *FileSegment) Close() error {
 	return nil
 }
 
+// UpdateRecordFlags writes the record flags byte at the given record offset.
+// This persists logical deletes/replacements so scanners can observe them.
+func (s *FileSegment) UpdateRecordFlags(offset uint32, flags types.EventFlags) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if uint64(offset)+7 > s.currentSize {
+		return fmt.Errorf("invalid record header offset %d (segment size %d)", offset, s.currentSize)
+	}
+
+	flagOffset := int64(offset) + 4
+	if _, err := s.file.WriteAt([]byte{byte(flags)}, flagOffset); err != nil {
+		return fmt.Errorf("write record flags: %w", err)
+	}
+
+	return nil
+}
+
 // writeSinglePageRecord writes a single-page record.
 func (s *FileSegment) writeSinglePageRecord(record *Record) error {
 	// record.Data already contains the complete serialized data

@@ -1088,6 +1088,72 @@ func (e *eventStoreImpl) Compaction() compaction.Manager {
 	return noOpCompactionManager{}
 }
 
+// RunCompactionOnce triggers a one-shot compaction using current config thresholds.
+func (e *eventStoreImpl) RunCompactionOnce(ctx context.Context) (*compaction.CompactionResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.opened {
+		return nil, fmt.Errorf("store not opened")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if e.storage == nil {
+		return nil, fmt.Errorf("storage not initialized")
+	}
+
+	cfg := e.config.Get().CompactionConfig
+	compactor := compaction.NewCompactorImpl(
+		e.storage.SegmentManager(),
+		e.storage.Serializer(),
+		compaction.Config{
+			Strategy:                     compaction.StrategyBalanced,
+			FragmentationThreshold:       cfg.FragmentationThreshold,
+			MaxConcurrentTasks:           cfg.MaxConcurrentCompactions,
+			CheckIntervalMs:              cfg.CompactionIntervalMs,
+			PreserveOldSegments:          cfg.PreserveOldSegments,
+			FakeFastCompactionForTesting: false,
+		},
+	)
+
+	candidates, err := compactor.SelectCompactionCandidates(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("select compaction candidates: %w", err)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	segmentIDs := make([]uint32, 0, len(candidates))
+	for _, candidate := range candidates {
+		segmentIDs = append(segmentIDs, candidate.SegmentID)
+	}
+
+	for _, segmentID := range segmentIDs {
+		e.listener.OnCompactionStarted(ctx, segmentID)
+	}
+
+	result, err := compactor.DoCompact(ctx, segmentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("compaction failed: %w", err)
+	}
+
+	for _, segmentID := range segmentIDs {
+		e.listener.OnCompactionCompleted(ctx, segmentID)
+	}
+
+	if e.indexMgr != nil {
+		if err := e.rebuildIndexesFromSegments(ctx); err != nil {
+			return result, fmt.Errorf("rebuild indexes after compaction: %w", err)
+		}
+	}
+
+	return result, nil
+}
+
 // IsHealthy performs a health check.
 func (e *eventStoreImpl) IsHealthy(ctx context.Context) bool {
 	e.mu.RLock()

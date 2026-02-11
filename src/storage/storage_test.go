@@ -163,6 +163,54 @@ func TestSegmentSinglePage(t *testing.T) {
 	}
 }
 
+func TestUpdateRecordFlagsPersists(t *testing.T) {
+	tmpDir := t.TempDir()
+	segPath := filepath.Join(tmpDir, "data.0.seg")
+
+	segment, err := NewFileSegment(0, segPath, 4096, 1024*1024, false)
+	if err != nil {
+		t.Fatalf("create segment failed: %v", err)
+	}
+	defer segment.Close()
+
+	serializer := NewTLVSerializer(4096)
+	ctx := context.Background()
+
+	event := &types.Event{
+		ID:        [32]byte{0xAA},
+		Pubkey:    [32]byte{0xBB},
+		CreatedAt: 1655000001,
+		Kind:      1,
+		Tags:      [][]string{{"p", "flag-test"}},
+		Content:   "Flag update",
+		Sig:       [64]byte{0xCC},
+	}
+
+	record, err := serializer.Serialize(event)
+	if err != nil {
+		t.Fatalf("serialize failed: %v", err)
+	}
+
+	location, err := segment.Append(ctx, record)
+	if err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
+
+	var flags types.EventFlags
+	flags.SetDeleted(true)
+	if err := segment.UpdateRecordFlags(location.Offset, flags); err != nil {
+		t.Fatalf("update record flags failed: %v", err)
+	}
+
+	readRecord, err := segment.Read(ctx, location)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if !readRecord.Flags.IsDeleted() {
+		t.Fatal("expected deleted flag to be set")
+	}
+}
+
 // TestSegmentMultiPage tests writing and reading a multi-page record.
 func TestSegmentMultiPage(t *testing.T) {
 	tmpDir := t.TempDir()

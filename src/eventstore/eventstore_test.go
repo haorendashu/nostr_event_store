@@ -353,8 +353,283 @@ func TestEventStoreManagers(t *testing.T) {
 	if store.Config() == nil {
 		t.Error("Config() returned nil")
 	}
-	// WAL, Recovery, and Compaction return nil in current implementation
-	// since they are managed internally by storage
+	// WAL and Recovery are managed internally by the store
+}
+
+func TestRunCompactionOnceNotOpen(t *testing.T) {
+	ctx := context.Background()
+	store := New(nil)
+
+	if _, err := store.RunCompactionOnce(ctx); err == nil {
+		t.Fatal("RunCompactionOnce() should fail when store not opened")
+	}
+}
+
+func TestRunCompactionOnceNoCandidates(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	cfg := config.DefaultConfig()
+	cfg.StorageConfig.DataDir = filepath.Join(tempDir, "data")
+	cfg.WALConfig.WALDir = filepath.Join(tempDir, "wal")
+	cfg.IndexConfig.IndexDir = filepath.Join(tempDir, "indexes")
+
+	store := New(&Options{
+		Config:       cfg,
+		RecoveryMode: "skip",
+	})
+
+	if err := store.Open(ctx, tempDir, true); err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer store.Close(ctx)
+
+	event := &types.Event{
+		ID:        [32]byte{11},
+		Pubkey:    [32]byte{21},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "Live event",
+	}
+
+	if _, err := store.WriteEvent(ctx, event); err != nil {
+		t.Fatalf("WriteEvent() failed: %v", err)
+	}
+
+	result, err := store.RunCompactionOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunCompactionOnce() failed: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("Expected no compaction result, got %+v", result)
+	}
+}
+
+func TestRunCompactionOnceWithDeletion(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	cfg := config.DefaultConfig()
+	cfg.StorageConfig.DataDir = filepath.Join(tempDir, "data")
+	cfg.WALConfig.WALDir = filepath.Join(tempDir, "wal")
+	cfg.IndexConfig.IndexDir = filepath.Join(tempDir, "indexes")
+	cfg.CompactionConfig.FragmentationThreshold = 0.01
+
+	store := New(&Options{
+		Config:       cfg,
+		RecoveryMode: "skip",
+	})
+
+	if err := store.Open(ctx, tempDir, true); err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer store.Close(ctx)
+
+	deletedEvent := &types.Event{
+		ID:        [32]byte{31},
+		Pubkey:    [32]byte{41},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "To be deleted",
+	}
+	keptEvent := &types.Event{
+		ID:        [32]byte{32},
+		Pubkey:    [32]byte{42},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "Keep me",
+	}
+
+	if _, err := store.WriteEvent(ctx, deletedEvent); err != nil {
+		t.Fatalf("WriteEvent(deleted) failed: %v", err)
+	}
+	if _, err := store.WriteEvent(ctx, keptEvent); err != nil {
+		t.Fatalf("WriteEvent(kept) failed: %v", err)
+	}
+
+	if err := store.DeleteEvent(ctx, deletedEvent.ID); err != nil {
+		t.Fatalf("DeleteEvent() failed: %v", err)
+	}
+
+	result, err := store.RunCompactionOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunCompactionOnce() failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected compaction result, got nil")
+	}
+	if result.RecordsRemoved == 0 {
+		t.Fatalf("Expected removed records, got %d", result.RecordsRemoved)
+	}
+	if result.RecordsMigrated == 0 {
+		t.Fatalf("Expected migrated records, got %d", result.RecordsMigrated)
+	}
+
+	if _, err := store.GetEvent(ctx, keptEvent.ID); err != nil {
+		t.Fatalf("GetEvent(kept) failed after compaction: %v", err)
+	}
+	if _, err := store.GetEvent(ctx, deletedEvent.ID); err == nil {
+		t.Fatal("GetEvent(deleted) should fail after compaction")
+	}
+}
+
+func TestRunCompactionOnceWithReplaced(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	cfg := config.DefaultConfig()
+	cfg.StorageConfig.DataDir = filepath.Join(tempDir, "data")
+	cfg.WALConfig.WALDir = filepath.Join(tempDir, "wal")
+	cfg.IndexConfig.IndexDir = filepath.Join(tempDir, "indexes")
+	cfg.CompactionConfig.FragmentationThreshold = 0.01
+
+	store := New(&Options{
+		Config:       cfg,
+		RecoveryMode: "skip",
+	})
+
+	if err := store.Open(ctx, tempDir, true); err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer store.Close(ctx)
+
+	impl := store.(*eventStoreImpl)
+
+	replacedEvent := &types.Event{
+		ID:        [32]byte{51},
+		Pubkey:    [32]byte{61},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "To be replaced",
+	}
+	keptEvent := &types.Event{
+		ID:        [32]byte{52},
+		Pubkey:    [32]byte{62},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "Keep me",
+	}
+
+	locReplaced, err := store.WriteEvent(ctx, replacedEvent)
+	if err != nil {
+		t.Fatalf("WriteEvent(replaced) failed: %v", err)
+	}
+	if _, err := store.WriteEvent(ctx, keptEvent); err != nil {
+		t.Fatalf("WriteEvent(kept) failed: %v", err)
+	}
+
+	var flags types.EventFlags
+	flags.SetReplaced(true)
+	if err := impl.storage.UpdateEventFlags(ctx, locReplaced, flags); err != nil {
+		t.Fatalf("UpdateEventFlags(replaced) failed: %v", err)
+	}
+
+	result, err := store.RunCompactionOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunCompactionOnce() failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected compaction result, got nil")
+	}
+	if result.RecordsRemoved == 0 {
+		t.Fatalf("Expected removed records, got %d", result.RecordsRemoved)
+	}
+
+	if _, err := store.GetEvent(ctx, keptEvent.ID); err != nil {
+		t.Fatalf("GetEvent(kept) failed after compaction: %v", err)
+	}
+	if _, err := store.GetEvent(ctx, replacedEvent.ID); err == nil {
+		t.Fatal("GetEvent(replaced) should fail after compaction")
+	}
+}
+
+func TestRunCompactionOnceMultiSegment(t *testing.T) {
+	tempDir := t.TempDir()
+	ctx := context.Background()
+
+	cfg := config.DefaultConfig()
+	cfg.StorageConfig.DataDir = filepath.Join(tempDir, "data")
+	cfg.WALConfig.WALDir = filepath.Join(tempDir, "wal")
+	cfg.IndexConfig.IndexDir = filepath.Join(tempDir, "indexes")
+	cfg.CompactionConfig.FragmentationThreshold = 0.01
+	cfg.StorageConfig.MaxSegmentSize = 4096 * 2
+
+	store := New(&Options{
+		Config:       cfg,
+		RecoveryMode: "skip",
+	})
+
+	if err := store.Open(ctx, tempDir, true); err != nil {
+		t.Fatalf("Open() failed: %v", err)
+	}
+	defer store.Close(ctx)
+
+	impl := store.(*eventStoreImpl)
+
+	keep1 := &types.Event{
+		ID:        [32]byte{71},
+		Pubkey:    [32]byte{81},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "Keep 1",
+	}
+	toDelete := &types.Event{
+		ID:        [32]byte{72},
+		Pubkey:    [32]byte{82},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "Delete me",
+	}
+	keep2 := &types.Event{
+		ID:        [32]byte{73},
+		Pubkey:    [32]byte{83},
+		CreatedAt: uint32(time.Now().Unix()),
+		Kind:      1,
+		Content:   "Keep 2",
+	}
+
+	if _, err := store.WriteEvent(ctx, keep1); err != nil {
+		t.Fatalf("WriteEvent(keep1) failed: %v", err)
+	}
+	locDelete, err := store.WriteEvent(ctx, toDelete)
+	if err != nil {
+		t.Fatalf("WriteEvent(delete) failed: %v", err)
+	}
+	if _, err := store.WriteEvent(ctx, keep2); err != nil {
+		t.Fatalf("WriteEvent(keep2) failed: %v", err)
+	}
+
+	if err := store.DeleteEvent(ctx, toDelete.ID); err != nil {
+		t.Fatalf("DeleteEvent() failed: %v", err)
+	}
+
+	result, err := store.RunCompactionOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunCompactionOnce() failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected compaction result, got nil")
+	}
+
+	segmentIDs, err := impl.storage.SegmentManager().ListSegments(ctx)
+	if err != nil {
+		t.Fatalf("ListSegments() failed: %v", err)
+	}
+	for _, segmentID := range segmentIDs {
+		if segmentID == locDelete.SegmentID {
+			t.Fatalf("Expected deleted segment %d to be removed", locDelete.SegmentID)
+		}
+	}
+
+	if _, err := store.GetEvent(ctx, keep1.ID); err != nil {
+		t.Fatalf("GetEvent(keep1) failed after compaction: %v", err)
+	}
+	if _, err := store.GetEvent(ctx, keep2.ID); err != nil {
+		t.Fatalf("GetEvent(keep2) failed after compaction: %v", err)
+	}
+	if _, err := store.GetEvent(ctx, toDelete.ID); err == nil {
+		t.Fatal("GetEvent(deleted) should fail after compaction")
+	}
 }
 
 func TestEventStoreErrorHandling(t *testing.T) {

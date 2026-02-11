@@ -117,6 +117,10 @@ type EventStore interface {
 	// Compaction returns the compaction manager (for monitoring or manual compaction).
 	Compaction() compaction.Manager
 
+	// RunCompactionOnce triggers a one-shot compaction using current config thresholds.
+	// Returns compaction results or nil if no segments are eligible.
+	RunCompactionOnce(ctx context.Context) (*compaction.CompactionResult, error)
+
 	// IsHealthy performs a quick health check of the store.
 	// Returns true if the store is operational; false if significant issues are detected.
 	// ctx is used for cancellation and timeouts.
