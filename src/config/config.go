@@ -137,6 +137,10 @@ type CacheConfig struct {
 
 // WALConfig defines write-ahead log parameters.
 type WALConfig struct {
+	// Disabled disables WAL entirely (no writes, no recovery).
+	// Default: false
+	Disabled bool `json:"disabled,omitempty"`
+
 	// WALDir is the directory where WAL files are stored.
 	// Default: "./data/wal"
 	WALDir string `json:"wal_dir,omitempty"`
@@ -318,6 +322,9 @@ func (m *ManagerImpl) LoadFromEnv(ctx context.Context) error {
 
 	if v, ok := getEnvString("NOSTR_STORE_WAL_DIR"); ok {
 		m.config.WALConfig.WALDir = v
+	}
+	if v, ok := getEnvBool("NOSTR_STORE_WAL_DISABLED"); ok {
+		m.config.WALConfig.Disabled = v
 	}
 	if v, ok := getEnvString("NOSTR_STORE_WAL_SYNC_MODE"); ok {
 		m.config.WALConfig.SyncMode = v
@@ -609,6 +616,7 @@ func DefaultConfig() *Config {
 			DirtyThreshold:  128,
 		},
 		WALConfig: WALConfig{
+			Disabled:             false,
 			WALDir:               "./data/wal",
 			SyncMode:             "batch",
 			BatchIntervalMs:      100,

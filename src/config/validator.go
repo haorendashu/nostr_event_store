@@ -20,7 +20,7 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.IndexConfig.IndexDir == "" {
 		return fmt.Errorf("index.index_dir is required")
 	}
-	if cfg.WALConfig.WALDir == "" {
+	if !cfg.WALConfig.Disabled && cfg.WALConfig.WALDir == "" {
 		return fmt.Errorf("wal.wal_dir is required")
 	}
 
@@ -94,25 +94,27 @@ func ValidateConfig(cfg *Config) error {
 		}
 	}
 
-	switch strings.ToLower(cfg.WALConfig.SyncMode) {
-	case "always", "batch", "never":
-	default:
-		return fmt.Errorf("wal.sync_mode must be always, batch, or never")
-	}
-	if cfg.WALConfig.BatchIntervalMs <= 0 {
-		return fmt.Errorf("wal.batch_interval_ms must be > 0")
-	}
-	if cfg.WALConfig.BatchSizeBytes == 0 {
-		return fmt.Errorf("wal.batch_size_bytes must be > 0")
-	}
-	if cfg.WALConfig.MaxSegmentSize == 0 {
-		return fmt.Errorf("wal.max_segment_size must be > 0")
-	}
-	if cfg.WALConfig.CheckpointIntervalMs < 0 {
-		return fmt.Errorf("wal.checkpoint_interval_ms must be >= 0")
-	}
-	if cfg.WALConfig.CheckpointEventCount < 0 {
-		return fmt.Errorf("wal.checkpoint_event_count must be >= 0")
+	if !cfg.WALConfig.Disabled {
+		switch strings.ToLower(cfg.WALConfig.SyncMode) {
+		case "always", "batch", "never":
+		default:
+			return fmt.Errorf("wal.sync_mode must be always, batch, or never")
+		}
+		if cfg.WALConfig.BatchIntervalMs <= 0 {
+			return fmt.Errorf("wal.batch_interval_ms must be > 0")
+		}
+		if cfg.WALConfig.BatchSizeBytes == 0 {
+			return fmt.Errorf("wal.batch_size_bytes must be > 0")
+		}
+		if cfg.WALConfig.MaxSegmentSize == 0 {
+			return fmt.Errorf("wal.max_segment_size must be > 0")
+		}
+		if cfg.WALConfig.CheckpointIntervalMs < 0 {
+			return fmt.Errorf("wal.checkpoint_interval_ms must be >= 0")
+		}
+		if cfg.WALConfig.CheckpointEventCount < 0 {
+			return fmt.Errorf("wal.checkpoint_event_count must be >= 0")
+		}
 	}
 
 	if cfg.CompactionConfig.FragmentationThreshold <= 0 || cfg.CompactionConfig.FragmentationThreshold >= 1 {

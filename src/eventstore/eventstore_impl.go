@@ -91,10 +91,11 @@ type eventStoreImpl struct {
 	queryEngine query.Engine
 
 	// State
-	dir    string
-	walDir string
-	opened bool
-	mu     sync.RWMutex
+	dir        string
+	walDir     string
+	walEnabled bool
+	opened     bool
+	mu         sync.RWMutex
 
 	// Options
 	opts *Options
@@ -173,26 +174,33 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	e.dir = dir
 	cfg := e.config.Get()
 
-	// Initialize WAL Manager
-	walDir := filepath.Join(dir, "wal")
-	e.walDir = walDir
-	walMgr := wal.NewManager()
-	walCfg := wal.Config{
-		Dir:             walDir,
-		MaxSegmentSize:  cfg.WALConfig.MaxSegmentSize,
-		SyncMode:        cfg.WALConfig.SyncMode,
-		BatchIntervalMs: cfg.WALConfig.BatchIntervalMs,
-		BatchSizeBytes:  cfg.WALConfig.BatchSizeBytes,
-	}
-	if err := walMgr.Open(ctx, walCfg); err != nil {
-		return fmt.Errorf("open wal: %w", err)
-	}
-	e.walMgr = walMgr
-	if checkpoint, err := walMgr.LastCheckpoint(); err == nil {
-		e.logger.Printf("WAL checkpoint from header: LSN=%d", checkpoint.LSN)
-		atomic.StoreUint64(&e.lastCheckpointLSN, checkpoint.LSN)
+	e.walEnabled = !cfg.WALConfig.Disabled
+	if e.walEnabled {
+		// Initialize WAL Manager
+		walDir := filepath.Join(dir, "wal")
+		e.walDir = walDir
+		walMgr := wal.NewManager()
+		walCfg := wal.Config{
+			Dir:             walDir,
+			MaxSegmentSize:  cfg.WALConfig.MaxSegmentSize,
+			SyncMode:        cfg.WALConfig.SyncMode,
+			BatchIntervalMs: cfg.WALConfig.BatchIntervalMs,
+			BatchSizeBytes:  cfg.WALConfig.BatchSizeBytes,
+		}
+		if err := walMgr.Open(ctx, walCfg); err != nil {
+			return fmt.Errorf("open wal: %w", err)
+		}
+		e.walMgr = walMgr
+		if checkpoint, err := walMgr.LastCheckpoint(); err == nil {
+			e.logger.Printf("WAL checkpoint from header: LSN=%d", checkpoint.LSN)
+			atomic.StoreUint64(&e.lastCheckpointLSN, checkpoint.LSN)
+		} else {
+			e.logger.Printf("WAL checkpoint from header: none")
+		}
 	} else {
-		e.logger.Printf("WAL checkpoint from header: none")
+		e.walMgr = nil
+		e.walDir = ""
+		e.logger.Printf("WAL disabled by configuration")
 	}
 
 	// Initialize storage (using src/store's EventStore implementation)
@@ -237,16 +245,18 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 		}
 	}
 
-	// Configure WAL checkpoint scheduling
-	e.checkpointInterval = time.Duration(cfg.WALConfig.CheckpointIntervalMs) * time.Millisecond
-	e.checkpointEveryEvents = int64(cfg.WALConfig.CheckpointEventCount)
-	e.startCheckpointScheduler()
+	if e.walEnabled {
+		// Configure WAL checkpoint scheduling
+		e.checkpointInterval = time.Duration(cfg.WALConfig.CheckpointIntervalMs) * time.Millisecond
+		e.checkpointEveryEvents = int64(cfg.WALConfig.CheckpointEventCount)
+		e.startCheckpointScheduler()
 
-	// Create checkpoint after successful open
-	if checkpointLSN, err := e.walMgr.Writer().CreateCheckpoint(ctx); err != nil {
-		e.logger.Printf("Warning: failed to create checkpoint: %v", err)
-	} else {
-		atomic.StoreUint64(&e.lastCheckpointLSN, checkpointLSN)
+		// Create checkpoint after successful open
+		if checkpointLSN, err := e.walMgr.Writer().CreateCheckpoint(ctx); err != nil {
+			e.logger.Printf("Warning: failed to create checkpoint: %v", err)
+		} else {
+			atomic.StoreUint64(&e.lastCheckpointLSN, checkpointLSN)
+		}
 	}
 
 	e.opened = true
@@ -346,13 +356,15 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 	}
 
 	// Step 2: Write to WAL with FULL serialized data (critical for recovery)
-	walEntry := &wal.Entry{
-		Type:                wal.OpTypeInsert,
-		EventDataOrMetadata: record.Data, // Complete serialized data, not just ID
-	}
-	_, err = e.walMgr.Writer().Write(ctx, walEntry)
-	if err != nil {
-		return types.RecordLocation{}, fmt.Errorf("wal write: %w", err)
+	if e.walMgr != nil {
+		walEntry := &wal.Entry{
+			Type:                wal.OpTypeInsert,
+			EventDataOrMetadata: record.Data, // Complete serialized data, not just ID
+		}
+		_, err = e.walMgr.Writer().Write(ctx, walEntry)
+		if err != nil {
+			return types.RecordLocation{}, fmt.Errorf("wal write: %w", err)
+		}
 	}
 
 	// Step 3: Write pre-serialized record to storage (avoid redundant serialization)
@@ -500,7 +512,10 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	// Step 2: Batch serialize
 	serializer := e.storage.Serializer()
 	records := make([]*storage.Record, len(uniqueEvents))
-	walEntries := make([]*wal.Entry, len(uniqueEvents))
+	var walEntries []*wal.Entry
+	if e.walMgr != nil {
+		walEntries = make([]*wal.Entry, len(uniqueEvents))
+	}
 
 	for i, event := range uniqueEvents {
 		record, err := serializer.Serialize(event)
@@ -509,16 +524,20 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		}
 		records[i] = record
 
-		walEntries[i] = &wal.Entry{
-			Type:                wal.OpTypeInsert,
-			EventDataOrMetadata: record.Data,
+		if walEntries != nil {
+			walEntries[i] = &wal.Entry{
+				Type:                wal.OpTypeInsert,
+				EventDataOrMetadata: record.Data,
+			}
 		}
 	}
 
 	// Step 3: Batch WAL write
-	_, err = e.walMgr.Writer().WriteBatch(ctx, walEntries)
-	if err != nil {
-		return nil, fmt.Errorf("wal batch write: %w", err)
+	if e.walMgr != nil {
+		_, err = e.walMgr.Writer().WriteBatch(ctx, walEntries)
+		if err != nil {
+			return nil, fmt.Errorf("wal batch write: %w", err)
+		}
 	}
 
 	// Step 4: Batch storage write with segment rotation handling
@@ -723,20 +742,22 @@ func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) erro
 	}
 
 	// Step 1: Write to WAL (for durability and recovery)
-	walEntry := &wal.Entry{
-		Type: wal.OpTypeUpdateFlags,
-		EventDataOrMetadata: func() []byte {
-			// WAL format for UpdateFlags: location (8 bytes) + flags (1 byte)
-			data := make([]byte, 9)
-			binary.BigEndian.PutUint32(data[0:4], loc.SegmentID)
-			binary.BigEndian.PutUint32(data[4:8], loc.Offset)
-			data[8] = byte(types.FlagDeleted)
-			return data
-		}(),
-	}
-	_, err = e.walMgr.Writer().Write(ctx, walEntry)
-	if err != nil {
-		return fmt.Errorf("wal write: %w", err)
+	if e.walMgr != nil {
+		walEntry := &wal.Entry{
+			Type: wal.OpTypeUpdateFlags,
+			EventDataOrMetadata: func() []byte {
+				// WAL format for UpdateFlags: location (8 bytes) + flags (1 byte)
+				data := make([]byte, 9)
+				binary.BigEndian.PutUint32(data[0:4], loc.SegmentID)
+				binary.BigEndian.PutUint32(data[4:8], loc.Offset)
+				data[8] = byte(types.FlagDeleted)
+				return data
+			}(),
+		}
+		_, err = e.walMgr.Writer().Write(ctx, walEntry)
+		if err != nil {
+			return fmt.Errorf("wal write: %w", err)
+		}
 	}
 
 	// Step 2: Update storage (set deleted flag in-place)
@@ -845,23 +866,25 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 	}
 
 	// Step 1: Batch WAL writes
-	walEntries := make([]*wal.Entry, len(events))
-	for i := range events {
-		loc := validLocs[i]
-		data := make([]byte, 9)
-		binary.BigEndian.PutUint32(data[0:4], loc.SegmentID)
-		binary.BigEndian.PutUint32(data[4:8], loc.Offset)
-		data[8] = byte(types.FlagDeleted)
+	if e.walMgr != nil {
+		walEntries := make([]*wal.Entry, len(events))
+		for i := range events {
+			loc := validLocs[i]
+			data := make([]byte, 9)
+			binary.BigEndian.PutUint32(data[0:4], loc.SegmentID)
+			binary.BigEndian.PutUint32(data[4:8], loc.Offset)
+			data[8] = byte(types.FlagDeleted)
 
-		walEntries[i] = &wal.Entry{
-			Type:                wal.OpTypeUpdateFlags,
-			EventDataOrMetadata: data,
+			walEntries[i] = &wal.Entry{
+				Type:                wal.OpTypeUpdateFlags,
+				EventDataOrMetadata: data,
+			}
 		}
-	}
 
-	_, err = e.walMgr.Writer().WriteBatch(ctx, walEntries)
-	if err != nil {
-		return fmt.Errorf("batch wal write: %w", err)
+		_, err = e.walMgr.Writer().WriteBatch(ctx, walEntries)
+		if err != nil {
+			return fmt.Errorf("batch wal write: %w", err)
+		}
 	}
 
 	// Step 2: Batch update flags in storage
@@ -1116,6 +1139,17 @@ func (n noOpCompactionManager) Close() error {
 // recoverFromWAL replays WAL entries to rebuild indexes after a crash or restart.
 func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	e.logger.Printf("Starting WAL recovery...")
+	if e.walMgr == nil {
+		if e.indexFilesInvalidated {
+			e.logger.Printf("WAL recovery: WAL disabled, indexes invalid, rebuilding from segments")
+			if err := e.rebuildIndexesFromSegments(ctx); err != nil {
+				return fmt.Errorf("rebuild indexes from segments: %w", err)
+			}
+		} else {
+			e.logger.Printf("WAL recovery skipped: WAL disabled and index files valid")
+		}
+		return nil
+	}
 
 	if e.indexFilesInvalidated {
 		e.logger.Printf("WAL recovery: index files were invalid, rebuilding from segments")
@@ -1131,7 +1165,11 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 			}
 		}
 	} else {
-		e.logger.Printf("WAL recovery skipped: index files present and valid")
+		if e.indexDirtyOnStart {
+			e.logger.Printf("WAL recovery skipped: index dirty marker found but index files are valid")
+		} else {
+			e.logger.Printf("WAL recovery skipped: index files present and valid")
+		}
 		return nil
 	}
 
