@@ -6,7 +6,7 @@ package wal
 import (
 	"context"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // OpType represents the type of operation logged in the WAL.

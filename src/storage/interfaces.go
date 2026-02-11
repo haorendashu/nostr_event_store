@@ -7,7 +7,7 @@ package storage
 import (
 	"context"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // PageSize represents the size of a storage page (4KB, 8KB, or 16KB).

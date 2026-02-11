@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"nostr_event_store/src/index"
-	"nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/storage"
 )
 
 func TestValidateConfig(t *testing.T) {

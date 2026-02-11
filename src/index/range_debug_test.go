@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TestSearchIndexRangeWithSpecialCharacters tests range queries with特殊字符

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TestSerializerSmallEvent tests serialization of a small event (single-page).

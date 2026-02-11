@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"nostr_event_store/src/index"
-	"nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/storage"
 )
 
 // ValidateConfig validates a configuration and returns an error if invalid.

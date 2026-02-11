@@ -11,8 +11,8 @@ import (
 	"context"
 	"encoding/binary"
 
-	"nostr_event_store/src/cache"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/cache"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // SearchType represents a configured search tag type code.

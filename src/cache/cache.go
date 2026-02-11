@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	storeerrors "nostr_event_store/src/errors"
+	storeerrors "github.com/haorendashu/nostr_event_store/src/errors"
 )
 
 // Cache is the interface for a key-value cache with LRU eviction.

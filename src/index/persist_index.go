@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"nostr_event_store/src/cache"
-	"nostr_event_store/src/errors"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/cache"
+	"github.com/haorendashu/nostr_event_store/src/errors"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // PersistentBTreeIndex implements Index using persistent B+Tree storage

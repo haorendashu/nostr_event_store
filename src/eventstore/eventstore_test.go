@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"nostr_event_store/src/config"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/config"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 func TestNewEventStore(t *testing.T) {

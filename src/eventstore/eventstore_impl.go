@@ -16,15 +16,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"nostr_event_store/src/compaction"
-	"nostr_event_store/src/config"
-	"nostr_event_store/src/index"
-	"nostr_event_store/src/query"
-	"nostr_event_store/src/recovery"
-	"nostr_event_store/src/storage"
-	"nostr_event_store/src/store"
-	"nostr_event_store/src/types"
-	"nostr_event_store/src/wal"
+	"github.com/haorendashu/nostr_event_store/src/compaction"
+	"github.com/haorendashu/nostr_event_store/src/config"
+	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/query"
+	"github.com/haorendashu/nostr_event_store/src/recovery"
+	"github.com/haorendashu/nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/store"
+	"github.com/haorendashu/nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/wal"
 )
 
 var (

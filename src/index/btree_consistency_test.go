@@ -9,7 +9,7 @@ import (
 	"sort"
 	"testing"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TestBTreeInsertRangeConsistency verifies that Insert and Range operations use consistent key navigation logic.

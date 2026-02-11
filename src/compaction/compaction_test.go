@@ -5,9 +5,9 @@ import (
 	"context"
 	"testing"
 
-	"nostr_event_store/src/storage"
-	"nostr_event_store/src/store"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/store"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TestAnalyzeSegments tests the segment analysis functionality.

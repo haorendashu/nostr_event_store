@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"strings"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // MatchesFilter checks if an event matches the given filter.

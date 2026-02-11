@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // FileSegment implements Segment interface with file-based storage.

@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // PrimaryIndex provides helpers for the primary index (id -> location).

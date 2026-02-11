@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"nostr_event_store/src/wal"
+	"github.com/haorendashu/nostr_event_store/src/wal"
 )
 
 func main() {

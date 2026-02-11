@@ -10,7 +10,7 @@ import (
 	"sort"
 	"sync"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 func min(a, b int) int {

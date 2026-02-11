@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/storage"
 )
 
 // CompactorImpl implements the Compactor interface for actual compaction work.

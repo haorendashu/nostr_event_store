@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 
-	"nostr_event_store/src/config"
-	"nostr_event_store/src/eventstore"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/config"
+	"github.com/haorendashu/nostr_event_store/src/eventstore"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // demonstrateDelete shows how to use the delete functionality

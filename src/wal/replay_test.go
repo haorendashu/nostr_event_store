@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"nostr_event_store/src/storage"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // mockReplayer implements the Replayer interface for testing.

@@ -7,14 +7,14 @@ import (
 	"context"
 	"log"
 
-	"nostr_event_store/src/cache"
-	"nostr_event_store/src/compaction"
-	"nostr_event_store/src/config"
-	"nostr_event_store/src/index"
-	"nostr_event_store/src/query"
-	"nostr_event_store/src/recovery"
-	"nostr_event_store/src/types"
-	"nostr_event_store/src/wal"
+	"github.com/haorendashu/nostr_event_store/src/cache"
+	"github.com/haorendashu/nostr_event_store/src/compaction"
+	"github.com/haorendashu/nostr_event_store/src/config"
+	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/query"
+	"github.com/haorendashu/nostr_event_store/src/recovery"
+	"github.com/haorendashu/nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/wal"
 )
 
 // EventStore is the top-level interface for interacting with the Nostr event store.

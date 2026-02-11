@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 type btree struct {

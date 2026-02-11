@@ -1,4 +1,4 @@
-module nostr_event_store
+module github.com/haorendashu/nostr_event_store
 
 go 1.21.5
 

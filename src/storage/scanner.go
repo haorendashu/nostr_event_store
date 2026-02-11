@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // Scanner provides sequential scanning of records in a segment.

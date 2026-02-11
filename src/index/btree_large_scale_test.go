@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TestBTreeRangeQueryWithLongValues tests range queries on keys with long values

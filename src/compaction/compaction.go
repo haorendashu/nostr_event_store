@@ -6,7 +6,7 @@ package compaction
 import (
 	"context"
 
-	"nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/storage"
 )
 
 // Strategy defines different compaction strategies.
@@ -48,11 +48,11 @@ type Task struct {
 type TaskStatus string
 
 const (
-	StatusPending     TaskStatus = "pending"
-	StatusInProgress  TaskStatus = "in_progress"
-	StatusCompleted   TaskStatus = "completed"
-	StatusFailed      TaskStatus = "failed"
-	StatusRolledBack  TaskStatus = "rolled_back"
+	StatusPending    TaskStatus = "pending"
+	StatusInProgress TaskStatus = "in_progress"
+	StatusCompleted  TaskStatus = "completed"
+	StatusFailed     TaskStatus = "failed"
+	StatusRolledBack TaskStatus = "rolled_back"
 )
 
 // Collector analyzes segments and determines what needs compaction.

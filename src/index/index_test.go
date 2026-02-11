@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 func TestKeyBuilderPrimary(t *testing.T) {

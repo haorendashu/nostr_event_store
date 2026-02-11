@@ -3,7 +3,7 @@ package index
 import (
 	"context"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // AuthorTimeIndex provides helpers for the author+time index.

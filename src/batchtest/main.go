@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"nostr_event_store/src/config"
-	"nostr_event_store/src/eventstore"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/config"
+	"github.com/haorendashu/nostr_event_store/src/eventstore"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // EventDTO represents the JSON structure of a Nostr event
@@ -168,15 +168,16 @@ func initStore(dir string) (eventstore.EventStore, error) {
 	}
 
 	cfg := config.DefaultConfig()
+	cfg.WALConfig.Disabled = true
 	cfg.StorageConfig.DataDir = filepath.Join(dir, "data")
 	cfg.WALConfig.WALDir = filepath.Join(dir, "wal")
 	cfg.IndexConfig.IndexDir = filepath.Join(dir, "indexes")
 
 	// Increase cache sizes for large datasets (especially search index)
 	// For 100K events, search index needs ~150MB (37K nodes * 4KB/node)
-	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 100
-	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 100
-	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 200 // Increased from default 100MB
+	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 250
+	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 250
+	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 1000 // Increased from default 100MB
 
 	store := eventstore.New(&eventstore.Options{
 		Config: cfg,

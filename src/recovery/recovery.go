@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"io"
 
-	"nostr_event_store/src/storage"
-	"nostr_event_store/src/types"
-	"nostr_event_store/src/wal"
+	"github.com/haorendashu/nostr_event_store/src/storage"
+	"github.com/haorendashu/nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/wal"
 )
 
 // RecoveryState represents the result of recovery operations.

@@ -3,8 +3,8 @@ package query
 import (
 	"fmt"
 
-	"nostr_event_store/src/index"
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // optimizerImpl implements Optimizer interface.

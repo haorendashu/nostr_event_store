@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"hash/crc64"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 type btreeNode struct {

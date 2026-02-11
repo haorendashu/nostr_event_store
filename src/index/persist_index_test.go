@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TestPersistentIndexBasicOps tests basic insert, get, and delete operations.

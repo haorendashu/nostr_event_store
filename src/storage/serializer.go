@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"nostr_event_store/src/types"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // TLVSerializer implements EventSerializer using Tag-Length-Value encoding.
