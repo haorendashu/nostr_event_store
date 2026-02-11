@@ -12,9 +12,25 @@
 
 ---
 
+## 2026年2月11日 增量测试更新
+
+### ✅ 最新测试运行结果
+- eventstore_test.go：15/15 通过（新增 RunCompactionOnce 场景）
+- storage_test.go：8/8 通过（新增持久化 flags 测试）
+
+### 新增/更新测试用例
+- TestRunCompactionOnceNotOpen - 未打开时触发压缩应报错
+- TestRunCompactionOnceNoCandidates - 无候选段返回空结果
+- TestRunCompactionOnceWithDeletion - 删除标记可被压缩清理
+- TestRunCompactionOnceWithReplaced - 替换标记可被压缩清理
+- TestRunCompactionOnceMultiSegment - 多段压缩与删除段移除
+- TestUpdateRecordFlagsPersists - 删除/替换标记写回段文件
+
+---
+
 ## 测试覆盖详情
 
-### 1. Storage 层（8 tests）
+### 1. Storage 层（10 tests）
 - ✅ TestDebugSerialization - TLV 序列化调试
 - ✅ TestSerializerSmallEvent - 小事件序列化
 - ✅ TestSerializerLargeEvent - 大事件序列化（12.5KB，多页）
@@ -24,6 +40,7 @@
 - ✅ TestScannerMultiPage - 多页扫描
 - ✅ TestVeryLargeEvent - 超大事件（350KB，5000 标签，85 页）
 - ✅ TestDebugTagsSerialization - 标签序列化调试
+- ✅ TestUpdateRecordFlagsPersists - 标记写回段文件
 
 **关键特性**：
 - 支持 4KB/8KB/16KB 可配置页面大小
@@ -172,7 +189,7 @@
 
 ---
 
-### 10. EventStore 层（10 tests）✨ 
+### 10. EventStore 层（15 tests）✨ 
 - ✅ TestNewEventStore - 创建 EventStore
 - ✅ TestEventStoreOpenClose - 打开关闭操作
 - ✅ TestEventStoreWriteAndGet - 写入和读取事件
@@ -183,6 +200,11 @@
 - ✅ TestEventStoreManagers - 管理器访问
 - ✅ TestEventStoreErrorHandling - 错误处理
 - ✅ TestConvenienceFunctions - 便利函数（含崩溃恢复验证）
+- ✅ TestRunCompactionOnceNotOpen - 未打开时触发压缩
+- ✅ TestRunCompactionOnceNoCandidates - 无候选段
+- ✅ TestRunCompactionOnceWithDeletion - 删除标记压缩清理
+- ✅ TestRunCompactionOnceWithReplaced - 替换标记压缩清理
+- ✅ TestRunCompactionOnceMultiSegment - 多段压缩
 - ⏭️ TestOpenReadOnly - 只读模式（跳过）
 
 **关键特性**（v2.0 新增）：
