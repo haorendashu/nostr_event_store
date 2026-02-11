@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,6 +92,7 @@ type eventStoreImpl struct {
 
 	// State
 	dir    string
+	walDir string
 	opened bool
 	mu     sync.RWMutex
 
@@ -173,6 +175,7 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 
 	// Initialize WAL Manager
 	walDir := filepath.Join(dir, "wal")
+	e.walDir = walDir
 	walMgr := wal.NewManager()
 	walCfg := wal.Config{
 		Dir:             walDir,
@@ -458,6 +461,16 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		return []types.RecordLocation{}, nil
 	}
 
+	cfg := e.config.Get()
+	pageSize := cfg.StorageConfig.PageSize
+	if pageSize == 0 {
+		pageSize = uint32(storage.PageSize4KB)
+	}
+	maxSegmentSize := cfg.StorageConfig.MaxSegmentSize
+	if maxSegmentSize == 0 {
+		maxSegmentSize = config.DefaultConfig().StorageConfig.MaxSegmentSize
+	}
+
 	// Step 1: Batch duplicate check
 	primaryIdx := e.indexMgr.PrimaryIndex()
 	eventKeys := make([][]byte, len(events))
@@ -545,6 +558,23 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 					// Continue loop to rotate and write remaining records
 					continue
 				}
+
+				if len(remainingRecords) > 0 {
+					record := remainingRecords[0]
+					requiredPages := uint64(1)
+					if record.Flags.IsContinued() {
+						requiredPages += uint64(record.ContinuationCount)
+					}
+					requiredBytes := uint64(pageSize) * (1 + requiredPages)
+					if requiredBytes > maxSegmentSize {
+						return nil, fmt.Errorf("record too large for segment: record_len=%d page_size=%d max_segment_size=%d", record.Length, pageSize, maxSegmentSize)
+					}
+				}
+
+				if _, rotateErr := e.storage.SegmentManager().RotateSegment(ctx); rotateErr != nil {
+					return nil, fmt.Errorf("rotate segment: %w", rotateErr)
+				}
+				continue
 			}
 			// Other errors should fail the batch
 			return nil, fmt.Errorf("storage batch append: %w", err)
@@ -1087,15 +1117,18 @@ func (n noOpCompactionManager) Close() error {
 func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	e.logger.Printf("Starting WAL recovery...")
 
-	if e.indexDirtyOnStart {
-		e.logger.Printf("WAL recovery: index dirty marker found, rebuilding from segments")
-		if err := e.rebuildIndexesFromSegments(ctx); err != nil {
-			return fmt.Errorf("rebuild indexes from segments: %w", err)
-		}
-	} else if e.indexFilesInvalidated {
+	if e.indexFilesInvalidated {
 		e.logger.Printf("WAL recovery: index files were invalid, rebuilding from segments")
 		if err := e.rebuildIndexesFromSegments(ctx); err != nil {
 			return fmt.Errorf("rebuild indexes from segments: %w", err)
+		}
+	} else if e.indexDirtyOnStart {
+		e.logger.Printf("WAL recovery: index dirty marker found, replaying from checkpoint")
+		if err := e.replayWALFromCheckpoint(ctx); err != nil {
+			e.logger.Printf("WAL recovery warning: replay failed, rebuilding from segments: %v", err)
+			if err := e.rebuildIndexesFromSegments(ctx); err != nil {
+				return fmt.Errorf("rebuild indexes from segments: %w", err)
+			}
 		}
 	} else {
 		e.logger.Printf("WAL recovery skipped: index files present and valid")
@@ -1111,6 +1144,139 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
+	if e.walDir == "" {
+		return fmt.Errorf("wal dir not set")
+	}
+
+	startLSN := uint64(0)
+	if checkpoint, err := e.walMgr.LastCheckpoint(); err == nil {
+		if checkpoint.LSN > 0 {
+			startLSN = checkpoint.LSN + 1
+		}
+		e.logger.Printf("WAL recovery: last checkpoint LSN=%d", checkpoint.LSN)
+	} else {
+		e.logger.Printf("WAL recovery: no checkpoint found, replaying from beginning")
+	}
+
+	collector := &walRecoveryReplayer{
+		storage: e.storage,
+		logger:  e.logger,
+		events:  make(map[[32]byte]*types.Event),
+	}
+
+	opts := wal.ReplayOptions{
+		StartLSN:    startLSN,
+		StopOnError: true,
+		Serializer:  e.storage.Serializer(),
+	}
+
+	stats, err := wal.ReplayFromReader(ctx, e.walDir, collector, opts)
+	if err != nil {
+		return fmt.Errorf("replay WAL from LSN %d: %w", startLSN, err)
+	}
+
+	if len(collector.events) == 0 {
+		e.logger.Printf("WAL recovery: no insert entries to replay")
+		return nil
+	}
+
+	locations, err := e.findLocationsForEvents(ctx, collector.events)
+	if err != nil {
+		return fmt.Errorf("resolve locations for WAL entries: %w", err)
+	}
+
+	indexer := &indexReplayer{
+		storage:    e.storage,
+		indexMgr:   e.indexMgr,
+		keyBuilder: e.keyBuilder,
+		serializer: e.storage.Serializer(),
+		logger:     e.logger,
+	}
+
+	for eventID, event := range collector.events {
+		location, ok := locations[eventID]
+		if !ok {
+			e.logger.Printf("WAL recovery warning: location not found for event %x", eventID[:4])
+			continue
+		}
+		if err := indexer.OnInsert(ctx, event, location); err != nil {
+			return fmt.Errorf("apply WAL insert %x: %w", eventID[:4], err)
+		}
+	}
+
+	e.logger.Printf("WAL recovery: applied %d inserts from LSN %d", stats.InsertsReplayed, startLSN)
+	return nil
+}
+
+func (e *eventStoreImpl) findLocationsForEvents(ctx context.Context, events map[[32]byte]*types.Event) (map[[32]byte]types.RecordLocation, error) {
+	locations := make(map[[32]byte]types.RecordLocation, len(events))
+	if len(events) == 0 {
+		return locations, nil
+	}
+
+	pending := make(map[[32]byte]struct{}, len(events))
+	for id := range events {
+		pending[id] = struct{}{}
+	}
+
+	segmentIDs, err := e.storage.SegmentManager().ListSegments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list segments: %w", err)
+	}
+
+	sort.Slice(segmentIDs, func(i, j int) bool {
+		return segmentIDs[i] > segmentIDs[j]
+	})
+
+	serializer := e.storage.Serializer()
+	for _, segmentID := range segmentIDs {
+		segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
+		if err != nil {
+			e.logger.Printf("WAL recovery warning: open segment %d failed: %v", segmentID, err)
+			continue
+		}
+		fileSeg, ok := segment.(*storage.FileSegment)
+		if !ok {
+			e.logger.Printf("WAL recovery warning: segment %d is not file-based", segmentID)
+			continue
+		}
+
+		reverse := storage.NewReverseScanner(fileSeg)
+		for {
+			record, location, err := reverse.Prev(ctx)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				e.logger.Printf("WAL recovery warning: segment %d reverse scan error: %v", segmentID, err)
+				continue
+			}
+
+			event, err := serializer.Deserialize(record)
+			if err != nil {
+				e.logger.Printf("WAL recovery warning: segment %d deserialize error: %v", segmentID, err)
+				continue
+			}
+
+			if _, ok := pending[event.ID]; !ok {
+				continue
+			}
+			locations[event.ID] = location
+			delete(pending, event.ID)
+			if len(pending) == 0 {
+				return locations, nil
+			}
+		}
+	}
+
+	if len(pending) > 0 {
+		e.logger.Printf("WAL recovery warning: %d events not found in segments", len(pending))
+	}
+
+	return locations, nil
 }
 
 func (e *eventStoreImpl) initIndexDirtyMarker(indexDir string) error {
@@ -1235,6 +1401,19 @@ func (e *eventStoreImpl) createCheckpoint(ctx context.Context, reason string) {
 		return
 	}
 
+	if e.indexMgr != nil {
+		if err := e.indexMgr.Flush(ctx); err != nil {
+			e.logger.Printf("Warning: failed to flush indexes before checkpoint (%s): %v", reason, err)
+			return
+		}
+	}
+	if e.storage != nil {
+		if err := e.storage.Flush(ctx); err != nil {
+			e.logger.Printf("Warning: failed to flush storage before checkpoint (%s): %v", reason, err)
+			return
+		}
+	}
+
 	checkpointLSN, err := writer.CreateCheckpoint(ctx)
 	if err != nil {
 		e.logger.Printf("Warning: failed to create checkpoint (%s): %v", reason, err)
@@ -1319,6 +1498,12 @@ type indexReplayer struct {
 	logger     *log.Logger
 }
 
+type walRecoveryReplayer struct {
+	storage *store.EventStore
+	logger  *log.Logger
+	events  map[[32]byte]*types.Event
+}
+
 // OnInsert handles WAL insert entries by updating indexes.
 func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, location types.RecordLocation) error {
 	// Update primary index
@@ -1383,5 +1568,31 @@ func (r *indexReplayer) OnIndexUpdate(ctx context.Context, key []byte, value []b
 // OnCheckpoint handles WAL checkpoint entries.
 func (r *indexReplayer) OnCheckpoint(ctx context.Context, checkpoint wal.Checkpoint) error {
 	r.logger.Printf("Replayed checkpoint at LSN %d", checkpoint.LSN)
+	return nil
+}
+
+func (r *walRecoveryReplayer) OnInsert(ctx context.Context, event *types.Event, location types.RecordLocation) error {
+	if event == nil {
+		return fmt.Errorf("nil event in WAL insert")
+	}
+	r.events[event.ID] = event
+	return nil
+}
+
+func (r *walRecoveryReplayer) OnUpdateFlags(ctx context.Context, location types.RecordLocation, flags types.EventFlags) error {
+	if r.storage == nil {
+		return fmt.Errorf("storage not available for WAL update flags")
+	}
+	return r.storage.UpdateEventFlags(ctx, location, flags)
+}
+
+func (r *walRecoveryReplayer) OnIndexUpdate(ctx context.Context, key []byte, value []byte) error {
+	return nil
+}
+
+func (r *walRecoveryReplayer) OnCheckpoint(ctx context.Context, checkpoint wal.Checkpoint) error {
+	if r.logger != nil {
+		r.logger.Printf("Replayed checkpoint at LSN %d", checkpoint.LSN)
+	}
 	return nil
 }
