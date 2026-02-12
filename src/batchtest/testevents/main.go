@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -26,7 +27,7 @@ type EventDTO struct {
 }
 
 func main() {
-	relayURL := flag.String("relay", "wss://relay.damus.io", "Relay URL to connect to")
+	relayURL := flag.String("relay", "wss://nos.lol/", "Relay URL to connect to")
 	targetCount := flag.Int("count", 1000, "Target number of events to collect")
 	timeout := flag.Int("timeout", 180, "Timeout in seconds")
 	useLocal := flag.Bool("local", false, "Generate local test data instead of connecting to relay")
@@ -71,44 +72,34 @@ func collectFromRelay(ctx context.Context, relayURL string, targetCount int) ([]
 
 	fmt.Println("[+] Connected to relay")
 
-	// Create filter for all events
-	filters := nostr.Filters{
-		{
-			Limit: targetCount * 2, // Request more than we need
-		},
-	}
-
-	// Subscribe to events
-	fmt.Println("[*] Subscribing to events...")
-	subscription, err := relay.Subscribe(ctx, filters)
-	if err != nil {
-		return nil, fmt.Errorf("failed to subscribe: %w", err)
-	}
-
+	const batchLimit = 100
 	// Collect events
 	eventMap := make(map[string]*EventDTO)
 	startTime := time.Now()
+	var untilTime int64 = int64(time.Now().Unix())
 
-	// Inner context for receiving events
-	receiveCtx, receiveCancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer receiveCancel()
+	for len(eventMap) < targetCount {
+		untilTimestamp := nostr.Timestamp(untilTime)
+		filter := nostr.Filter{
+			Until: &untilTimestamp,
+			Limit: batchLimit,
+		}
 
-	for {
-		select {
-		case <-receiveCtx.Done():
-			fmt.Println("[*] Receive timeout reached")
-			goto finish
-		case event := <-subscription.Events:
-			if event == nil {
-				fmt.Println("[*] Subscription closed")
-				goto finish
-			}
+		fmt.Printf("[*] Querying events until %d (limit %d)...\n", untilTime, batchLimit)
+		deadlineContext, _ := context.WithDeadline(ctx, time.Now().Add(time.Minute))
+		batch, err := relay.QuerySync(deadlineContext, filter)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query: %w", err)
+		}
+		if len(batch) == 0 {
+			fmt.Println("[*] No more events returned")
+			break
+		}
 
-			// Convert to EventDTO
-			// Convert nostr.Timestamp to Unix timestamp
+		prevCount := len(eventMap)
+		for _, event := range batch {
 			createdAtUnix := int64(event.CreatedAt)
 
-			// Convert nostr.Tags to [][]string
 			tagsSlice := make([][]string, len(event.Tags))
 			for i, tag := range event.Tags {
 				tagsSlice[i] = tag
@@ -124,27 +115,26 @@ func collectFromRelay(ctx context.Context, relayURL string, targetCount int) ([]
 				Sig:       event.Sig,
 			}
 
-			// Store in map (automatically deduplicates by ID)
 			eventMap[event.ID] = &dto
 
-			// Print progress
-			if len(eventMap)%50 == 0 {
-				fmt.Printf("[+] Collected %d unique events...\n", len(eventMap))
+			if createdAtUnix < untilTime {
+				untilTime = createdAtUnix
 			}
+		}
 
-			// Stop if we have enough events
-			if len(eventMap) >= targetCount {
-				fmt.Printf("[+] Reached target count of %d events\n", targetCount)
-				goto finish
-			}
+		fmt.Printf("[+] Collected %d unique events...\n", len(eventMap))
 
-		case <-ctx.Done():
-			fmt.Println("[*] Context deadline exceeded")
-			goto finish
+		if len(eventMap) == prevCount {
+			fmt.Println("[*] No new events after deduplication; stopping")
+			break
+		}
+
+		if len(eventMap) >= targetCount {
+			fmt.Printf("[+] Reached target count of %d events\n", targetCount)
+			break
 		}
 	}
 
-finish:
 	fmt.Printf("[+] Collection finished in %.2f seconds\n", time.Since(startTime).Seconds())
 	fmt.Printf("[+] Total unique events collected: %d\n", len(eventMap))
 
@@ -153,6 +143,13 @@ finish:
 	for _, event := range eventMap {
 		events = append(events, event)
 	}
+
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].CreatedAt == events[j].CreatedAt {
+			return events[i].ID < events[j].ID
+		}
+		return events[i].CreatedAt < events[j].CreatedAt
+	})
 
 	return events, nil
 }
