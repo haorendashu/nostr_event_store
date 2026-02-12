@@ -37,6 +37,7 @@ type CommandLineFlags struct {
 	VerifyCount    int
 	UseSearchIndex bool
 	UseAuthorIndex bool
+	SkipSave       bool
 }
 
 // ProgressTracker tracks writing progress and performance metrics
@@ -248,11 +249,7 @@ func writeEventsInBatches(ctx context.Context, store eventstore.EventStore, seed
 
 // verifyRandomEvents randomly reads some events to verify they were stored correctly
 // If useSearchIndex is true and the event has suitable tags, it will also verify search index queries
-func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, locations []types.RecordLocation, seedEvents []*EventDTO, totalCount int, verifyCount int, useSearchIndex bool, useAuthorIndex bool) error {
-	if verifyCount <= 0 || verifyCount > len(locations) {
-		return nil
-	}
-
+func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, seedEvents []*EventDTO, totalCount int, verifyCount int, useSearchIndex bool, useAuthorIndex bool) error {
 	fmt.Printf("\nVerifying %d random events (useSearchIndex: %v, useAuthorIndex: %v)...\n", verifyCount, useSearchIndex, useAuthorIndex)
 	startTime := time.Now()
 
@@ -435,6 +432,7 @@ func main() {
 	flag.IntVar(&flags.VerifyCount, "verify", 100, "Number of events to verify after writing (0 to skip)")
 	flag.BoolVar(&flags.UseSearchIndex, "search", false, "Use search index for verification (queries by tags if available)")
 	flag.BoolVar(&flags.UseAuthorIndex, "useAuthorIndex", false, "Use author-time index for verification (queries by pubkey and time range if available)")
+	flag.BoolVar(&flags.SkipSave, "skipSave", false, "Skip saving events to disk (useful for testing)")
 	flag.Parse()
 
 	// Debug modes are archived - they're available in the archive/ directory if needed
@@ -445,7 +443,8 @@ func main() {
 	fmt.Printf("Data directory: %s\n", flags.DataDir)
 	fmt.Printf("Verification count: %d\n", flags.VerifyCount)
 	fmt.Printf("Use search index: %v\n", flags.UseSearchIndex)
-	fmt.Println()
+	fmt.Printf("Use author index: %v\n", flags.UseAuthorIndex)
+	fmt.Printf("Skip save: %v\n", flags.SkipSave)
 
 	ctx := context.Background()
 
@@ -473,32 +472,36 @@ func main() {
 	}()
 	fmt.Println("Event store initialized")
 
-	// Step 3: Write events in batches
-	fmt.Println("Writing events...")
-	startTime := time.Now()
-	locations, err := writeEventsInBatches(ctx, store, seedEvents, flags.EventCount, flags.BatchSize)
-	if err != nil {
-		fmt.Printf("Error writing events: %v\n", err)
-		os.Exit(1)
+	if flags.SkipSave {
+		fmt.Println("SkipSave !!")
+	} else {
+		// Step 3: Write events in batches
+		fmt.Println("Writing events...")
+		startTime := time.Now()
+		locations, err := writeEventsInBatches(ctx, store, seedEvents, flags.EventCount, flags.BatchSize)
+		if err != nil {
+			fmt.Printf("Error writing events: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Step 4: Flush to ensure persistence
+		fmt.Println("\nFlushing to disk...")
+		if err := store.Flush(ctx); err != nil {
+			fmt.Printf("Error flushing: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Step 5: Print statistics
+		totalDuration := time.Since(startTime)
+		overallRate := float64(flags.EventCount) / totalDuration.Seconds()
+
+		fmt.Printf("\n=== Write Statistics ===\n")
+		fmt.Printf("Total events written: %d\n", len(locations))
+		fmt.Printf("Total time: %.2fs\n", totalDuration.Seconds())
+		fmt.Printf("Overall rate: %.0f events/s\n", overallRate)
+		fmt.Printf("Store stats: %+v\n", store.Stats())
+		fmt.Println()
 	}
-
-	// Step 4: Flush to ensure persistence
-	fmt.Println("\nFlushing to disk...")
-	if err := store.Flush(ctx); err != nil {
-		fmt.Printf("Error flushing: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Step 5: Print statistics
-	totalDuration := time.Since(startTime)
-	overallRate := float64(flags.EventCount) / totalDuration.Seconds()
-
-	fmt.Printf("\n=== Write Statistics ===\n")
-	fmt.Printf("Total events written: %d\n", len(locations))
-	fmt.Printf("Total time: %.2fs\n", totalDuration.Seconds())
-	fmt.Printf("Overall rate: %.0f events/s\n", overallRate)
-	fmt.Printf("Store stats: %+v\n", store.Stats())
-	fmt.Println()
 
 	// Step 6: Verify if requested
 	if flags.VerifyCount > 0 {
@@ -509,7 +512,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := verifyRandomEvents(ctx, store, locations, seedEvents, flags.EventCount, flags.VerifyCount, flags.UseSearchIndex, flags.UseAuthorIndex); err != nil {
+		if err := verifyRandomEvents(ctx, store, seedEvents, flags.EventCount, flags.VerifyCount, flags.UseSearchIndex, flags.UseAuthorIndex); err != nil {
 			fmt.Printf("Verification error: %v\n", err)
 			os.Exit(1)
 		}
