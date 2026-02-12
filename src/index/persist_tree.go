@@ -18,6 +18,10 @@ type btree struct {
 
 func openBTree(file *indexFile, cache *nodeCache) (*btree, error) {
 	t := &btree{file: file, cache: cache, root: file.header.RootOffset, pageSize: file.pageSize}
+
+	// Restore entry count from file header
+	atomic.StoreUint64(&t.entryCount, file.header.EntryCount)
+
 	if t.root == 0 {
 		root := &btreeNode{nodeType: nodeTypeLeaf}
 		root.offset = file.allocateNodeOffset()
@@ -33,6 +37,10 @@ func openBTree(file *indexFile, cache *nodeCache) (*btree, error) {
 		if err := file.syncHeader(); err != nil {
 			return nil, err
 		}
+	} else if atomic.LoadUint64(&t.entryCount) == 0 && file.header.NodeCount > 0 {
+		// EntryCount was not persisted (old file format). Scan tree to initialize it.
+		count := t.countEntriesInTree()
+		atomic.StoreUint64(&t.entryCount, count)
 	}
 	return t, nil
 }
@@ -56,6 +64,9 @@ func (t *btree) loadNode(offset uint64) (*btreeNode, error) {
 }
 
 func (t *btree) flush() error {
+	// Persist entry count to file header before flushing
+	t.file.header.EntryCount = atomic.LoadUint64(&t.entryCount)
+
 	if _, err := t.cache.flushDirty(); err != nil {
 		return err
 	}
@@ -875,4 +886,31 @@ func (t *btree) calculateDepth() int {
 	}
 
 	return depth
+}
+
+// countEntriesInTree scans all leaf nodes and counts total entries.
+// Used to initialize entryCount when loading an old index file.
+func (t *btree) countEntriesInTree() uint64 {
+	if t.root == 0 {
+		return 0
+	}
+	var count uint64
+	t.countEntriesRecursive(t.root, &count)
+	return count
+}
+
+// countEntriesRecursive recursively counts entries in leaf nodes.
+func (t *btree) countEntriesRecursive(nodeOffset uint64, count *uint64) {
+	node, err := t.loadNode(nodeOffset)
+	if err != nil {
+		return
+	}
+
+	if node.isLeaf() {
+		*count += uint64(len(node.keys))
+	} else {
+		for _, childOffset := range node.children {
+			t.countEntriesRecursive(childOffset, count)
+		}
+	}
 }

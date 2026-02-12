@@ -1038,24 +1038,81 @@ func (e *eventStoreImpl) Stats() Stats {
 
 	stats := Stats{}
 
-	// Get segment manager info from storage
-	if e.storage != nil {
-		segMgr := e.storage.SegmentManager()
-		// Use segment manager to get basic storage info
-		_ = segMgr
-	}
-
-	// Get index statistics
+	// Get index statistics (fast, in-memory)
 	if e.indexMgr != nil {
 		allStats := e.indexMgr.AllStats()
 		if primaryStats, ok := allStats["primary"]; ok {
 			stats.PrimaryIndexStats = primaryStats
+			stats.PrimaryIndexCacheStats = primaryStats.CacheStats
+			stats.TotalEvents = primaryStats.EntryCount
+			stats.LiveEvents = primaryStats.EntryCount
 		}
 		if authorTimeStats, ok := allStats["author_time"]; ok {
 			stats.AuthorTimeIndexStats = authorTimeStats
+			stats.AuthorTimeIndexCacheStats = authorTimeStats.CacheStats
 		}
 		if searchStats, ok := allStats["search"]; ok {
 			stats.SearchIndexStats = searchStats
+			stats.SearchIndexCacheStats = searchStats.CacheStats
+		}
+	}
+
+	// Sum data size from segment metadata (no full scans)
+	if e.storage != nil {
+		segMgr := e.storage.SegmentManager()
+		if segMgr != nil {
+			segmentIDs, err := segMgr.ListSegments(context.Background())
+			if err == nil {
+				var totalData uint64
+				for _, id := range segmentIDs {
+					seg, err := segMgr.GetSegment(context.Background(), id)
+					if err != nil {
+						continue
+					}
+					totalData += seg.Size()
+				}
+				stats.TotalDataSizeBytes = totalData
+			}
+		}
+	}
+
+	// Index file sizes (metadata-only)
+	if e.indexDir != "" {
+		entries, err := os.ReadDir(e.indexDir)
+		if err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				if filepath.Ext(entry.Name()) != ".idx" {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				stats.TotalIndexSizeBytes += uint64(info.Size())
+			}
+		}
+	}
+
+	// WAL stats (metadata-only)
+	if e.walMgr != nil {
+		stats.WalLastLSN = e.walMgr.Writer().LastLSN()
+	}
+	if e.walDir != "" {
+		entries, err := os.ReadDir(e.walDir)
+		if err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				stats.TotalWALSizeBytes += uint64(info.Size())
+			}
 		}
 	}
 

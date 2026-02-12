@@ -15,6 +15,7 @@ type indexHeader struct {
 	NodeCount  uint64
 	PageSize   uint32
 	Format     uint32
+	EntryCount uint64
 }
 
 type indexFile struct {
@@ -98,6 +99,7 @@ func (f *indexFile) readHeader() error {
 	f.header.NodeCount = binary.BigEndian.Uint64(buf[24:32])
 	f.header.PageSize = binary.BigEndian.Uint32(buf[32:36])
 	f.header.Format = binary.BigEndian.Uint32(buf[36:40])
+	f.header.EntryCount = binary.BigEndian.Uint64(buf[40:48])
 	return nil
 }
 
@@ -110,6 +112,7 @@ func (f *indexFile) writeHeader() error {
 	binary.BigEndian.PutUint64(buf[24:32], f.header.NodeCount)
 	binary.BigEndian.PutUint32(buf[32:36], f.header.PageSize)
 	binary.BigEndian.PutUint32(buf[36:40], f.header.Format)
+	binary.BigEndian.PutUint64(buf[40:48], f.header.EntryCount)
 	checksum := crc64.Checksum(buf[:f.pageSize-8], crc64Table)
 	binary.BigEndian.PutUint64(buf[f.pageSize-8:], checksum)
 
