@@ -83,6 +83,70 @@ type resultIteratorImpl struct {
 	indexesUsed []string
 }
 
+// CountPlan executes a count query for a compiled plan.
+// For fully indexed plans, it counts deduplicated index matches directly without reading events.
+func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, error) {
+	impl, ok := plan.(*planImpl)
+	if !ok {
+		return 0, fmt.Errorf("invalid plan type")
+	}
+
+	if impl.fullyIndexed {
+		switch impl.strategy {
+		case "primary":
+			locations, err := e.getPrimaryIndexResults(ctx, impl)
+			if err != nil {
+				return 0, err
+			}
+			count := len(locations)
+			if impl.filter.Limit > 0 && count > impl.filter.Limit {
+				count = impl.filter.Limit
+			}
+			return count, nil
+
+		case "author_time":
+			extractTimestamp := impl.filter.Limit > 0
+			locationsWithTime, err := e.getAuthorTimeIndexResults(ctx, impl, extractTimestamp)
+			if err != nil {
+				return 0, err
+			}
+			count := len(locationsWithTime)
+			if impl.filter.Limit > 0 && count > impl.filter.Limit {
+				count = impl.filter.Limit
+			}
+			return count, nil
+
+		case "search":
+			extractTimestamp := impl.filter.Limit > 0
+			locationsWithTime, err := e.getSearchIndexResults(ctx, impl, extractTimestamp)
+			if err != nil {
+				return 0, err
+			}
+			count := len(locationsWithTime)
+			if impl.filter.Limit > 0 && count > impl.filter.Limit {
+				count = impl.filter.Limit
+			}
+			return count, nil
+		}
+	}
+
+	iter, err := e.ExecutePlan(ctx, plan)
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+
+	count := 0
+	for iter.Valid() {
+		count++
+		if err := iter.Next(ctx); err != nil {
+			return count, fmt.Errorf("iterate results: %w", err)
+		}
+	}
+
+	return count, nil
+}
+
 // ExecutePlan executes a plan and returns results.
 func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (ResultIterator, error) {
 	start := time.Now()

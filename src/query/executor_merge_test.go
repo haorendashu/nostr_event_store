@@ -199,6 +199,7 @@ func (m *mockIndexManagerForMerge) AllStats() map[string]index.Stats {
 // mockStoreForMerge implements storage.Store
 type mockStoreForMerge struct {
 	events map[string]*types.Event // key: "segmentID:offset"
+	reads  int
 }
 
 func newMockStoreForMerge() *mockStoreForMerge {
@@ -208,6 +209,7 @@ func newMockStoreForMerge() *mockStoreForMerge {
 }
 
 func (ms *mockStoreForMerge) ReadEvent(ctx context.Context, location types.RecordLocation) (*types.Event, error) {
+	ms.reads++
 	key := fmt.Sprintf("%d:%d", location.SegmentID, location.Offset)
 	if event, ok := ms.events[key]; ok {
 		return event, nil
@@ -238,6 +240,10 @@ func (ms *mockStoreForMerge) Flush(ctx context.Context) error {
 func (ms *mockStoreForMerge) addEvent(loc types.RecordLocation, event *types.Event) {
 	key := fmt.Sprintf("%d:%d", loc.SegmentID, loc.Offset)
 	ms.events[key] = event
+}
+
+func (ms *mockStoreForMerge) readCount() int {
+	return ms.reads
 }
 
 // Test: Merge algorithm with multiple authors
@@ -544,6 +550,47 @@ func TestMergeAlgorithm_NotFullyIndexed(t *testing.T) {
 	}
 
 	t.Logf("✅ fullyIndexed=false collected all %d candidates (limit was %d)", len(results), plan.filter.Limit)
+}
+
+// Test: CountPlan on fully indexed query should not load events from storage.
+func TestCountPlan_FullyIndexed_NoEventRead(t *testing.T) {
+	ctx := context.Background()
+	mgr := newMockIndexManagerForMerge()
+	store := newMockStoreForMerge()
+	executor := NewExecutor(mgr, store).(*executorImpl)
+
+	kb := mgr.KeyBuilder()
+	author := [32]byte{9}
+	kind := uint16(1)
+
+	for ts := uint32(100); ts < 106; ts++ {
+		key := kb.BuildAuthorTimeKey(author, kind, ts)
+		loc := types.RecordLocation{SegmentID: 1, Offset: ts}
+		if err := mgr.authorTimeIndex.Insert(ctx, key, loc); err != nil {
+			t.Fatalf("insert index key failed: %v", err)
+		}
+	}
+
+	plan := &planImpl{
+		strategy: "author_time",
+		filter: &types.QueryFilter{
+			Authors: [][32]byte{author},
+			Kinds:   []uint16{kind},
+			Limit:   3,
+		},
+		fullyIndexed: true,
+	}
+
+	count, err := executor.CountPlan(ctx, plan)
+	if err != nil {
+		t.Fatalf("CountPlan failed: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected count=3, got %d", count)
+	}
+	if store.readCount() != 0 {
+		t.Fatalf("expected no ReadEvent calls for fully indexed count, got %d", store.readCount())
+	}
 }
 
 // Helper function to compare keys (same as in persist_tree.go)

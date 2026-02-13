@@ -106,6 +106,10 @@ type Executor interface {
 	// ctx is used for cancellation and timeouts.
 	// Returns error if execution fails.
 	ExecutePlan(ctx context.Context, plan ExecutionPlan) (ResultIterator, error)
+
+	// CountPlan executes a count query for a compiled plan.
+	// Implementations may optimize fully indexed plans to avoid loading full events.
+	CountPlan(ctx context.Context, plan ExecutionPlan) (int, error)
 }
 
 // QueryStats captures query execution statistics for performance monitoring.
@@ -194,18 +198,14 @@ func (e *engineImpl) QueryEvents(ctx context.Context, filter *types.QueryFilter)
 
 // Count executes a count query.
 func (e *engineImpl) Count(ctx context.Context, filter *types.QueryFilter) (int, error) {
-	iter, err := e.Query(ctx, filter)
+	plan, err := e.compiler.Compile(filter)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("compile query: %w", err)
 	}
-	defer iter.Close()
 
-	count := 0
-	for iter.Valid() {
-		count++
-		if err := iter.Next(ctx); err != nil {
-			return count, fmt.Errorf("iterate results: %w", err)
-		}
+	count, err := e.executor.CountPlan(ctx, plan)
+	if err != nil {
+		return 0, fmt.Errorf("count plan: %w", err)
 	}
 
 	return count, nil
