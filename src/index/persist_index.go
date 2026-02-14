@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/haorendashu/nostr_event_store/src/cache"
 	"github.com/haorendashu/nostr_event_store/src/errors"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
@@ -245,15 +244,26 @@ func (idx *PersistentBTreeIndex) Stats() Stats {
 	treeStats := idx.tree.stats()
 	return Stats{
 		NodeCount:  treeStats.NodeCount,
-		LeafCount:  0, // TODO: track separately during traversal
+		LeafCount:  treeStats.LeafCount,
 		Depth:      treeStats.Depth,
 		EntryCount: treeStats.EntryCount,
-		CacheStats: cache.Stats{
-			Hits:      0, // TODO: track in cache
-			Misses:    0, // TODO: track in cache
-			Evictions: 0, // TODO: track in cache
-			Size:      idx.cache.size(),
-			Capacity:  idx.cache.capacity,
-		},
+		CacheStats: idx.cache.stats(),
 	}
+}
+
+// ResizeCache adjusts the cache size to the specified MB value.
+// Returns the number of evicted entries and any error encountered.
+func (idx *PersistentBTreeIndex) ResizeCache(newCacheMB int) (int, error) {
+	if idx.closed {
+		return 0, errors.ErrIndexClosed
+	}
+	return idx.tree.ResizeCache(newCacheMB)
+}
+
+// GetCacheCapacityMB returns the current cache capacity in MB.
+func (idx *PersistentBTreeIndex) GetCacheCapacityMB() int {
+	if idx.closed {
+		return 0
+	}
+	return idx.tree.GetCacheCapacityMB()
 }

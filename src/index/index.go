@@ -243,6 +243,28 @@ type Config struct {
 	// RebuildInProgress is a flag indicating whether an index rebuild is ongoing.
 	// Prevents concurrent rebuild attempts.
 	RebuildInProgress bool
+
+	// DynamicAllocation enables automatic cache allocation based on index sizes and access patterns.
+	DynamicAllocation bool
+
+	// TotalCacheMB is the total cache pool size when DynamicAllocation is enabled.
+	TotalCacheMB int
+
+	// MinCachePerIndexMB is the minimum cache guarantee for each index in dynamic mode.
+	MinCachePerIndexMB int
+
+	// ReallocationIntervalMinutes is how often to recalculate cache allocation in dynamic mode.
+	ReallocationIntervalMinutes int
+
+	// EnableTimePartitioning enables time-based index partitioning (Phase 2 optimization).
+	// When enabled, indexes are split into multiple files by time period (monthly/weekly/yearly).
+	// Default: false (use single index file for backward compatibility)
+	EnableTimePartitioning bool
+
+	// PartitionGranularity determines how to split time partitions.
+	// Options: "monthly", "weekly", "yearly"
+	// Default: "monthly" (recommended for 10M+ events)
+	PartitionGranularity string
 }
 
 // BTreeConfig holds B+Tree-specific tuning parameters.

@@ -34,6 +34,10 @@ type Config struct {
 
 	// CompactionConfig specifies background compaction parameters.
 	CompactionConfig CompactionConfig `json:"compaction,omitempty"`
+
+	// ShardingConfig specifies distributed sharding parameters (Phase 3).
+	// When enabled, events are distributed across multiple local shards using consistent hashing.
+	ShardingConfig ShardingConfig `json:"sharding,omitempty"`
 }
 
 // StorageConfig defines storage layer parameters.
@@ -85,6 +89,20 @@ type IndexConfig struct {
 	// DirtyThreshold is the number of dirty index pages that triggers a batch flush.
 	// Default: 128
 	DirtyThreshold int `json:"dirty_threshold,omitempty"`
+
+	// EnableTimePartitioning enables time-based index partitioning for scalability.
+	// When enabled, indexes are split into multiple files by time period (monthly/weekly/yearly).
+	// This is Phase 2 optimization for handling 10M-20M events.
+	// Default: false (use single index file for backward compatibility)
+	EnableTimePartitioning bool `json:"enable_time_partitioning,omitempty"`
+
+	// PartitionGranularity determines how to split time partitions.
+	// Options: "monthly" (default), "weekly", "yearly"
+	// - monthly: Recommended for 10M+ events, creates one partition per month
+	// - weekly: For very high volume (50M+ events), creates one partition per week
+	// - yearly: For low volume archives, creates one partition per year
+	// Default: "monthly"
+	PartitionGranularity string `json:"partition_granularity,omitempty"`
 }
 
 // SearchTypeMapConfig defines the mapping from tag names to search type codes (from manifest.json).
@@ -133,6 +151,25 @@ type CacheConfig struct {
 	// CacheConcurrency is the number of lock shards for concurrent cache access.
 	// Default: 16
 	CacheConcurrency int `json:"cache_concurrency,omitempty"`
+
+	// DynamicAllocation enables automatic cache allocation based on index sizes and access patterns.
+	// When enabled, TotalCacheMB is used instead of individual cache sizes.
+	// Default: false
+	DynamicAllocation bool `json:"dynamic_allocation,omitempty"`
+
+	// TotalCacheMB is the total cache pool size when DynamicAllocation is enabled.
+	// The allocator distributes this among indexes based on their size and access frequency.
+	// Default: 200 MB (ignored if DynamicAllocation is false)
+	TotalCacheMB int `json:"total_cache_mb,omitempty"`
+
+	// MinCachePerIndexMB is the minimum cache guarantee for each index in dynamic mode.
+	// Ensures each index gets at least this amount even if rarely accessed.
+	// Default: 20 MB (ignored if DynamicAllocation is false)
+	MinCachePerIndexMB int `json:"min_cache_per_index_mb,omitempty"`
+
+	// ReallocationIntervalMinutes is how often to recalculate cache allocation in dynamic mode.
+	// Default: 10 minutes (ignored if DynamicAllocation is false)
+	ReallocationIntervalMinutes int `json:"reallocation_interval_minutes,omitempty"`
 }
 
 // WALConfig defines write-ahead log parameters.
@@ -195,6 +232,55 @@ type CompactionConfig struct {
 	// PreserveOldSegments keeps old segments after compaction for safetey/auditing.
 	// Default: false
 	PreserveOldSegments bool `json:"preserve_old_segments,omitempty"`
+}
+
+// ShardingConfig defines distributed sharding parameters (Phase 3).
+// Enables horizontal scalability by distributing events across multiple local shards.
+type ShardingConfig struct {
+	// Enabled enables local sharding.
+	// When false, uses single eventstore with no sharding overhead.
+	// Default: false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ShardCount is the number of local shards to create.
+	// Each shard runs an independent eventstore instance.
+	// More shards = better parallelism, but more overhead.
+	// Recommended: 2-8 shards based on CPU cores and workload.
+	// Default: 4
+	ShardCount int `json:"shard_count,omitempty"`
+
+	// VirtualNodes is the number of virtual nodes per shard in the consistent hash ring.
+	// More virtual nodes = better distribution, but slower hash ring lookups.
+	// Recommended: 100-200 for good balance.
+	// Default: 150
+	VirtualNodes int `json:"virtual_nodes,omitempty"`
+
+	// HashFunction is the hash function for consistent hashing.
+	// Options: "fnv1a" (default, fast), "xxhash" (faster, non-crypto), "sha256" (crypto-secure)
+	// Default: "fnv1a"
+	HashFunction string `json:"hash_function,omitempty"`
+
+	// DataDir is the base directory for shard data.
+	// Each shard creates a subdirectory: DataDir/shard-{id}/
+	// Default: "./data/shards"
+	DataDir string `json:"data_dir,omitempty"`
+
+	// MaxConcurrentQueries is the maximum number of shards queried in parallel.
+	// Higher values = faster queries, but more CPU/memory usage.
+	// Set to 0 for unlimited parallelism.
+	// Recommended: 2-32 based on CPU cores.
+	// Default: 32
+	MaxConcurrentQueries int `json:"max_concurrent_queries,omitempty"`
+
+	// QueryTimeoutSeconds is the timeout for shard queries.
+	// Queries exceeding this duration are canceled.
+	// Default: 30 seconds
+	QueryTimeoutSeconds int `json:"query_timeout_seconds,omitempty"`
+
+	// EnableDeduplication enables cross-shard result deduplication.
+	// When true, removes duplicate events across shards (by event ID).
+	// Default: true
+	EnableDeduplication bool `json:"enable_deduplication,omitempty"`
 }
 
 // Manager manages configuration loading, validation, and hot updating.
@@ -449,6 +535,26 @@ func (m *ManagerImpl) SetDefaults() {
 	if m.config.CompactionConfig.MaxConcurrentCompactions == 0 {
 		m.config.CompactionConfig.MaxConcurrentCompactions = defaults.CompactionConfig.MaxConcurrentCompactions
 	}
+
+	// Set sharding defaults
+	if m.config.ShardingConfig.ShardCount == 0 {
+		m.config.ShardingConfig.ShardCount = defaults.ShardingConfig.ShardCount
+	}
+	if m.config.ShardingConfig.VirtualNodes == 0 {
+		m.config.ShardingConfig.VirtualNodes = defaults.ShardingConfig.VirtualNodes
+	}
+	if m.config.ShardingConfig.HashFunction == "" {
+		m.config.ShardingConfig.HashFunction = defaults.ShardingConfig.HashFunction
+	}
+	if m.config.ShardingConfig.DataDir == "" {
+		m.config.ShardingConfig.DataDir = defaults.ShardingConfig.DataDir
+	}
+	if m.config.ShardingConfig.MaxConcurrentQueries == 0 {
+		m.config.ShardingConfig.MaxConcurrentQueries = defaults.ShardingConfig.MaxConcurrentQueries
+	}
+	if m.config.ShardingConfig.QueryTimeoutSeconds == 0 {
+		m.config.ShardingConfig.QueryTimeoutSeconds = defaults.ShardingConfig.QueryTimeoutSeconds
+	}
 }
 
 // Validate validates the configuration.
@@ -544,15 +650,21 @@ func (c *Config) ToIndexConfig() index.Config {
 	}
 
 	return index.Config{
-		Dir:                     c.IndexConfig.IndexDir,
-		TagNameToSearchTypeCode: mapping,
-		EnabledSearchTypes:      enabledTypes,
-		PrimaryIndexCacheMB:     c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
-		AuthorTimeIndexCacheMB:  c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
-		SearchIndexCacheMB:      c.IndexConfig.CacheConfig.SearchIndexCacheMB,
-		PageSize:                c.StorageConfig.PageSize,
-		FlushIntervalMs:         c.IndexConfig.FlushIntervalMs,
-		DirtyThreshold:          c.IndexConfig.DirtyThreshold,
+		Dir:                         c.IndexConfig.IndexDir,
+		TagNameToSearchTypeCode:     mapping,
+		EnabledSearchTypes:          enabledTypes,
+		PrimaryIndexCacheMB:         c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
+		AuthorTimeIndexCacheMB:      c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
+		SearchIndexCacheMB:          c.IndexConfig.CacheConfig.SearchIndexCacheMB,
+		PageSize:                    c.StorageConfig.PageSize,
+		FlushIntervalMs:             c.IndexConfig.FlushIntervalMs,
+		DirtyThreshold:              c.IndexConfig.DirtyThreshold,
+		DynamicAllocation:           c.IndexConfig.CacheConfig.DynamicAllocation,
+		TotalCacheMB:                c.IndexConfig.CacheConfig.TotalCacheMB,
+		MinCachePerIndexMB:          c.IndexConfig.CacheConfig.MinCachePerIndexMB,
+		ReallocationIntervalMinutes: c.IndexConfig.CacheConfig.ReallocationIntervalMinutes,
+		EnableTimePartitioning:      c.IndexConfig.EnableTimePartitioning,
+		PartitionGranularity:        c.IndexConfig.PartitionGranularity,
 	}
 }
 
@@ -606,14 +718,20 @@ func DefaultConfig() *Config {
 				RebuildInProgress: false,
 			},
 			CacheConfig: CacheConfig{
-				PrimaryIndexCacheMB:    50,
-				AuthorTimeIndexCacheMB: 50,
-				SearchIndexCacheMB:     100,
-				EvictionPolicy:         "lru",
-				CacheConcurrency:       16,
+				PrimaryIndexCacheMB:         50,
+				AuthorTimeIndexCacheMB:      50,
+				SearchIndexCacheMB:          100,
+				EvictionPolicy:              "lru",
+				CacheConcurrency:            16,
+				DynamicAllocation:           false,
+				TotalCacheMB:                200,
+				MinCachePerIndexMB:          20,
+				ReallocationIntervalMinutes: 10,
 			},
-			FlushIntervalMs: 100,
-			DirtyThreshold:  128,
+			FlushIntervalMs:        100,
+			DirtyThreshold:         128,
+			EnableTimePartitioning: false,
+			PartitionGranularity:   "monthly",
 		},
 		WALConfig: WALConfig{
 			Disabled:             false,
@@ -631,6 +749,16 @@ func DefaultConfig() *Config {
 			CompactionIntervalMs:     60000,
 			MaxConcurrentCompactions: 2,
 			PreserveOldSegments:      false,
+		},
+		ShardingConfig: ShardingConfig{
+			Enabled:              false,
+			ShardCount:           4,
+			VirtualNodes:         150,
+			HashFunction:         "fnv1a",
+			DataDir:              "./data/shards",
+			MaxConcurrentQueries: 32,
+			QueryTimeoutSeconds:  30,
+			EnableDeduplication:  true,
 		},
 	}
 }

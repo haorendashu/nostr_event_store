@@ -480,9 +480,7 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	}
 
 	// Find the starting position in the leaf node
-	idx := sort.Search(len(node.keys), func(i int) bool {
-		return compareKeys(node.keys[i], minKey) >= 0
-	})
+	var idx int
 	if desc {
 		idx = sort.Search(len(node.keys), func(i int) bool {
 			return compareKeys(node.keys[i], maxKey) >= 0
@@ -490,6 +488,10 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 		if idx < 0 {
 			idx = 0
 		}
+	} else {
+		idx = sort.Search(len(node.keys), func(i int) bool {
+			return compareKeys(node.keys[i], minKey) >= 0
+		})
 	}
 
 	iter := &btreeIterator{
@@ -851,6 +853,7 @@ func (t *btree) stats() treeStats {
 	return treeStats{
 		EntryCount: atomic.LoadUint64(&t.entryCount),
 		NodeCount:  int(t.file.header.NodeCount),
+		LeafCount:  t.countLeafNodes(),
 		Depth:      t.calculateDepth(),
 	}
 }
@@ -859,7 +862,19 @@ func (t *btree) stats() treeStats {
 type treeStats struct {
 	EntryCount uint64
 	NodeCount  int
+	LeafCount  int
 	Depth      int
+}
+
+// ResizeCache adjusts the cache size to the specified MB value.
+// Returns the number of evicted entries and any error encountered.
+func (t *btree) ResizeCache(newCacheMB int) (int, error) {
+	return t.cache.ResizeCache(newCacheMB)
+}
+
+// GetCacheCapacityMB returns the current cache capacity in MB.
+func (t *btree) GetCacheCapacityMB() int {
+	return t.cache.GetCapacityMB()
 }
 
 // calculateDepth calculates the depth of the tree
@@ -913,4 +928,28 @@ func (t *btree) countEntriesRecursive(nodeOffset uint64, count *uint64) {
 			t.countEntriesRecursive(childOffset, count)
 		}
 	}
+}
+
+func (t *btree) countLeafNodes() int {
+	if t.root == 0 {
+		return 0
+	}
+	return t.countLeafNodesRecursive(t.root)
+}
+
+func (t *btree) countLeafNodesRecursive(nodeOffset uint64) int {
+	node, err := t.loadNode(nodeOffset)
+	if err != nil {
+		return 0
+	}
+
+	if node.isLeaf() {
+		return 1
+	}
+
+	total := 0
+	for _, childOffset := range node.children {
+		total += t.countLeafNodesRecursive(childOffset)
+	}
+	return total
 }

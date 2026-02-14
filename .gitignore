@@ -2,6 +2,7 @@ src/batchtest/testevents/seed/
 src/batchtest/testevents/nostr_event_collector
 src/batchtest/testevents/nostr_event_collector.exe
 src/batchtest/testdata/
+src/batchtest/bak/
 src/batchtest/batchtest
 src/batchtest/batchtest.exe
 src/eventstore/data/

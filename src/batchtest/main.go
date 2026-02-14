@@ -119,7 +119,8 @@ func hexToBytes64(hexStr string) ([64]byte, error) {
 // generateEvent creates a unique event based on a seed event template
 func generateEvent(seed *EventDTO, index int) (*types.Event, error) {
 	event := &types.Event{
-		CreatedAt: seed.CreatedAt + uint32(index),
+		// CreatedAt: seed.CreatedAt + uint32(index),
+		CreatedAt: seed.CreatedAt - uint32(int64(time.Minute.Seconds()*float64(index))), // Spread events by 1 second to ensure different timestamps
 		Kind:      seed.Kind,
 		Content:   seed.Content,
 		Tags:      seed.Tags,
@@ -174,6 +175,8 @@ func initStore(dir string) (eventstore.EventStore, error) {
 	cfg.WALConfig.WALDir = filepath.Join(dir, "wal")
 	cfg.IndexConfig.IndexDir = filepath.Join(dir, "indexes")
 
+	cfg.IndexConfig.PartitionGranularity = "weekly"
+	cfg.IndexConfig.EnableTimePartitioning = true
 	// Increase cache sizes for large datasets (especially search index)
 	// For 100K events, search index needs ~150MB (37K nodes * 4KB/node)
 	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 250
@@ -245,6 +248,40 @@ func writeEventsInBatches(ctx context.Context, store eventstore.EventStore, seed
 	}
 
 	return allLocations, nil
+}
+
+func verifyEvents(ctx context.Context, store eventstore.EventStore) error {
+	ids := []string{}
+
+	failCount := 0
+
+	for _, id := range ids {
+		byteId, err := hexToBytes(id, 32)
+		if err != nil {
+			fmt.Printf("  Invalid event ID %s: %v\n", id, err)
+		}
+
+		event, err := store.GetEvent(ctx, byteId)
+		if err != nil {
+			fmt.Printf("  Error reading event %s: %v\n", id, err)
+			failCount++
+			continue
+		}
+		if event == nil {
+			fmt.Printf("  Event %s not found\n", id)
+			failCount++
+			continue
+		}
+
+		if fmt.Sprintf("%x", event.ID) != id {
+			fmt.Printf("  Event %s: ID %s mismatch\n", id, hex.EncodeToString(event.ID[:]))
+			failCount++
+			continue
+		}
+	}
+
+	fmt.Printf("Verification completed: %d events verified, %d failures\n", len(ids)-failCount, failCount)
+	return nil
 }
 
 // verifyRandomEvents randomly reads some events to verify they were stored correctly
@@ -499,9 +536,13 @@ func main() {
 		fmt.Printf("Total events written: %d\n", len(locations))
 		fmt.Printf("Total time: %.2fs\n", totalDuration.Seconds())
 		fmt.Printf("Overall rate: %.0f events/s\n", overallRate)
-		fmt.Printf("Store stats: %+v\n", store.Stats())
 		fmt.Println()
 	}
+
+	fmt.Printf("Store stats: %+v\n", store.Stats())
+	fmt.Println()
+
+	// verifyEvents(ctx, store)
 
 	// Step 6: Verify if requested
 	if flags.VerifyCount > 0 {

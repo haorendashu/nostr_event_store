@@ -55,11 +55,44 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.IndexConfig.CacheConfig.CacheConcurrency <= 0 {
 		return fmt.Errorf("index.cache.cache_concurrency must be > 0")
 	}
+
+	// Validate dynamic allocation configuration
+	if cfg.IndexConfig.CacheConfig.DynamicAllocation {
+		if cfg.IndexConfig.CacheConfig.TotalCacheMB <= 0 {
+			return fmt.Errorf("index.cache.total_cache_mb must be > 0 when dynamic_allocation is enabled")
+		}
+		if cfg.IndexConfig.CacheConfig.MinCachePerIndexMB <= 0 {
+			return fmt.Errorf("index.cache.min_cache_per_index_mb must be > 0 when dynamic_allocation is enabled")
+		}
+		// Minimum guarantee for 3 indexes should not exceed total cache
+		minRequired := cfg.IndexConfig.CacheConfig.MinCachePerIndexMB * 3
+		if minRequired > cfg.IndexConfig.CacheConfig.TotalCacheMB {
+			return fmt.Errorf("index.cache.total_cache_mb (%d MB) must be >= min_cache_per_index_mb * 3 (%d MB)",
+				cfg.IndexConfig.CacheConfig.TotalCacheMB, minRequired)
+		}
+		if cfg.IndexConfig.CacheConfig.ReallocationIntervalMinutes <= 0 {
+			return fmt.Errorf("index.cache.reallocation_interval_minutes must be > 0 when dynamic_allocation is enabled")
+		}
+	}
+
 	if cfg.IndexConfig.FlushIntervalMs <= 0 {
 		return fmt.Errorf("index.flush_interval_ms must be > 0")
 	}
 	if cfg.IndexConfig.DirtyThreshold <= 0 {
 		return fmt.Errorf("index.dirty_threshold must be > 0")
+	}
+
+	// Validate time partitioning configuration
+	if cfg.IndexConfig.EnableTimePartitioning {
+		granularity := strings.ToLower(cfg.IndexConfig.PartitionGranularity)
+		switch granularity {
+		case "monthly", "weekly", "yearly":
+			// Valid
+		case "":
+			// Empty is okay, will default to monthly
+		default:
+			return fmt.Errorf("index.partition_granularity must be monthly, weekly, or yearly")
+		}
 	}
 
 	switch strings.ToLower(cfg.IndexConfig.CacheConfig.EvictionPolicy) {

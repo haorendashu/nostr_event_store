@@ -4,6 +4,8 @@ import (
 	"container/list"
 	"fmt"
 	"sync"
+
+	"github.com/haorendashu/nostr_event_store/src/cache"
 )
 
 type cacheEntry struct {
@@ -21,6 +23,9 @@ type nodeCache struct {
 	lru        *list.List
 	indexFile  *indexFile
 	dirtyCount int
+	hits       uint64
+	misses     uint64
+	evictions  uint64
 }
 
 func newNodeCache(indexFile *indexFile, cacheMB int) *nodeCache {
@@ -44,8 +49,10 @@ func (c *nodeCache) get(offset uint64) (*btreeNode, bool) {
 
 	entry, ok := c.entries[offset]
 	if !ok {
+		c.misses++
 		return nil, false
 	}
+	c.hits++
 	c.lru.MoveToFront(entry.elem)
 	return entry.node, true
 }
@@ -109,6 +116,7 @@ func (c *nodeCache) evictOne() error {
 	}
 	delete(c.entries, offset)
 	c.lru.Remove(back)
+	c.evictions++
 	return nil
 }
 
@@ -154,4 +162,73 @@ func (c *nodeCache) size() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
+}
+
+func (c *nodeCache) stats() cache.Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return cache.Stats{
+		Hits:      c.hits,
+		Misses:    c.misses,
+		Evictions: c.evictions,
+		Size:      len(c.entries),
+		Capacity:  c.capacity,
+	}
+}
+
+// ResizeCache adjusts the cache capacity to a new size in MB.
+// If the new capacity is smaller than current entries count, it evicts LRU entries.
+// Returns the number of entries evicted and any error encountered.
+func (c *nodeCache) ResizeCache(newCacheMB int) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Calculate new capacity in pages.
+	capacityBytes := newCacheMB * 1024 * 1024
+	newCapacity := capacityBytes / int(c.pageSize)
+	if newCapacity < 16 {
+		newCapacity = 16
+	}
+
+	// If capacity hasn't changed significantly, no action needed.
+	if newCapacity == c.capacity {
+		return 0, nil
+	}
+
+	oldCapacity := c.capacity
+	c.capacity = newCapacity
+
+	// If new capacity is larger, we're done.
+	if newCapacity >= len(c.entries) {
+		return 0, nil
+	}
+
+	// Need to evict entries to fit new capacity.
+	evicted := 0
+	for len(c.entries) > newCapacity {
+		if err := c.evictOne(); err != nil {
+			// Restore old capacity if eviction fails.
+			c.capacity = oldCapacity
+			return evicted, err
+		}
+		evicted++
+	}
+
+	return evicted, nil
+}
+
+// GetCapacity returns the current cache capacity in number of pages.
+func (c *nodeCache) GetCapacity() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.capacity
+}
+
+// GetCapacityMB returns the current cache capacity in MB.
+func (c *nodeCache) GetCapacityMB() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	capacityBytes := c.capacity * int(c.pageSize)
+	return capacityBytes / (1024 * 1024)
 }
