@@ -106,6 +106,11 @@ func (s *Scanner) Seek(offset uint32) {
 	s.currentOffset = offset
 }
 
+// CurrentOffset returns the current scanner position.
+func (s *Scanner) CurrentOffset() uint32 {
+	return s.currentOffset
+}
+
 // Reset resets the scanner to the beginning (after header page).
 func (s *Scanner) Reset() {
 	s.currentOffset = s.pageSize

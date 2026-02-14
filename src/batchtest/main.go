@@ -184,12 +184,33 @@ func initStore(dir string) (eventstore.EventStore, error) {
 	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 1000 // Increased from default 100MB
 
 	store := eventstore.New(&eventstore.Options{
-		Config: cfg,
+		Config:              cfg,
+		RecoveryMode:        "auto", // Explicitly set to auto to ensure recovery runs
+		VerifyAfterRecovery: true,
 	})
 
 	ctx := context.Background()
 	if err := store.Open(ctx, dir, true); err != nil {
 		return nil, fmt.Errorf("failed to open event store: %w", err)
+	}
+	// Check if indexes are empty and rebuild if needed
+	stats := store.Stats()
+	if stats.PrimaryIndexStats.EntryCount == 0 {
+		fmt.Println("[batchtest] Primary index is empty, checking if rebuild is needed...")
+		// Check if there are segments with data
+		if stats.TotalEvents > 0 || stats.LiveEvents > 0 {
+			fmt.Printf("[batchtest] Found %d events in storage, rebuilding indexes...\n", stats.TotalEvents)
+			if err := store.RebuildIndexes(ctx); err != nil {
+				return nil, fmt.Errorf("failed to rebuild indexes: %w", err)
+			}
+			fmt.Println("[batchtest] Indexes rebuilt successfully")
+			// Check stats again
+			stats = store.Stats()
+			fmt.Printf("[batchtest] Index stats after rebuild: Primary=%d, AuthorTime=%d, Search=%d\n",
+				stats.PrimaryIndexStats.EntryCount,
+				stats.AuthorTimeIndexStats.EntryCount,
+				stats.SearchIndexStats.EntryCount)
+		}
 	}
 
 	return store, nil

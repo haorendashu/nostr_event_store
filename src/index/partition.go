@@ -143,30 +143,51 @@ func NewPartitionedIndex(
 	// If partitioning is disabled, create a single legacy index.
 	if !enablePartitioning {
 		// Use the basePath directly as the index file (e.g., "search.idx").
-		legacyIndex, err := NewPersistentBTreeIndexWithType(basePath+".idx", config, indexType)
+		legacyPath := basePath + ".idx"
+		fmt.Printf("[partition] Creating legacy index at %s\n", legacyPath)
+		legacyIndex, err := NewPersistentBTreeIndexWithType(legacyPath, config, indexType)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create legacy index: %w", err)
+			return nil, fmt.Errorf("failed to create legacy index at %s: %w", legacyPath, err)
+		}
+		if legacyIndex == nil {
+			return nil, fmt.Errorf("legacy index is nil after creation at %s", legacyPath)
 		}
 		pi.legacyIndex = legacyIndex
+		fmt.Printf("[partition] Legacy index created successfully at %s\n", legacyPath)
 		return pi, nil
 	}
 
 	// Discover existing partition files.
+	fmt.Printf("[partition] Discovering existing partitions for %s\n", basePath)
 	if err := pi.discoverPartitions(); err != nil {
 		return nil, fmt.Errorf("failed to discover partitions: %w", err)
 	}
+	fmt.Printf("[partition] Found %d existing partitions\n", len(pi.partitions))
 
 	// If no partitions exist, create the first one for the current month/week.
 	if len(pi.partitions) == 0 {
+		fmt.Printf("[partition] No partitions found, creating initial partition\n")
 		if err := pi.createPartitionForTime(time.Now()); err != nil {
 			return nil, fmt.Errorf("failed to create initial partition: %w", err)
 		}
+		fmt.Printf("[partition] Initial partition created, total partitions: %d\n", len(pi.partitions))
 	}
 
 	// Set the most recent partition as active.
 	if len(pi.partitions) > 0 {
 		pi.activePartition = pi.partitions[len(pi.partitions)-1]
+		if pi.activePartition == nil {
+			return nil, fmt.Errorf("active partition is nil after creation (total partitions: %d)", len(pi.partitions))
+		}
+		if pi.activePartition.Index == nil {
+			return nil, fmt.Errorf("active partition index is nil (partition file: %s)", pi.activePartition.FilePath)
+		}
 		pi.activePartition.IsActive = true
+		fmt.Printf("[partition] Active partition set to %s (covers %s to %s)\n",
+			pi.activePartition.FilePath, pi.activePartition.StartTime.Format("2006-01-02"), pi.activePartition.EndTime.Format("2006-01-02"))
+	} else {
+		// This should not happen if createPartitionForTime succeeded, but check just in case
+		return nil, fmt.Errorf("no partitions available after initialization")
 	}
 
 	return pi, nil
@@ -174,7 +195,7 @@ func NewPartitionedIndex(
 
 // discoverPartitions scans the directory for existing partition files and opens them.
 func (pi *PartitionedIndex) discoverPartitions() error {
-	dir := filepath.Dir(pi.basePath)
+	dir := filepath.Dir(pi.basePath) // Use parent directory to scan for partition files
 	baseFilename := filepath.Base(pi.basePath)
 
 	// List all files in the directory.
@@ -288,6 +309,7 @@ func (pi *PartitionedIndex) parsePartitionFilename(filePath string) (*TimePartit
 }
 
 // createPartitionForTime creates a new partition covering the given time.
+// createPartitionForTime creates a new partition covering the given time.
 func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 	// Calculate the partition's start and end times based on granularity.
 	var startTime, endTime time.Time
@@ -326,14 +348,26 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 
 	// Generate the partition file path.
 	baseFilename := filepath.Base(pi.basePath)
-	dir := filepath.Dir(pi.basePath)
+	dir := filepath.Dir(pi.basePath) // Create partition files in parent directory
+
+	// Ensure the indexes directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create index directory %s: %w", dir, err)
+	}
+
 	filePath := filepath.Join(dir, fmt.Sprintf("%s_%s.idx", baseFilename, timeStr))
 
 	// Create the index file.
+	fmt.Printf("[partition] Creating partition file: %s (for time %s)\n", filePath, t.Format("2006-01-02 15:04:05"))
 	index, err := NewPersistentBTreeIndexWithType(filePath, pi.config, pi.indexType)
 	if err != nil {
-		return fmt.Errorf("failed to create partition index: %w", err)
+		return fmt.Errorf("failed to create partition index %s: %w", filePath, err)
 	}
+
+	if index == nil {
+		return fmt.Errorf("created partition index is nil for file %s", filePath)
+	}
+	fmt.Printf("[partition] Partition created successfully: %s\n", filePath)
 
 	partition := &TimePartition{
 		StartTime:  startTime,

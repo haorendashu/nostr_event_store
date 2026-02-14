@@ -78,6 +78,11 @@ func (s *FileSegment) ID() uint32 {
 	return s.id
 }
 
+// PageSize returns the page size of this segment.
+func (s *FileSegment) PageSize() uint32 {
+	return s.pageSize
+}
+
 // Append appends a record to the segment.
 // For multi-page records, automatically splits into first page + continuation pages.
 func (s *FileSegment) Append(ctx context.Context, record *Record) (types.RecordLocation, error) {

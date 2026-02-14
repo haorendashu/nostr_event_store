@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -59,29 +60,47 @@ func (m *manager) Open(ctx context.Context, dir string, cfg Config) error {
 	// Note: Primary index typically doesn't have timestamps, so partitioning may not be useful
 	// We still use PartitionedIndex wrapper for consistency, but with partitioning disabled
 	primaryPath := filepath.Join(dir, "primary")
+	fmt.Printf("[index] Creating primary index at %s (partitioning=false)\n", primaryPath)
 	primaryPartitioned, err := NewPartitionedIndex(primaryPath, indexTypePrimary, cfg, granularity, false)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create primary index: %w", err)
 	}
+	if primaryPartitioned == nil {
+		return fmt.Errorf("primary index is nil after creation")
+	}
+	fmt.Printf("[index] Primary index created successfully\n")
 	m.primary = primaryPartitioned
 
 	// Create author+time index (has timestamps, benefits from partitioning)
 	authorTimePath := filepath.Join(dir, "author_time")
+	fmt.Printf("[index] Creating author_time index at %s (partitioning=%v)\n", authorTimePath, cfg.EnableTimePartitioning)
 	authorTimePartitioned, err := NewPartitionedIndex(authorTimePath, indexTypeAuthorTime, cfg, granularity, cfg.EnableTimePartitioning)
 	if err != nil {
 		m.primary.Close()
-		return err
+		return fmt.Errorf("failed to create author_time index: %w", err)
 	}
+	if authorTimePartitioned == nil {
+		m.primary.Close()
+		return fmt.Errorf("author_time index is nil after creation")
+	}
+	fmt.Printf("[index] Author_time index created successfully\n")
 	m.authorTime = authorTimePartitioned
 
 	// Create search index (has timestamps, benefits from partitioning)
 	searchPath := filepath.Join(dir, "search")
+	fmt.Printf("[index] Creating search index at %s (partitioning=%v)\n", searchPath, cfg.EnableTimePartitioning)
 	searchPartitioned, err := NewPartitionedIndex(searchPath, indexTypeSearch, cfg, granularity, cfg.EnableTimePartitioning)
 	if err != nil {
 		m.primary.Close()
 		m.authorTime.Close()
-		return err
+		return fmt.Errorf("failed to create search index: %w", err)
 	}
+	if searchPartitioned == nil {
+		m.primary.Close()
+		m.authorTime.Close()
+		return fmt.Errorf("search index is nil after creation")
+	}
+	fmt.Printf("[index] Search index created successfully\n")
 	m.search = searchPartitioned
 
 	// Start flush scheduler for periodic persistence

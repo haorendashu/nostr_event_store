@@ -125,6 +125,13 @@ type EventStore interface {
 	// Returns true if the store is operational; false if significant issues are detected.
 	// ctx is used for cancellation and timeouts.
 	IsHealthy(ctx context.Context) bool
+
+	// RebuildIndexes rebuilds all indexes by scanning storage segments.
+	// This is useful when indexes are corrupted or out of sync with storage.
+	// Warning: This operation can take a long time for large datasets.
+	// The store must be open before calling this method.
+	// ctx is used for cancellation and timeouts.
+	RebuildIndexes(ctx context.Context) error
 }
 
 // Stats captures overall store statistics.

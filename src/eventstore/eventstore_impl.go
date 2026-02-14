@@ -95,6 +95,7 @@ type eventStoreImpl struct {
 	walDir     string
 	walEnabled bool
 	opened     bool
+	recovering bool // Set to true during index recovery to block concurrent writes
 	mu         sync.RWMutex
 
 	// Options
@@ -229,20 +230,36 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	}
 
 	indexMgrImpl := index.NewManager()
+	e.logger.Printf("Opening index manager at %s", indexDir)
 	if err := indexMgrImpl.Open(ctx, indexDir, indexCfg); err != nil {
 		return fmt.Errorf("open index: %w", err)
 	}
 	e.indexMgr = indexMgrImpl
 	e.keyBuilder = index.NewKeyBuilder(indexCfg.TagNameToSearchTypeCode)
+	e.logger.Printf("Index manager opened successfully")
+
+	// Verify indexes are not nil
+	if e.indexMgr.PrimaryIndex() == nil {
+		return fmt.Errorf("primary index is nil after manager open")
+	}
+	if e.indexMgr.AuthorTimeIndex() == nil {
+		return fmt.Errorf("author-time index is nil after manager open")
+	}
+	if e.indexMgr.SearchIndex() == nil {
+		return fmt.Errorf("search index is nil after manager open")
+	}
 
 	// Initialize query engine
 	e.queryEngine = query.NewEngine(e.indexMgr, e.storage)
 
 	// Recovery: Replay WAL if recovery mode is not "skip"
+	e.logger.Printf("Recovery mode: %s (indexFilesInvalidated=%v)", e.opts.RecoveryMode, e.indexFilesInvalidated)
 	if e.opts.RecoveryMode != "skip" {
 		if err := e.recoverFromWAL(ctx); err != nil {
 			return fmt.Errorf("recovery failed: %w", err)
 		}
+	} else {
+		e.logger.Printf("Recovery skipped by configuration")
 	}
 
 	if e.walEnabled {
@@ -427,6 +444,10 @@ func (e *eventStoreImpl) WriteEvents(ctx context.Context, events []*types.Event)
 	if !e.opened {
 		e.mu.RUnlock()
 		return nil, fmt.Errorf("store not opened")
+	}
+	if e.recovering {
+		e.mu.RUnlock()
+		return nil, fmt.Errorf("store is recovering indexes, please wait")
 	}
 	e.mu.RUnlock()
 
@@ -1260,16 +1281,27 @@ func (n noOpCompactionManager) Close() error {
 }
 
 // recoverFromWAL replays WAL entries to rebuild indexes after a crash or restart.
+// Note: This method is called from Open() which already holds e.mu.Lock()
 func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
+	// Set recovering flag to block concurrent writes
+	// Note: No lock needed here as Open() already holds the lock
+	e.recovering = true
+
+	// Ensure we clear the flag when done
+	defer func() {
+		e.recovering = false
+		e.logger.Printf("Recovery completed, store is now ready for writes")
+	}()
+
 	e.logger.Printf("Starting WAL recovery...")
 	if e.walMgr == nil {
 		if e.indexFilesInvalidated {
-			e.logger.Printf("WAL recovery: WAL disabled, indexes invalid, rebuilding from segments")
+			e.logger.Printf("WAL disabled, indexes invalid - rebuilding from segments")
 			if err := e.rebuildIndexesFromSegments(ctx); err != nil {
 				return fmt.Errorf("rebuild indexes from segments: %w", err)
 			}
 		} else {
-			e.logger.Printf("WAL recovery skipped: WAL disabled and index files valid")
+			e.logger.Printf("WAL disabled and index files valid - no recovery needed")
 		}
 		return nil
 	}
@@ -1305,6 +1337,23 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// RebuildIndexes rebuilds all indexes by scanning storage segments.
+func (e *eventStoreImpl) RebuildIndexes(ctx context.Context) error {
+	e.mu.RLock()
+	if !e.opened {
+		e.mu.RUnlock()
+		return fmt.Errorf("store not opened")
+	}
+	e.mu.RUnlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	e.logger.Printf("Starting manual index rebuild...")
+	return e.rebuildIndexesFromSegments(ctx)
 }
 
 func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
@@ -1393,6 +1442,8 @@ func (e *eventStoreImpl) findLocationsForEvents(ctx context.Context, events map[
 	})
 
 	serializer := e.storage.Serializer()
+	var totalSkippedDeleted uint64
+
 	for _, segmentID := range segmentIDs {
 		segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
 		if err != nil {
@@ -1406,6 +1457,8 @@ func (e *eventStoreImpl) findLocationsForEvents(ctx context.Context, events map[
 		}
 
 		reverse := storage.NewReverseScanner(fileSeg)
+		var segmentSkippedDeleted uint64
+
 		for {
 			record, location, err := reverse.Prev(ctx)
 			if err == io.EOF {
@@ -1413,6 +1466,12 @@ func (e *eventStoreImpl) findLocationsForEvents(ctx context.Context, events map[
 			}
 			if err != nil {
 				e.logger.Printf("WAL recovery warning: segment %d reverse scan error: %v", segmentID, err)
+				continue
+			}
+
+			// Skip deleted or replaced records
+			if record.Flags.IsDeleted() || record.Flags.IsReplaced() {
+				segmentSkippedDeleted++
 				continue
 			}
 
@@ -1428,11 +1487,19 @@ func (e *eventStoreImpl) findLocationsForEvents(ctx context.Context, events map[
 			locations[event.ID] = location
 			delete(pending, event.ID)
 			if len(pending) == 0 {
+				if totalSkippedDeleted > 0 {
+					e.logger.Printf("WAL location resolution: skipped %d deleted/replaced records", totalSkippedDeleted)
+				}
 				return locations, nil
 			}
 		}
+
+		totalSkippedDeleted += segmentSkippedDeleted
 	}
 
+	if totalSkippedDeleted > 0 {
+		e.logger.Printf("WAL location resolution: skipped %d deleted/replaced records", totalSkippedDeleted)
+	}
 	if len(pending) > 0 {
 		e.logger.Printf("WAL recovery warning: %d events not found in segments", len(pending))
 	}
@@ -1599,8 +1666,37 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 		return fmt.Errorf("list segments: %w", err)
 	}
 	if len(segmentIDs) == 0 {
+		e.logger.Printf("No segments found, skipping index rebuild")
 		return nil
 	}
+
+	// CRITICAL: Close and recreate index manager to ensure indexes are cleared
+	// This is necessary because indexMgr.Open() automatically creates empty indexes,
+	// which would prevent proper rebuilding if we don't clear them first
+	e.logger.Printf("Closing existing index manager to clear indexes before rebuild...")
+	if e.indexMgr != nil {
+		if err := e.indexMgr.Close(); err != nil {
+			e.logger.Printf("Warning: failed to close index manager: %v", err)
+		}
+	}
+
+	// Delete all index files to ensure clean rebuild
+	e.logger.Printf("Deleting index files for clean rebuild...")
+	cfg := e.config.Get()
+	indexCfg := cfg.ToIndexConfig()
+	indexCfg.Dir = e.indexDir
+	if err := index.DeleteInvalidIndexes(e.indexDir, indexCfg); err != nil {
+		e.logger.Printf("Warning: failed to delete index files: %v", err)
+	}
+
+	// Recreate index manager with fresh indexes
+	e.logger.Printf("Recreating index manager with fresh indexes...")
+	indexMgrImpl := index.NewManager()
+	if err := indexMgrImpl.Open(ctx, e.indexDir, indexCfg); err != nil {
+		return fmt.Errorf("reopen index manager: %w", err)
+	}
+	e.indexMgr = indexMgrImpl
+	e.logger.Printf("Index manager recreated, starting rebuild from %d segments...", len(segmentIDs))
 
 	replayer := &indexReplayer{
 		storage:    e.storage,
@@ -1609,6 +1705,9 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 		serializer: e.storage.Serializer(),
 		logger:     e.logger,
 	}
+
+	var totalRecovered, totalSkippedDeleted, totalSkippedCorrupted uint64
+	e.logger.Printf("Rebuilding indexes from %d segments...", len(segmentIDs))
 
 	for _, segmentID := range segmentIDs {
 		segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
@@ -1624,6 +1723,9 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 		}
 
 		scanner := storage.NewScanner(fileSeg)
+		pageSize := fileSeg.PageSize()
+		var segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted uint64
+
 		for {
 			record, location, err := scanner.Next(ctx)
 			if err == io.EOF {
@@ -1631,6 +1733,17 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 			}
 			if err != nil {
 				e.logger.Printf("Recovery warning: segment %d offset %d read error: %v", segmentID, location.Offset, err)
+				// Skip to next page boundary to avoid infinite loop on corrupted records
+				currentOffset := scanner.CurrentOffset()
+				nextPageOffset := ((currentOffset / pageSize) + 1) * pageSize
+				scanner.Seek(nextPageOffset)
+				segmentSkippedCorrupted++
+				continue
+			}
+
+			// Skip deleted or replaced records
+			if record.Flags.IsDeleted() || record.Flags.IsReplaced() {
+				segmentSkippedDeleted++
 				continue
 			}
 
@@ -1644,7 +1757,23 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 				e.logger.Printf("Recovery warning: segment %d offset %d index insert error: %v", segmentID, location.Offset, err)
 				continue
 			}
+
+			segmentRecovered++
 		}
+
+		if segmentSkippedDeleted > 0 || segmentSkippedCorrupted > 0 {
+			e.logger.Printf("Segment %d recovery: recovered=%d, skipped_deleted=%d, skipped_corrupted=%d",
+				segmentID, segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted)
+		}
+
+		totalRecovered += segmentRecovered
+		totalSkippedDeleted += segmentSkippedDeleted
+		totalSkippedCorrupted += segmentSkippedCorrupted
+	}
+
+	if totalSkippedDeleted > 0 || totalSkippedCorrupted > 0 {
+		e.logger.Printf("Index recovery summary: recovered=%d events, skipped_deleted=%d, skipped_corrupted=%d",
+			totalRecovered, totalSkippedDeleted, totalSkippedCorrupted)
 	}
 
 	return nil
@@ -1669,6 +1798,9 @@ type walRecoveryReplayer struct {
 func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, location types.RecordLocation) error {
 	// Update primary index
 	primaryIdx := r.indexMgr.PrimaryIndex()
+	if primaryIdx == nil {
+		return fmt.Errorf("primary index is nil during recovery")
+	}
 	eventKeyBytes := r.keyBuilder.BuildPrimaryKey(event.ID)
 	if err := primaryIdx.Insert(ctx, eventKeyBytes, location); err != nil {
 		return fmt.Errorf("primary index insert: %w", err)
@@ -1676,6 +1808,9 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 
 	// Update author-time index
 	authorTimeIdx := r.indexMgr.AuthorTimeIndex()
+	if authorTimeIdx == nil {
+		return fmt.Errorf("author-time index is nil during recovery")
+	}
 	authorTimeKey := r.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	if err := authorTimeIdx.Insert(ctx, authorTimeKey, location); err != nil {
 		return fmt.Errorf("author-time index insert: %w", err)
@@ -1683,6 +1818,9 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 
 	// Update search indexes for configured tags
 	searchIdx := r.indexMgr.SearchIndex()
+	if searchIdx == nil {
+		return fmt.Errorf("search index is nil during recovery")
+	}
 	tagMapping := r.keyBuilder.TagNameToSearchTypeCode()
 
 	for _, tag := range event.Tags {

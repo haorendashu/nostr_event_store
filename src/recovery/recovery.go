@@ -164,6 +164,8 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 		return nil
 	}
 
+	var totalRecovered, totalSkippedDeleted, totalSkippedCorrupted uint64
+
 	for _, segmentID := range segmentIDs {
 		segment, err := m.segmentManager.GetSegment(ctx, segmentID)
 		if err != nil {
@@ -182,6 +184,8 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 
 		// Scan segment for all records
 		scanner := storage.NewScanner(fileSeg)
+		pageSize := fileSeg.PageSize()
+		var segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted uint64
 
 		for {
 			record, location, err := scanner.Next(ctx)
@@ -191,6 +195,17 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 			if err != nil {
 				state.ValidationErrors = append(state.ValidationErrors,
 					fmt.Sprintf("segment %d offset %d: %v", segmentID, location.Offset, err))
+				// Skip to next page boundary to avoid infinite loop on corrupted records
+				currentOffset := scanner.CurrentOffset()
+				nextPageOffset := ((currentOffset / pageSize) + 1) * pageSize
+				scanner.Seek(nextPageOffset)
+				segmentSkippedCorrupted++
+				continue
+			}
+
+			// Skip deleted or replaced records
+			if record.Flags.IsDeleted() || record.Flags.IsReplaced() {
+				segmentSkippedDeleted++
 				continue
 			}
 
@@ -204,7 +219,18 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 
 			// Add to map (later occurrences overwrite)
 			state.EventIDMap[event.ID] = location
+			segmentRecovered++
 		}
+
+		totalRecovered += segmentRecovered
+		totalSkippedDeleted += segmentSkippedDeleted
+		totalSkippedCorrupted += segmentSkippedCorrupted
+	}
+
+	if totalSkippedDeleted > 0 || totalSkippedCorrupted > 0 {
+		state.ValidationErrors = append(state.ValidationErrors,
+			fmt.Sprintf("Event ID map rebuild: recovered=%d events, skipped_deleted=%d, skipped_corrupted=%d",
+				totalRecovered, totalSkippedDeleted, totalSkippedCorrupted))
 	}
 
 	return nil

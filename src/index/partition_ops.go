@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
@@ -32,6 +33,9 @@ var (
 // Insert adds an entry to the appropriate partition based on the timestamp in the key.
 func (pi *PartitionedIndex) Insert(ctx context.Context, key []byte, value types.RecordLocation) error {
 	if !pi.enablePartitioning {
+		if pi.legacyIndex == nil {
+			return errors.New("legacy index is nil")
+		}
 		return pi.legacyIndex.Insert(ctx, key, value)
 	}
 
@@ -43,14 +47,24 @@ func (pi *PartitionedIndex) Insert(ctx context.Context, key []byte, value types.
 		partition := pi.activePartition
 		pi.mu.RUnlock()
 		if partition == nil {
-			return err
+			return errors.New("no active partition available")
+		}
+		if partition.Index == nil {
+			return errors.New("active partition index is nil")
 		}
 		return partition.Index.Insert(ctx, key, value)
 	}
 
 	partition, err := pi.getPartitionForTimestamp(timestamp)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get partition for timestamp %d: %w", timestamp, err)
+	}
+
+	if partition == nil {
+		return fmt.Errorf("partition is nil for timestamp %d", timestamp)
+	}
+	if partition.Index == nil {
+		return fmt.Errorf("partition index is nil for timestamp %d", timestamp)
 	}
 
 	return partition.Index.Insert(ctx, key, value)
@@ -90,6 +104,10 @@ func (pi *PartitionedIndex) InsertBatch(ctx context.Context, keys [][]byte, valu
 		partition, err := pi.getPartitionForTimestamp(timestamp)
 		if err != nil {
 			return err
+		}
+
+		if partition == nil || partition.Index == nil {
+			return errors.New("partition or index is nil after creation")
 		}
 
 		if partitionBatches[partition] == nil {

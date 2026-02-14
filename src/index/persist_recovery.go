@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ValidateIndexFile checks if an index file is valid and complete
@@ -54,6 +55,12 @@ func ValidateIndexes(dir string, cfg Config) (bool, error) {
 		pageSize = 4096
 	}
 
+	// If time partitioning is enabled, check for partition directories instead of single files
+	if cfg.EnableTimePartitioning {
+		return ValidatePartitionedIndexes(indexesDir, cfg)
+	}
+
+	// Legacy validation for non-partitioned indexes
 	// Check each index file
 	primaryPath := filepath.Join(indexesDir, "primary.idx")
 	authorTimePath := filepath.Join(indexesDir, "author_time.idx")
@@ -90,8 +97,72 @@ func ValidateIndexes(dir string, cfg Config) (bool, error) {
 	return false, nil
 }
 
+// ValidatePartitionedIndexes checks partitioned index files in the directory
+func ValidatePartitionedIndexes(dir string, cfg Config) (bool, error) {
+	pageSize := cfg.PageSize
+	if pageSize == 0 {
+		pageSize = 4096
+	}
+
+	// IMPORTANT: Primary index uses legacy mode (single file), not partitioned
+	// Check for legacy primary.idx file
+	primaryPath := filepath.Join(dir, "primary.idx")
+	primaryValid, err := ValidateIndexFile(primaryPath, indexTypePrimary, pageSize)
+	if err != nil {
+		fmt.Printf("[index] Warning: Primary index validation error: %v\n", err)
+		primaryValid = false
+	}
+
+	// Author-time and search indexes use partitioned mode
+	// Check for partition files: author_time_<timestamp>.idx, search_<timestamp>.idx
+	authorTimeValid := validatePartitionFiles(dir, "author_time")
+	searchValid := validatePartitionFiles(dir, "search")
+
+	// If all index files exist, indexing is valid
+	if primaryValid && authorTimeValid && searchValid {
+		fmt.Println("[index] All partitioned index files validated successfully")
+		return true, nil
+	}
+
+	// Some index files are invalid
+	fmt.Printf("[index] Indexes validation failed (primary=%v, authorTime=%v, search=%v)\n",
+		primaryValid, authorTimeValid, searchValid)
+
+	return false, nil
+}
+
+// validatePartitionFiles checks if partition files exist for the given index name
+func validatePartitionFiles(dir, indexName string) bool {
+	// Check if the indexes directory exists
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	// Look for partition files matching the pattern: <indexName>_*.idx
+	// e.g., primary_2026-W07.idx, author_time_2026-02.idx
+	prefix := indexName + "_"
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".idx") {
+			return true // Found at least one partition file
+		}
+	}
+
+	return false
+}
+
 // DeleteInvalidIndexes deletes corrupted or missing index files
 func DeleteInvalidIndexes(dir string, cfg Config) error {
+	// If time partitioning is enabled, delete partition directories instead of single files
+	if cfg.EnableTimePartitioning {
+		return DeleteInvalidPartitionedIndexes(dir)
+	}
+
+	// Legacy deletion for non-partitioned indexes
 	indexesDir := dir
 	pageSize := cfg.PageSize
 	if pageSize == 0 {
@@ -118,6 +189,52 @@ func DeleteInvalidIndexes(dir string, cfg Config) error {
 	if !searchValid {
 		fmt.Println("[index] Removing invalid search.idx")
 		os.Remove(searchPath)
+	}
+
+	return nil
+}
+
+// DeleteInvalidPartitionedIndexes deletes corrupted or missing partition files
+func DeleteInvalidPartitionedIndexes(dir string) error {
+	pageSize := uint32(4096)
+
+	// Check legacy primary index (single file)
+	primaryPath := filepath.Join(dir, "primary.idx")
+	primaryValid, _ := ValidateIndexFile(primaryPath, indexTypePrimary, pageSize)
+
+	// Check partitioned indexes
+	authorTimeValid := validatePartitionFiles(dir, "author_time")
+	searchValid := validatePartitionFiles(dir, "search")
+
+	// Delete legacy primary.idx if invalid
+	if !primaryValid {
+		fmt.Println("[index] Removing invalid primary.idx")
+		os.Remove(primaryPath)
+	}
+
+	// Delete partition files if any partitioned index is invalid
+	if !authorTimeValid || !searchValid {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return fmt.Errorf("failed to read index directory: %w", err)
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			// Delete partition files for author_time and search only
+			if (strings.HasPrefix(name, "author_time_") ||
+				strings.HasPrefix(name, "search_")) &&
+				strings.HasSuffix(name, ".idx") {
+				filePath := filepath.Join(dir, name)
+				fmt.Printf("[index] Removing invalid partition file: %s\n", name)
+				if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("failed to remove partition file %s: %w", name, err)
+				}
+			}
+		}
 	}
 
 	return nil
