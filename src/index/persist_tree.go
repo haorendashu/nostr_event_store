@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"sort"
+	"sync"
 	"sync/atomic"
 
 	"github.com/haorendashu/nostr_event_store/src/cache"
@@ -14,7 +15,8 @@ type btree struct {
 	cache      *cache.BTreeCache
 	root       uint64
 	pageSize   uint32
-	entryCount uint64 // Atomic counter for total entries
+	entryCount uint64     // Atomic counter for total entries
+	mu         sync.Mutex // Protects tree operations
 }
 
 func openBTree(file *indexFile, cache *cache.BTreeCache) (*btree, error) {
@@ -78,6 +80,9 @@ func (t *btree) flush() error {
 }
 
 func (t *btree) get(ctx context.Context, key []byte) (types.RecordLocation, bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return types.RecordLocation{}, false, ctx.Err()
@@ -107,6 +112,9 @@ func (t *btree) get(ctx context.Context, key []byte) (types.RecordLocation, bool
 }
 
 func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocation) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
