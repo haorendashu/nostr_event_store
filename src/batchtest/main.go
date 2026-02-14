@@ -179,9 +179,9 @@ func initStore(dir string) (eventstore.EventStore, error) {
 	cfg.IndexConfig.EnableTimePartitioning = true
 	// Increase cache sizes for large datasets (especially search index)
 	// For 100K events, search index needs ~150MB (37K nodes * 4KB/node)
-	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 250
-	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 250
-	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 1000 // Increased from default 100MB
+	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 150
+	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 150
+	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 500 // Increased from default 100MB
 
 	store := eventstore.New(&eventstore.Options{
 		Config:              cfg,

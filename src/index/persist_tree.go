@@ -5,18 +5,19 @@ import (
 	"sort"
 	"sync/atomic"
 
+	"github.com/haorendashu/nostr_event_store/src/cache"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 type btree struct {
 	file       *indexFile
-	cache      *nodeCache
+	cache      *cache.BTreeCache
 	root       uint64
 	pageSize   uint32
 	entryCount uint64 // Atomic counter for total entries
 }
 
-func openBTree(file *indexFile, cache *nodeCache) (*btree, error) {
+func openBTree(file *indexFile, cache *cache.BTreeCache) (*btree, error) {
 	t := &btree{file: file, cache: cache, root: file.header.RootOffset, pageSize: file.pageSize}
 
 	// Restore entry count from file header
@@ -26,7 +27,7 @@ func openBTree(file *indexFile, cache *nodeCache) (*btree, error) {
 		root := &btreeNode{nodeType: nodeTypeLeaf}
 		root.offset = file.allocateNodeOffset()
 		root.dirty = true
-		if err := cache.put(root); err != nil {
+		if err := cache.Put(newBTreeNodeAdapter(root)); err != nil {
 			return nil, err
 		}
 		if err := t.flush(); err != nil {
@@ -46,8 +47,8 @@ func openBTree(file *indexFile, cache *nodeCache) (*btree, error) {
 }
 
 func (t *btree) loadNode(offset uint64) (*btreeNode, error) {
-	if node, ok := t.cache.get(offset); ok {
-		return node, nil
+	if cachedNode, ok := t.cache.Get(offset); ok {
+		return cachedNode.(*btreeNodeAdapter).node, nil
 	}
 	buf, err := t.file.readNodePage(offset)
 	if err != nil {
@@ -57,7 +58,7 @@ func (t *btree) loadNode(offset uint64) (*btreeNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := t.cache.put(node); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(node)); err != nil {
 		return nil, err
 	}
 	return node, nil
@@ -67,7 +68,7 @@ func (t *btree) flush() error {
 	// Persist entry count to file header before flushing
 	t.file.header.EntryCount = atomic.LoadUint64(&t.entryCount)
 
-	if _, err := t.cache.flushDirty(); err != nil {
+	if _, err := t.cache.FlushDirty(); err != nil {
 		return err
 	}
 	if err := t.file.syncHeader(); err != nil {
@@ -131,13 +132,13 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 		return err
 	}
 	if !inserted {
-		t.cache.markDirty(node)
+		t.cache.MarkDirty(newBTreeNodeAdapter(node))
 		return nil
 	}
 	// New entry was inserted
 	atomic.AddUint64(&t.entryCount, 1)
 	if node.leafSize(t.pageSize) <= int(t.pageSize) {
-		t.cache.markDirty(node)
+		t.cache.MarkDirty(newBTreeNodeAdapter(node))
 		return nil
 	}
 
@@ -155,11 +156,11 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 			return err
 		}
 		if !inserted {
-			t.cache.markDirty(parent)
+			t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 			return nil
 		}
 		if parent.internalSize(t.pageSize) <= int(t.pageSize) {
-			t.cache.markDirty(parent)
+			t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 			return nil
 		}
 
@@ -174,13 +175,13 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 	newRoot.keys = [][]byte{splitKey}
 	newRoot.children = []uint64{t.root, right.offset}
 	newRoot.dirty = true
-	if err := t.cache.put(newRoot); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(newRoot)); err != nil {
 		return err
 	}
-	if err := t.cache.put(right); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
 		return err
 	}
-	if err := t.cache.put(node); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(node)); err != nil {
 		return err
 	}
 	if err := t.file.syncHeader(); err != nil {
@@ -222,7 +223,7 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 	node.keys = append(node.keys[:idx], node.keys[idx+1:]...)
 	node.values = append(node.values[:idx], node.values[idx+1:]...)
 	node.dirty = true
-	t.cache.markDirty(node)
+	t.cache.MarkDirty(newBTreeNodeAdapter(node))
 	// Entry was deleted
 	if atomic.LoadUint64(&t.entryCount) > 0 {
 		atomic.AddUint64(&t.entryCount, ^uint64(0)) // decrement
@@ -235,7 +236,7 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 			parent := parentEntry.node
 			parent.keys[parentEntry.index-1] = parent.cloneKey(node.keys[0])
 			parent.dirty = true
-			t.cache.markDirty(parent)
+			t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		}
 	}
 
@@ -347,9 +348,9 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		left.dirty = true
 		child.dirty = true
 		parent.dirty = true
-		t.cache.markDirty(left)
-		t.cache.markDirty(child)
-		t.cache.markDirty(parent)
+		t.cache.MarkDirty(newBTreeNodeAdapter(left))
+		t.cache.MarkDirty(newBTreeNodeAdapter(child))
+		t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		return child, false, nil
 	}
 
@@ -379,9 +380,9 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		right.dirty = true
 		child.dirty = true
 		parent.dirty = true
-		t.cache.markDirty(right)
-		t.cache.markDirty(child)
-		t.cache.markDirty(parent)
+		t.cache.MarkDirty(newBTreeNodeAdapter(right))
+		t.cache.MarkDirty(newBTreeNodeAdapter(child))
+		t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		return child, false, nil
 	}
 
@@ -398,7 +399,7 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 				}
 				nextNode.prev = left.offset
 				nextNode.dirty = true
-				t.cache.markDirty(nextNode)
+				t.cache.MarkDirty(newBTreeNodeAdapter(nextNode))
 			}
 		} else {
 			sepKey := parent.keys[childIndex-1]
@@ -411,8 +412,8 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		parent.children = removeChildAt(parent.children, childIndex)
 		left.dirty = true
 		parent.dirty = true
-		t.cache.markDirty(left)
-		t.cache.markDirty(parent)
+		t.cache.MarkDirty(newBTreeNodeAdapter(left))
+		t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		return parent, true, nil
 	}
 
@@ -428,7 +429,7 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 				}
 				nextNode.prev = child.offset
 				nextNode.dirty = true
-				t.cache.markDirty(nextNode)
+				t.cache.MarkDirty(newBTreeNodeAdapter(nextNode))
 			}
 		} else {
 			sepKey := parent.keys[childIndex]
@@ -441,8 +442,8 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		parent.children = removeChildAt(parent.children, childIndex+1)
 		child.dirty = true
 		parent.dirty = true
-		t.cache.markDirty(child)
-		t.cache.markDirty(parent)
+		t.cache.MarkDirty(newBTreeNodeAdapter(child))
+		t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		return parent, true, nil
 	}
 
@@ -805,16 +806,16 @@ func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
 		}
 		nextNode.prev = right.offset
 		nextNode.dirty = true
-		t.cache.markDirty(nextNode)
+		t.cache.MarkDirty(newBTreeNodeAdapter(nextNode))
 	}
 	node.next = right.offset
 
 	node.dirty = true
 	right.dirty = true
-	if err := t.cache.put(right); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
 		return nil, nil, err
 	}
-	if err := t.cache.put(node); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(node)); err != nil {
 		return nil, nil, err
 	}
 
@@ -838,10 +839,10 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 
 	node.dirty = true
 	right.dirty = true
-	if err := t.cache.put(right); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
 		return nil, nil, err
 	}
-	if err := t.cache.put(node); err != nil {
+	if err := t.cache.Put(newBTreeNodeAdapter(node)); err != nil {
 		return nil, nil, err
 	}
 

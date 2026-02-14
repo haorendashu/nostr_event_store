@@ -1,33 +1,58 @@
 package index
 
 import (
+	"encoding/binary"
+	"hash/crc64"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
+// createMinimalIndexFile creates a minimal valid index file with proper header
+func createMinimalIndexFile(path string, indexType uint32, pageSize uint32) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Create header buffer
+	buf := make([]byte, pageSize)
+
+	// Write header fields
+	binary.BigEndian.PutUint32(buf[0:4], 0x494E4458) // indexMagic
+	binary.BigEndian.PutUint32(buf[4:8], indexType)
+	binary.BigEndian.PutUint64(buf[8:16], 2)  // indexVersion
+	binary.BigEndian.PutUint64(buf[16:24], 0) // RootOffset
+	binary.BigEndian.PutUint64(buf[24:32], 0) // NodeCount
+	binary.BigEndian.PutUint32(buf[32:36], pageSize)
+	binary.BigEndian.PutUint32(buf[36:40], 1) // indexHeaderFormat
+	binary.BigEndian.PutUint64(buf[40:48], 0) // EntryCount
+
+	// Calculate and write checksum
+	var crc64Table = crc64.MakeTable(crc64.ECMA)
+	checksum := crc64.Checksum(buf[:pageSize-8], crc64Table)
+	binary.BigEndian.PutUint64(buf[pageSize-8:], checksum)
+
+	// Write the header
+	_, err = file.Write(buf)
+	return err
+}
+
 // TestValidatePartitionedIndexes tests validation of partitioned indexes
 func TestValidatePartitionedIndexes(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create partition directories with dummy index files
-	primaryDir := filepath.Join(tmpDir, "primary")
-	authorTimeDir := filepath.Join(tmpDir, "author_time")
-	searchDir := filepath.Join(tmpDir, "search")
+	// Create dummy index files directly in the root directory
+	primaryFile := filepath.Join(tmpDir, "primary.idx")
+	authorTimeFile := filepath.Join(tmpDir, "author_time_2025-01.idx")
+	searchFile := filepath.Join(tmpDir, "search_2025-01.idx")
 
-	os.MkdirAll(primaryDir, 0755)
-	os.MkdirAll(authorTimeDir, 0755)
-	os.MkdirAll(searchDir, 0755)
-
-	// Create dummy partition files
-	primaryFile := filepath.Join(primaryDir, "primary_2025-01.idx")
-	authorTimeFile := filepath.Join(authorTimeDir, "author_time_2025-01.idx")
-	searchFile := filepath.Join(searchDir, "search_2025-01.idx")
-
-	// Write minimal data to files
-	os.WriteFile(primaryFile, []byte("dummy"), 0644)
-	os.WriteFile(authorTimeFile, []byte("dummy"), 0644)
-	os.WriteFile(searchFile, []byte("dummy"), 0644)
+	// Create a minimal valid primary index file with proper header
+	createMinimalIndexFile(primaryFile, indexTypePrimary, 4096)
+	// For partition files, just create empty files (validation only checks existence)
+	os.WriteFile(authorTimeFile, []byte{}, 0644)
+	os.WriteFile(searchFile, []byte{}, 0644)
 
 	// Test validation with partitioning enabled
 	cfg := Config{

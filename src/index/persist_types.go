@@ -11,6 +11,11 @@ const (
 	indexTypeAuthorTime = 2
 	indexTypeSearch     = 3
 
+	// Exported index type constants
+	IndexTypePrimary    = indexTypePrimary
+	IndexTypeAuthorTime = indexTypeAuthorTime
+	IndexTypeSearch     = indexTypeSearch
+
 	nodeTypeLeaf     = 0x00
 	nodeTypeInternal = 0x01
 )

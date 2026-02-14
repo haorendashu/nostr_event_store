@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/haorendashu/nostr_event_store/src/cache"
 	"github.com/haorendashu/nostr_event_store/src/errors"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
@@ -14,7 +15,7 @@ import (
 type PersistentBTreeIndex struct {
 	path   string
 	file   *indexFile
-	cache  *nodeCache
+	cache  *cache.BTreeCache
 	tree   *btree
 	config Config
 	closed bool
@@ -23,6 +24,44 @@ type PersistentBTreeIndex struct {
 // NewPersistentBTreeIndex creates a new persistent B+Tree index for the primary index type.
 func NewPersistentBTreeIndex(path string, config Config) (*PersistentBTreeIndex, error) {
 	return NewPersistentBTreeIndexWithType(path, config, indexTypePrimary)
+}
+
+// NewPersistentBTreeIndexWithCache creates a new persistent B+Tree index with an external cache.
+// This allows multiple indexes to share the same cache instance for better memory management.
+func NewPersistentBTreeIndexWithCache(path string, config Config, indexType uint32, externalCache *cache.BTreeCache) (*PersistentBTreeIndex, error) {
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, err
+	}
+
+	// Open or create index file
+	file, err := openIndexFile(path, indexType, config.PageSize, true)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the writer on the external cache
+	writer := newIndexFileAdapter(file)
+	externalCache.SetWriter(writer)
+
+	// Use external cache
+	cache := externalCache
+
+	// Open B+Tree
+	tree, err := openBTree(file, cache)
+	if err != nil {
+		file.close()
+		return nil, err
+	}
+
+	return &PersistentBTreeIndex{
+		path:   path,
+		file:   file,
+		cache:  cache,
+		tree:   tree,
+		config: config,
+		closed: false,
+	}, nil
 }
 
 // NewPersistentBTreeIndexWithType creates a new persistent B+Tree index with a specific index type.
@@ -43,7 +82,8 @@ func NewPersistentBTreeIndexWithType(path string, config Config, indexType uint3
 	if cacheMB <= 0 {
 		cacheMB = 10
 	}
-	cache := newNodeCache(file, cacheMB)
+	writer := newIndexFileAdapter(file)
+	cache := cache.NewBTreeCache(writer, cacheMB)
 
 	// Open B+Tree
 	tree, err := openBTree(file, cache)
@@ -247,7 +287,7 @@ func (idx *PersistentBTreeIndex) Stats() Stats {
 		LeafCount:  treeStats.LeafCount,
 		Depth:      treeStats.Depth,
 		EntryCount: treeStats.EntryCount,
-		CacheStats: idx.cache.stats(),
+		CacheStats: idx.cache.Stats(),
 	}
 }
 

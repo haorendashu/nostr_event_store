@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/haorendashu/nostr_event_store/src/cache"
 )
 
 // PartitionGranularity defines how time partitions are split.
@@ -121,6 +123,9 @@ type PartitionedIndex struct {
 
 	// legacyIndex is used when enablePartitioning=false for backward compatibility.
 	legacyIndex Index
+
+	// sharedCache is the shared cache instance used by all partitions.
+	sharedCache *cache.BTreeCache
 }
 
 // NewPartitionedIndex creates a new time-partitioned index.
@@ -156,6 +161,17 @@ func NewPartitionedIndex(
 		fmt.Printf("[partition] Legacy index created successfully at %s\n", legacyPath)
 		return pi, nil
 	}
+
+	// Create shared cache for all partitions
+	cacheMB := cacheMBForIndexType(config, indexType)
+	if cacheMB <= 0 {
+		cacheMB = 10
+	}
+	// For partitioned indexes, use the configured cache size directly
+	// The shared cache will be used across all partitions of this index type
+	totalCacheMB := cacheMB
+	pi.sharedCache = cache.NewBTreeCacheWithoutWriter(totalCacheMB, config.PageSize)
+	fmt.Printf("[partition] Created shared cache with %d MB for all partitions\n", totalCacheMB)
 
 	// Discover existing partition files.
 	fmt.Printf("[partition] Discovering existing partitions for %s\n", basePath)
@@ -293,7 +309,7 @@ func (pi *PartitionedIndex) parsePartitionFilename(filePath string) (*TimePartit
 	}
 
 	// Open the index file.
-	index, err := NewPersistentBTreeIndexWithType(filePath, pi.config, pi.indexType)
+	index, err := NewPersistentBTreeIndexWithCache(filePath, pi.config, pi.indexType, pi.sharedCache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open partition index: %w", err)
 	}
@@ -359,7 +375,7 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 
 	// Create the index file.
 	fmt.Printf("[partition] Creating partition file: %s (for time %s)\n", filePath, t.Format("2006-01-02 15:04:05"))
-	index, err := NewPersistentBTreeIndexWithType(filePath, pi.config, pi.indexType)
+	index, err := NewPersistentBTreeIndexWithCache(filePath, pi.config, pi.indexType, pi.sharedCache)
 	if err != nil {
 		return fmt.Errorf("failed to create partition index %s: %w", filePath, err)
 	}
