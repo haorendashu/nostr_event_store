@@ -851,10 +851,15 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 
 // stats returns tree statistics
 func (t *btree) stats() treeStats {
+	// Avoid expensive leaf node counting for performance
+	// Use a rough estimate: leaf nodes ≈ (nodeCount + 1) / 2
+	nodeCount := int(t.file.header.NodeCount)
+	estimatedLeafCount := (nodeCount + 1) / 2
+
 	return treeStats{
 		EntryCount: atomic.LoadUint64(&t.entryCount),
-		NodeCount:  int(t.file.header.NodeCount),
-		LeafCount:  t.countLeafNodes(),
+		NodeCount:  nodeCount,
+		LeafCount:  estimatedLeafCount, // Estimated to avoid expensive traversal
 		Depth:      t.calculateDepth(),
 	}
 }
