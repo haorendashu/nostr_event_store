@@ -499,6 +499,7 @@ type mergedIterator struct {
 	iterators  []Iterator
 	descending bool
 	current    []Entry // Current entry from each iterator
+	currentIdx int     // Cached index of current min/max entry (-1 if none)
 	closed     bool
 }
 
@@ -507,6 +508,7 @@ func newMergedIterator(iterators []Iterator, descending bool) *mergedIterator {
 		iterators:  iterators,
 		descending: descending,
 		current:    make([]Entry, len(iterators)),
+		currentIdx: -1,
 		closed:     false,
 	}
 
@@ -521,6 +523,9 @@ func newMergedIterator(iterators []Iterator, descending bool) *mergedIterator {
 		}
 	}
 
+	// Find the initial current entry.
+	mi.updateCurrentIdx()
+
 	return mi
 }
 
@@ -530,17 +535,29 @@ type Entry struct {
 	Valid bool
 }
 
+// updateCurrentIdx finds and caches the index of the current min/max entry.
+func (mi *mergedIterator) updateCurrentIdx() {
+	mi.currentIdx = -1
+	for i, entry := range mi.current {
+		if !entry.Valid {
+			continue
+		}
+		if mi.currentIdx == -1 {
+			mi.currentIdx = i
+			continue
+		}
+
+		cmp := bytes.Compare(entry.Key, mi.current[mi.currentIdx].Key)
+		if (!mi.descending && cmp < 0) || (mi.descending && cmp > 0) {
+			mi.currentIdx = i
+		}
+	}
+}
 func (mi *mergedIterator) Valid() bool {
 	if mi.closed {
 		return false
 	}
-	// Check if any iterator has valid data.
-	for _, entry := range mi.current {
-		if entry.Valid {
-			return true
-		}
-	}
-	return false
+	return mi.currentIdx >= 0
 }
 
 func (mi *mergedIterator) Next() error {
@@ -548,42 +565,28 @@ func (mi *mergedIterator) Next() error {
 		return ErrIteratorClosed
 	}
 
-	// Find the min/max entry depending on sort order.
-	minIdx := -1
-	for i, entry := range mi.current {
-		if !entry.Valid {
-			continue
-		}
-		if minIdx == -1 {
-			minIdx = i
-			continue
-		}
-
-		cmp := bytes.Compare(entry.Key, mi.current[minIdx].Key)
-		if (!mi.descending && cmp < 0) || (mi.descending && cmp > 0) {
-			minIdx = i
-		}
-	}
-
-	if minIdx == -1 {
+	if mi.currentIdx < 0 {
 		return nil // No more entries
 	}
 
-	// Advance the selected iterator.
-	if err := mi.iterators[minIdx].Next(); err != nil {
+	// Advance the current iterator.
+	if err := mi.iterators[mi.currentIdx].Next(); err != nil {
 		return err
 	}
 
 	// Update current entry for this iterator.
-	if mi.iterators[minIdx].Valid() {
-		mi.current[minIdx] = Entry{
-			Key:   mi.iterators[minIdx].Key(),
-			Value: mi.iterators[minIdx].Value(),
+	if mi.iterators[mi.currentIdx].Valid() {
+		mi.current[mi.currentIdx] = Entry{
+			Key:   mi.iterators[mi.currentIdx].Key(),
+			Value: mi.iterators[mi.currentIdx].Value(),
 			Valid: true,
 		}
 	} else {
-		mi.current[minIdx].Valid = false
+		mi.current[mi.currentIdx].Valid = false
 	}
+
+	// Find the new current entry.
+	mi.updateCurrentIdx()
 
 	return nil
 }
@@ -598,61 +601,17 @@ func (mi *mergedIterator) Prev() error {
 }
 
 func (mi *mergedIterator) Key() []byte {
-	if mi.closed {
+	if mi.closed || mi.currentIdx < 0 {
 		return nil
 	}
-
-	// Return the current min/max key.
-	minIdx := -1
-	for i, entry := range mi.current {
-		if !entry.Valid {
-			continue
-		}
-		if minIdx == -1 {
-			minIdx = i
-			continue
-		}
-
-		cmp := bytes.Compare(entry.Key, mi.current[minIdx].Key)
-		if (!mi.descending && cmp < 0) || (mi.descending && cmp > 0) {
-			minIdx = i
-		}
-	}
-
-	if minIdx == -1 {
-		return nil
-	}
-
-	return mi.current[minIdx].Key
+	return mi.current[mi.currentIdx].Key
 }
 
 func (mi *mergedIterator) Value() types.RecordLocation {
-	if mi.closed {
+	if mi.closed || mi.currentIdx < 0 {
 		return types.RecordLocation{}
 	}
-
-	// Return the current min/max value.
-	minIdx := -1
-	for i, entry := range mi.current {
-		if !entry.Valid {
-			continue
-		}
-		if minIdx == -1 {
-			minIdx = i
-			continue
-		}
-
-		cmp := bytes.Compare(entry.Key, mi.current[minIdx].Key)
-		if (!mi.descending && cmp < 0) || (mi.descending && cmp > 0) {
-			minIdx = i
-		}
-	}
-
-	if minIdx == -1 {
-		return types.RecordLocation{}
-	}
-
-	return mi.current[minIdx].Value
+	return mi.current[mi.currentIdx].Value
 }
 
 func (mi *mergedIterator) Close() error {
