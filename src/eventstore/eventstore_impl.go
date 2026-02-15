@@ -720,7 +720,7 @@ func (e *eventStoreImpl) GetEvent(ctx context.Context, eventID [32]byte) (*types
 		return nil, fmt.Errorf("index lookup: %w", err)
 	}
 	if !exists {
-		return nil, fmt.Errorf("event not found")
+		return nil, nil
 	}
 
 	// Read from storage
