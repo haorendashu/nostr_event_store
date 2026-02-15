@@ -175,15 +175,80 @@ func (pi *PartitionedIndex) GetBatch(ctx context.Context, keys [][]byte) ([]type
 	locations := make([]types.RecordLocation, len(keys))
 	found := make([]bool, len(keys))
 
-	// For simplicity, query each key individually.
-	// TODO: Optimize by grouping keys by partition.
+	// Group keys by partition for efficient batch queries
+	type batchQuery struct {
+		indices []int // original indices in the keys array
+		keys    [][]byte
+	}
+	partitionQueries := make(map[*TimePartition]*batchQuery)
+
+	// Keys that couldn't be partitioned (no timestamp) - need to search all partitions
+	unpartitionedIndices := make([]int, 0)
+	unpartitionedKeys := make([][]byte, 0)
+
 	for i, key := range keys {
-		loc, f, err := pi.Get(ctx, key)
+		timestamp, err := extractTimestampFromKey(key, pi.indexType)
+		if err != nil {
+			// Cannot determine partition, will search all partitions later
+			unpartitionedIndices = append(unpartitionedIndices, i)
+			unpartitionedKeys = append(unpartitionedKeys, key)
+			continue
+		}
+
+		partition, err := pi.getPartitionForTimestamp(timestamp)
+		if err != nil {
+			// Partition lookup failed, treat as unpartitioned
+			unpartitionedIndices = append(unpartitionedIndices, i)
+			unpartitionedKeys = append(unpartitionedKeys, key)
+			continue
+		}
+
+		if partitionQueries[partition] == nil {
+			partitionQueries[partition] = &batchQuery{
+				indices: make([]int, 0),
+				keys:    make([][]byte, 0),
+			}
+		}
+		partitionQueries[partition].indices = append(partitionQueries[partition].indices, i)
+		partitionQueries[partition].keys = append(partitionQueries[partition].keys, key)
+	}
+
+	// Query each partition
+	for partition, query := range partitionQueries {
+		if len(query.keys) == 0 {
+			continue
+		}
+		partitionLocations, partitionFound, err := partition.Index.GetBatch(ctx, query.keys)
 		if err != nil {
 			return nil, nil, err
 		}
-		locations[i] = loc
-		found[i] = f
+		for j, idx := range query.indices {
+			locations[idx] = partitionLocations[j]
+			found[idx] = partitionFound[j]
+		}
+	}
+
+	// Handle unpartitioned keys by searching all partitions
+	if len(unpartitionedKeys) > 0 {
+		pi.mu.RLock()
+		partitions := make([]*TimePartition, len(pi.partitions))
+		copy(partitions, pi.partitions)
+		pi.mu.RUnlock()
+
+		for i, key := range unpartitionedKeys {
+			originalIdx := unpartitionedIndices[i]
+			for _, p := range partitions {
+				loc, f, err := p.Index.Get(ctx, key)
+				if err != nil {
+					return nil, nil, err
+				}
+				if f {
+					locations[originalIdx] = loc
+					found[originalIdx] = true
+					break
+				}
+			}
+		}
 	}
 
 	return locations, found, nil
@@ -213,6 +278,11 @@ func (pi *PartitionedIndex) Range(ctx context.Context, minKey []byte, maxKey []b
 
 	if len(partitions) == 0 {
 		return &emptyIterator{}, nil
+	}
+
+	// If only one partition, return its iterator directly (supports Prev)
+	if len(partitions) == 1 {
+		return partitions[0].Index.Range(ctx, minKey, maxKey)
 	}
 
 	// Create iterators for each partition.
@@ -257,6 +327,17 @@ func (pi *PartitionedIndex) RangeDesc(ctx context.Context, minKey []byte, maxKey
 
 	if len(partitions) == 0 {
 		return &emptyIterator{}, nil
+	}
+
+	// If only one partition, return its iterator directly (supports Prev)
+	if len(partitions) == 1 {
+		return partitions[0].Index.RangeDesc(ctx, minKey, maxKey)
+	}
+
+	// For descending iteration, reverse the partition order so we start from the newest partition.
+	// This ensures that entries with larger timestamps are returned first.
+	for i, j := 0, len(partitions)-1; i < j; i, j = i+1, j-1 {
+		partitions[i], partitions[j] = partitions[j], partitions[i]
 	}
 
 	// Create reverse iterators for each partition.
@@ -507,11 +588,12 @@ func (mi *mergedIterator) Next() error {
 	return nil
 }
 
-// Prev is not fully supported for merged iterators in the current implementation.
-// This is a placeholder that returns an error.
+// Prev is not supported for merged iterators across multiple partitions.
+// For single partition queries, the underlying iterator supports Prev().
+// Merging multiple partition iterators in reverse requires complex state tracking
+// and is not implemented for performance reasons.
+// If you need Prev() support, consider queries that target a single partition.
 func (mi *mergedIterator) Prev() error {
-	// TODO: Implement backward iteration for merged iterators.
-	// This requires tracking iterator state and moving backwards through each partition.
 	return ErrNotSupported
 }
 
