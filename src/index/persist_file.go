@@ -26,6 +26,13 @@ type indexFile struct {
 }
 
 func openIndexFile(path string, indexType uint32, pageSize uint32, createIfMissing bool) (*indexFile, error) {
+	switch pageSize {
+	case 4096, 8192, 16384:
+		// Valid.
+	default:
+		return nil, fmt.Errorf("invalid index page size: %d", pageSize)
+	}
+
 	flags := os.O_RDWR
 	if createIfMissing {
 		flags |= os.O_CREATE

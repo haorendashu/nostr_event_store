@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -145,7 +146,15 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 	}
 	// New entry was inserted
 	atomic.AddUint64(&t.entryCount, 1)
-	if node.leafSize(t.pageSize) <= int(t.pageSize) {
+
+	nodeSize := node.leafSize(t.pageSize)
+	// Safety check: prevent nodes from growing unboundedly
+	// This catches the case where a single key is larger than pageSize
+	if nodeSize > 10*int(t.pageSize) {
+		return fmt.Errorf("leaf node size %d exceeds 10x page size %d: key too large or too many keys", nodeSize, t.pageSize)
+	}
+
+	if nodeSize <= int(t.pageSize) {
 		t.cache.MarkDirty(newBTreeNodeAdapter(node))
 		return nil
 	}
@@ -167,7 +176,14 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 			t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 			return nil
 		}
-		if parent.internalSize(t.pageSize) <= int(t.pageSize) {
+
+		parentSize := parent.internalSize(t.pageSize)
+		// Safety check: prevent nodes from growing unboundedly
+		if parentSize > 10*int(t.pageSize) {
+			return fmt.Errorf("internal node size %d exceeds 10x page size %d: too many children or keys", parentSize, t.pageSize)
+		}
+
+		if parentSize <= int(t.pageSize) {
 			t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 			return nil
 		}
@@ -758,6 +774,13 @@ type pathEntry struct {
 }
 
 func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (bool, error) {
+	// Safety check: prevent runaway growth
+	// If we already have > 100k keys, something is very wrong with the B+Tree
+	// (should have split long before reaching this point)
+	if len(node.keys) > 100000 {
+		return false, fmt.Errorf("leaf node has %d keys, possible B+Tree corruption or split failure", len(node.keys))
+	}
+
 	idx := sort.Search(len(node.keys), func(i int) bool {
 		return compareKeys(node.keys[i], key) >= 0
 	})
@@ -780,6 +803,11 @@ func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (bo
 }
 
 func insertIntoInternal(node *btreeNode, key []byte, childOffset uint64, insertPos int) (bool, error) {
+	// Safety check: prevent runaway growth
+	if len(node.keys) > 100000 {
+		return false, fmt.Errorf("internal node has %d keys, possible B+Tree corruption or split failure", len(node.keys))
+	}
+
 	keyCopy := make([]byte, len(key))
 	copy(keyCopy, key)
 

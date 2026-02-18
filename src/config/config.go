@@ -649,6 +649,8 @@ func (c *Config) ToIndexConfig() index.Config {
 		}
 	}
 
+	pageSize := uint32(c.ToStoragePageSize())
+
 	return index.Config{
 		Dir:                         c.IndexConfig.IndexDir,
 		TagNameToSearchTypeCode:     mapping,
@@ -656,7 +658,7 @@ func (c *Config) ToIndexConfig() index.Config {
 		PrimaryIndexCacheMB:         c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
 		AuthorTimeIndexCacheMB:      c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
 		SearchIndexCacheMB:          c.IndexConfig.CacheConfig.SearchIndexCacheMB,
-		PageSize:                    c.StorageConfig.PageSize,
+		PageSize:                    pageSize,
 		FlushIntervalMs:             c.IndexConfig.FlushIntervalMs,
 		DirtyThreshold:              c.IndexConfig.DirtyThreshold,
 		DynamicAllocation:           c.IndexConfig.CacheConfig.DynamicAllocation,
