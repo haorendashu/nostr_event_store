@@ -119,11 +119,11 @@ func hexToBytes64(hexStr string) ([64]byte, error) {
 // generateEvent creates a unique event based on a seed event template
 func generateEvent(seed *EventDTO, index int) (*types.Event, error) {
 	event := &types.Event{
-		// CreatedAt: seed.CreatedAt + uint32(index),
-		CreatedAt: seed.CreatedAt - uint32(int64(time.Minute.Seconds()*float64(index))), // Spread events by 1 second to ensure different timestamps
-		Kind:      seed.Kind,
-		Content:   seed.Content,
-		Tags:      seed.Tags,
+		CreatedAt: seed.CreatedAt + uint32(index),
+		// CreatedAt: seed.CreatedAt - uint32(int64(time.Minute.Seconds()*float64(index))), // Spread events by 1 second to ensure different timestamps
+		Kind:    seed.Kind,
+		Content: seed.Content,
+		Tags:    seed.Tags,
 	}
 
 	// Decode pubkey

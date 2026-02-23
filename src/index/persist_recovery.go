@@ -212,29 +212,35 @@ func DeleteInvalidPartitionedIndexes(dir string) error {
 		os.Remove(primaryPath)
 	}
 
-	// Delete partition files if any partitioned index is invalid
+	// Delete ALL partition files if any partitioned index is invalid
+	// This is safer than trying to selectively validate/delete, since we're rebuilding anyway
 	if !authorTimeValid || !searchValid {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return fmt.Errorf("failed to read index directory: %w", err)
 		}
 
+		deletedCount := 0
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
 			}
 			name := entry.Name()
-			// Delete partition files for author_time and search only
+			// Delete ALL partition files for author_time and search (not just invalid ones)
 			if (strings.HasPrefix(name, "author_time_") ||
 				strings.HasPrefix(name, "search_")) &&
 				strings.HasSuffix(name, ".idx") {
 				filePath := filepath.Join(dir, name)
-				fmt.Printf("[index] Removing invalid partition file: %s\n", name)
+				fmt.Printf("[index] Removing partition file: %s\n", name)
 				if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-					return fmt.Errorf("failed to remove partition file %s: %w", name, err)
+					fmt.Printf("[index] Warning: failed to remove partition file %s: %v\n", name, err)
+					// Continue trying to delete other files
+				} else {
+					deletedCount++
 				}
 			}
 		}
+		fmt.Printf("[index] Deleted %d partition files for rebuild\n", deletedCount)
 	}
 
 	return nil

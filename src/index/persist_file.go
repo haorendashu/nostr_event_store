@@ -23,6 +23,7 @@ type indexFile struct {
 	path     string
 	pageSize uint32
 	header   indexHeader
+	size     int64
 }
 
 func openIndexFile(path string, indexType uint32, pageSize uint32, createIfMissing bool) (*indexFile, error) {
@@ -49,6 +50,7 @@ func openIndexFile(path string, indexType uint32, pageSize uint32, createIfMissi
 		file.Close()
 		return nil, fmt.Errorf("stat index file: %w", err)
 	}
+	fi.size = info.Size()
 
 	if info.Size() == 0 {
 		fi.header = indexHeader{
@@ -62,6 +64,7 @@ func openIndexFile(path string, indexType uint32, pageSize uint32, createIfMissi
 			file.Close()
 			return nil, err
 		}
+		fi.size = int64(pageSize)
 		return fi, nil
 	}
 
@@ -126,6 +129,9 @@ func (f *indexFile) writeHeader() error {
 	if _, err := f.file.WriteAt(buf, 0); err != nil {
 		return fmt.Errorf("write index header: %w", err)
 	}
+	if f.size < int64(f.pageSize) {
+		f.size = int64(f.pageSize)
+	}
 	return nil
 }
 
@@ -140,9 +146,21 @@ func (f *indexFile) syncHeader() error {
 }
 
 func (f *indexFile) readNodePage(offset uint64) ([]byte, error) {
+	// Validate that the requested offset is within file bounds
+	if int64(offset) >= f.size {
+		return nil, fmt.Errorf("read index node: offset %d is beyond file size %d (file: %s, root offset: %d, node count: %d)",
+			offset, f.size, f.path, f.header.RootOffset, f.header.NodeCount)
+	}
+
+	// Validate that we can read a full page from this offset
+	if int64(offset)+int64(f.pageSize) > f.size {
+		return nil, fmt.Errorf("read index node: page at offset %d would exceed file size %d (file: %s, page size: %d)",
+			offset, f.size, f.path, f.pageSize)
+	}
+
 	buf := make([]byte, f.pageSize)
 	if _, err := f.file.ReadAt(buf, int64(offset)); err != nil {
-		return nil, fmt.Errorf("read index node: %w", err)
+		return nil, fmt.Errorf("read index node at offset %d (file: %s, size: %d): %w", offset, f.path, f.size, err)
 	}
 	return buf, nil
 }
@@ -153,6 +171,10 @@ func (f *indexFile) writeNodePage(offset uint64, buf []byte) error {
 	}
 	if _, err := f.file.WriteAt(buf, int64(offset)); err != nil {
 		return fmt.Errorf("write index node: %w", err)
+	}
+	end := int64(offset) + int64(len(buf))
+	if end > f.size {
+		f.size = end
 	}
 	return nil
 }

@@ -265,6 +265,26 @@ type Config struct {
 	// Options: "monthly", "weekly", "yearly"
 	// Default: "monthly" (recommended for 10M+ events)
 	PartitionGranularity string
+
+	// PartitionCacheStrategy defines how cache is allocated to different partitions.
+	// "tiered" (default): Active=60%, Recent=30%, Historical=10%
+	PartitionCacheStrategy string
+
+	// PartitionCacheActivePct is the percentage of cache allocated to active partitions.
+	// Default: 60
+	PartitionCacheActivePct int
+
+	// PartitionCacheRecentPct is the percentage of cache allocated to recent partitions.
+	// Default: 30
+	PartitionCacheRecentPct int
+
+	// PartitionActiveCount defines how many partitions are considered "active".
+	// Default: 2
+	PartitionActiveCount int
+
+	// PartitionRecentCount defines how many partitions are considered "recent".
+	// Default: 4
+	PartitionRecentCount int
 }
 
 // BTreeConfig holds B+Tree-specific tuning parameters.

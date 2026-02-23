@@ -27,6 +27,7 @@ func openBTree(file *indexFile, cache *cache.BTreeCache) (*btree, error) {
 	atomic.StoreUint64(&t.entryCount, file.header.EntryCount)
 
 	if t.root == 0 {
+		// Empty tree, create initial root node
 		root := &btreeNode{nodeType: nodeTypeLeaf}
 		root.offset = file.allocateNodeOffset()
 		root.dirty = true
@@ -41,10 +42,25 @@ func openBTree(file *indexFile, cache *cache.BTreeCache) (*btree, error) {
 		if err := file.syncHeader(); err != nil {
 			return nil, err
 		}
-	} else if atomic.LoadUint64(&t.entryCount) == 0 && file.header.NodeCount > 0 {
-		// EntryCount was not persisted (old file format). Scan tree to initialize it.
-		count := t.countEntriesInTree()
-		atomic.StoreUint64(&t.entryCount, count)
+	} else {
+		// Validate that root node is accessible before using it
+		fi, err := file.file.Stat()
+		if err != nil {
+			return nil, fmt.Errorf("stat index file during tree open: %w", err)
+		}
+		fileSize := fi.Size()
+
+		// Check if root offset is valid
+		if int64(t.root) >= fileSize {
+			return nil, fmt.Errorf("index file corrupted: root offset %d exceeds file size %d (file: %s, node count: %d) - please rebuild indexes",
+				t.root, fileSize, file.path, file.header.NodeCount)
+		}
+
+		if atomic.LoadUint64(&t.entryCount) == 0 && file.header.NodeCount > 0 {
+			// EntryCount was not persisted (old file format). Scan tree to initialize it.
+			count := t.countEntriesInTree()
+			atomic.StoreUint64(&t.entryCount, count)
+		}
 	}
 	return t, nil
 }
@@ -94,13 +110,19 @@ func (t *btree) get(ctx context.Context, key []byte) (types.RecordLocation, bool
 	if err != nil {
 		return types.RecordLocation{}, false, err
 	}
+	const maxDepth = 100
+	depth := 0
 	for !node.isLeaf() {
+		if depth >= maxDepth {
+			return types.RecordLocation{}, false, fmt.Errorf("btree depth exceeded limit %d, possible corruption", maxDepth)
+		}
 		idx := searchKeyIndex(node.keys, key)
 		nextOffset := node.children[idx]
 		node, err = t.loadNode(nextOffset)
 		if err != nil {
 			return types.RecordLocation{}, false, err
 		}
+		depth++
 	}
 
 	idx := sort.Search(len(node.keys), func(i int) bool {
@@ -127,13 +149,21 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 	if err != nil {
 		return err
 	}
+	// Prevent infinite loops due to corrupted tree structure
+	// A reasonable B-tree depth limit (even with billions of entries, depth < 100)
+	const maxDepth = 100
+	depth := 0
 	for !node.isLeaf() {
+		if depth >= maxDepth {
+			return fmt.Errorf("btree depth exceeded limit %d, possible corruption or circular reference", maxDepth)
+		}
 		idx := searchKeyIndex(node.keys, key)
 		path = append(path, pathEntry{node: node, index: idx})
 		node, err = t.loadNode(node.children[idx])
 		if err != nil {
 			return err
 		}
+		depth++
 	}
 
 	inserted, err := insertIntoLeaf(node, key, value)
@@ -228,13 +258,19 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 	if err != nil {
 		return err
 	}
+	const maxDepth = 100
+	depth := 0
 	for !node.isLeaf() {
+		if depth >= maxDepth {
+			return fmt.Errorf("btree depth exceeded limit %d, possible corruption", maxDepth)
+		}
 		idx := searchKeyIndex(node.keys, key)
 		path = append(path, pathEntry{node: node, index: idx})
 		node, err = t.loadNode(node.children[idx])
 		if err != nil {
 			return err
 		}
+		depth++
 	}
 
 	idx := sort.Search(len(node.keys), func(i int) bool {
@@ -487,7 +523,12 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	}
 
 	// Navigate to the leftmost leaf that might contain keys in range [minKey, maxKey]
+	const maxDepth = 100
+	depth := 0
 	for !node.isLeaf() {
+		if depth >= maxDepth {
+			return nil, fmt.Errorf("btree depth exceeded limit %d, possible corruption", maxDepth)
+		}
 		var searchKey []byte
 		if desc {
 			searchKey = maxKey
@@ -502,6 +543,7 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 		if err != nil {
 			return nil, err
 		}
+		depth++
 	}
 
 	// Find the starting position in the leaf node
@@ -931,9 +973,10 @@ func (t *btree) calculateDepth() int {
 		return 0
 	}
 
+	const maxDepth = 100
 	for !node.isLeaf() {
 		depth++
-		if len(node.children) == 0 {
+		if depth > maxDepth || len(node.children) == 0 {
 			break
 		}
 		node, err = t.loadNode(node.children[0])

@@ -74,6 +74,10 @@ type TimePartition struct {
 
 	// IsActive indicates if this partition is currently being written to.
 	IsActive bool
+
+	// CacheSizeMB is the allocated cache size for this partition in MB.
+	// This allows different partitions to have different cache sizes based on access patterns.
+	CacheSizeMB int
 }
 
 // Contains checks if the given timestamp falls within this partition's range.
@@ -162,16 +166,14 @@ func NewPartitionedIndex(
 		return pi, nil
 	}
 
-	// Create shared cache for all partitions
-	cacheMB := cacheMBForIndexType(config, indexType)
-	if cacheMB <= 0 {
-		cacheMB = 10
-	}
-	// For partitioned indexes, use the configured cache size directly
-	// The shared cache will be used across all partitions of this index type
-	totalCacheMB := cacheMB
-	pi.sharedCache = cache.NewBTreeCacheWithoutWriter(totalCacheMB, config.PageSize)
-	fmt.Printf("[partition] Created shared cache with %d MB for all partitions\n", totalCacheMB)
+	// Per-partition independent caches to prevent data corruption from SetWriter issues.
+	// Each partition gets its own cache instance. With 24 partitions and 3500MB total cache:
+	// - Active partitions: ~100-200MB each
+	// - Recent partitions: ~50-100MB each
+	// - Historical partitions: ~2-5MB each
+	// This tiered allocation ensures new data performs well while old data uses minimal cache.
+	pi.sharedCache = nil
+	fmt.Printf("[partition] Using per-partition independent caches with tiered allocation\n")
 
 	// Discover existing partition files.
 	fmt.Printf("[partition] Discovering existing partitions for %s\n", basePath)
@@ -179,6 +181,11 @@ func NewPartitionedIndex(
 		return nil, fmt.Errorf("failed to discover partitions: %w", err)
 	}
 	fmt.Printf("[partition] Found %d existing partitions\n", len(pi.partitions))
+
+	// Allocate cache to existing partitions based on their age
+	if len(pi.partitions) > 0 {
+		pi.allocateCacheToPartitions()
+	}
 
 	// If no partitions exist, create the first one for the current month/week.
 	if len(pi.partitions) == 0 {
@@ -207,6 +214,101 @@ func NewPartitionedIndex(
 	}
 
 	return pi, nil
+}
+
+// allocateCacheToPartitions dynamically allocates cache to partitions based on their age.
+// Uses tiered allocation: Active partitions get 60%, Recent get 30%, Historical get 10%.
+func (pi *PartitionedIndex) allocateCacheToPartitions() {
+	if len(pi.partitions) == 0 {
+		return
+	}
+
+	totalCacheMB := cacheMBForIndexType(pi.config, pi.indexType)
+	if totalCacheMB <= 0 {
+		totalCacheMB = 10
+	}
+
+	activePct := pi.config.PartitionCacheActivePct
+	if activePct <= 0 || activePct > 100 {
+		activePct = 60 // Default: 60% for active
+	}
+
+	recentPct := pi.config.PartitionCacheRecentPct
+	if recentPct <= 0 || activePct+recentPct > 100 {
+		recentPct = 30 // Default: 30% for recent
+	}
+
+	activeCacheMB := totalCacheMB * activePct / 100
+	recentCacheMB := totalCacheMB * recentPct / 100
+	historicalCacheMB := totalCacheMB - activeCacheMB - recentCacheMB
+
+	// Single partition gets all cache
+	if len(pi.partitions) == 1 {
+		pi.partitions[0].CacheSizeMB = totalCacheMB
+		return
+	}
+
+	// Partitions are sorted by StartTime, last one is newest (most active)
+	activeIdx := len(pi.partitions) - 1
+
+	// Determine active group size
+	activeCount := pi.config.PartitionActiveCount
+	if activeCount <= 0 {
+		activeCount = 2
+	}
+	if activeCount > len(pi.partitions) {
+		activeCount = len(pi.partitions)
+	}
+	activeStartIdx := activeIdx - (activeCount - 1)
+	if activeStartIdx < 0 {
+		activeStartIdx = 0
+	}
+
+	// Allocate to active partitions
+	if activeStartIdx <= activeIdx {
+		activePartitionCount := activeIdx - activeStartIdx + 1
+		perActiveCache := activeCacheMB / activePartitionCount
+		if perActiveCache < 5 {
+			perActiveCache = 5
+		}
+		for i := activeStartIdx; i <= activeIdx; i++ {
+			pi.partitions[i].CacheSizeMB = perActiveCache
+		}
+	}
+
+	// Determine recent partition range
+	recentCount := pi.config.PartitionRecentCount
+	if recentCount <= 0 {
+		recentCount = 4
+	}
+	recentStartIdx := activeStartIdx - recentCount
+	if recentStartIdx < 0 {
+		recentStartIdx = 0
+	}
+
+	//Allocate to recent partitions
+	if recentStartIdx < activeStartIdx {
+		recentPartitionCount := activeStartIdx - recentStartIdx
+		perRecentCache := recentCacheMB / recentPartitionCount
+		if perRecentCache < 5 {
+			perRecentCache = 5
+		}
+		for i := recentStartIdx; i < activeStartIdx; i++ {
+			pi.partitions[i].CacheSizeMB = perRecentCache
+		}
+	}
+
+	// Allocate to historical partitions
+	if recentStartIdx > 0 {
+		historicalPartitionCount := recentStartIdx
+		perHistoricalCache := historicalCacheMB / historicalPartitionCount
+		if perHistoricalCache < 2 {
+			perHistoricalCache = 2
+		}
+		for i := 0; i < recentStartIdx; i++ {
+			pi.partitions[i].CacheSizeMB = perHistoricalCache
+		}
+	}
 }
 
 // discoverPartitions scans the directory for existing partition files and opens them.
@@ -239,7 +341,16 @@ func (pi *PartitionedIndex) discoverPartitions() error {
 		// Parse the time range from the filename.
 		partition, err := pi.parsePartitionFilename(filepath.Join(dir, name))
 		if err != nil {
-			// Skip files that don't match the expected format.
+			// Skip files that don't match the expected format or are corrupted.
+			fmt.Printf("[partition] Warning: skipping invalid partition file %s: %v\n", name, err)
+			// If the error is due to corruption, try to delete the corrupted file
+			if strings.Contains(err.Error(), "corrupted") || strings.Contains(err.Error(), "exceeds file size") {
+				filePath := filepath.Join(dir, name)
+				fmt.Printf("[partition] Deleting corrupted partition file: %s\n", name)
+				if removeErr := os.Remove(filePath); removeErr != nil {
+					fmt.Printf("[partition] Warning: failed to remove corrupted file %s: %v\n", name, removeErr)
+				}
+			}
 			continue
 		}
 
@@ -308,19 +419,32 @@ func (pi *PartitionedIndex) parsePartitionFilename(filePath string) (*TimePartit
 		return nil, fmt.Errorf("unknown granularity: %d", pi.granularity)
 	}
 
-	// Open the index file.
-	index, err := NewPersistentBTreeIndexWithCache(filePath, pi.config, pi.indexType, pi.sharedCache)
+	// Open the index file with independent cache.
+	// Each partition maintains its own cache to prevent data corruption.
+	defaultCacheMB := 5
+	tempConfig := pi.config
+	switch pi.indexType {
+	case indexTypePrimary:
+		tempConfig.PrimaryIndexCacheMB = defaultCacheMB
+	case indexTypeAuthorTime:
+		tempConfig.AuthorTimeIndexCacheMB = defaultCacheMB
+	case indexTypeSearch:
+		tempConfig.SearchIndexCacheMB = defaultCacheMB
+	}
+
+	index, err := NewPersistentBTreeIndexWithType(filePath, tempConfig, pi.indexType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open partition index: %w", err)
 	}
 
 	return &TimePartition{
-		StartTime:  startTime,
-		EndTime:    endTime,
-		FilePath:   filePath,
-		Index:      index,
-		IsReadOnly: false, // Will be set later if needed
-		IsActive:   false,
+		StartTime:   startTime,
+		EndTime:     endTime,
+		FilePath:    filePath,
+		Index:       index,
+		IsReadOnly:  false, // Will be set later if needed
+		IsActive:    false,
+		CacheSizeMB: defaultCacheMB, // Will be updated by allocateCacheToPartitions
 	}, nil
 }
 
@@ -373,9 +497,48 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 
 	filePath := filepath.Join(dir, fmt.Sprintf("%s_%s.idx", baseFilename, timeStr))
 
-	// Create the index file.
-	fmt.Printf("[partition] Creating partition file: %s (for time %s)\n", filePath, t.Format("2006-01-02 15:04:05"))
-	index, err := NewPersistentBTreeIndexWithCache(filePath, pi.config, pi.indexType, pi.sharedCache)
+	// Check if file already exists - if so, it might be corrupted from a previous failed rebuild
+	// It's safer to delete and recreate rather than try to open a potentially corrupted file
+	if _, err := os.Stat(filePath); err == nil {
+		fmt.Printf("[partition] Warning: partition file already exists, deleting before recreation: %s\n", filePath)
+		if err := os.Remove(filePath); err != nil {
+			return fmt.Errorf("failed to remove existing partition file %s: %w", filePath, err)
+		}
+	}
+
+	// Create the index file with independent cache.
+	// Each partition gets its own cache. Allocation strategy handles tiering later.
+	totalCacheMB := cacheMBForIndexType(pi.config, pi.indexType)
+	if totalCacheMB <= 0 {
+		totalCacheMB = 10
+	}
+	activePct := pi.config.PartitionCacheActivePct
+	if activePct <= 0 || activePct > 100 {
+		activePct = 60 // Changed default from 33 to 60 for better active partition performance
+	}
+	activeCount := pi.config.PartitionActiveCount
+	if activeCount <= 0 {
+		activeCount = 2
+	}
+	activeBudgetMB := totalCacheMB * activePct / 100
+	newPartitionCacheMB := activeBudgetMB / activeCount
+	if newPartitionCacheMB < 5 {
+		newPartitionCacheMB = 5
+	}
+
+	tempConfig := pi.config
+	switch pi.indexType {
+	case indexTypePrimary:
+		tempConfig.PrimaryIndexCacheMB = newPartitionCacheMB
+	case indexTypeAuthorTime:
+		tempConfig.AuthorTimeIndexCacheMB = newPartitionCacheMB
+	case indexTypeSearch:
+		tempConfig.SearchIndexCacheMB = newPartitionCacheMB
+	}
+
+	fmt.Printf("[partition] Creating partition file: %s (for time %s) with %d MB cache\n",
+		filePath, t.Format("2006-01-02 15:04:05"), newPartitionCacheMB)
+	index, err := NewPersistentBTreeIndexWithType(filePath, tempConfig, pi.indexType)
 	if err != nil {
 		return fmt.Errorf("failed to create partition index %s: %w", filePath, err)
 	}
@@ -383,15 +546,15 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 	if index == nil {
 		return fmt.Errorf("created partition index is nil for file %s", filePath)
 	}
-	fmt.Printf("[partition] Partition created successfully: %s\n", filePath)
 
 	partition := &TimePartition{
-		StartTime:  startTime,
-		EndTime:    endTime,
-		FilePath:   filePath,
-		Index:      index,
-		IsReadOnly: false,
-		IsActive:   false,
+		StartTime:   startTime,
+		EndTime:     endTime,
+		FilePath:    filePath,
+		Index:       index,
+		IsReadOnly:  false,
+		IsActive:    false,
+		CacheSizeMB: newPartitionCacheMB,
 	}
 
 	pi.partitions = append(pi.partitions, partition)
@@ -400,6 +563,10 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 	sort.Slice(pi.partitions, func(i, j int) bool {
 		return pi.partitions[i].StartTime.Before(pi.partitions[j].StartTime)
 	})
+
+	// Reallocate cache to all partitions after adding a new one
+	// This demotes older partitions to smaller caches
+	pi.allocateCacheToPartitions()
 
 	return nil
 }

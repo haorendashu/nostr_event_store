@@ -427,7 +427,8 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 				hex.EncodeToString(event.ID[:]), event.Kind, tagName, len(tagValue), hex.EncodeToString(searchKey))
 		}
 		if err := searchIdx.Insert(ctx, searchKey, loc); err != nil {
-			e.logger.Printf("Warning: search index failed for tag %s: %v", tagName, err)
+			e.logger.Printf("Warning: search index failed for tag %s (event %s, kind %d, value_len %d): %v",
+				tagName, hex.EncodeToString(event.ID[:8]), event.Kind, len(tagValue), err)
 		}
 	}
 

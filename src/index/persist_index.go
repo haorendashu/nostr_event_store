@@ -83,10 +83,10 @@ func NewPersistentBTreeIndexWithType(path string, config Config, indexType uint3
 		cacheMB = 10
 	}
 	writer := newIndexFileAdapter(file)
-	cache := cache.NewBTreeCache(writer, cacheMB)
+	indexCache := cache.NewBTreeCache(writer, cacheMB)
 
 	// Open B+Tree
-	tree, err := openBTree(file, cache)
+	tree, err := openBTree(file, indexCache)
 	if err != nil {
 		file.close()
 		return nil, err
@@ -95,7 +95,7 @@ func NewPersistentBTreeIndexWithType(path string, config Config, indexType uint3
 	return &PersistentBTreeIndex{
 		path:   path,
 		file:   file,
-		cache:  cache,
+		cache:  indexCache,
 		tree:   tree,
 		config: config,
 		closed: false,
