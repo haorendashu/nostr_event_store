@@ -103,6 +103,35 @@ type IndexConfig struct {
 	// - yearly: For low volume archives, creates one partition per year
 	// Default: "monthly"
 	PartitionGranularity string `json:"partition_granularity,omitempty"`
+
+	// EnablePartitionCacheCoordinator enables dynamic cache allocation across partitions.
+	// When true, uses PartitionCacheCoordinator to intelligently allocate cache based on access patterns (tiered: active 60%, recent 30%, historical 10%).
+	// When false, all partitions share the same BTreeCache directly without smart allocation.
+	// Setting this to false is recommended for memory rebuilding scenarios to maximize cache utilization.
+	// Default: true
+	EnablePartitionCacheCoordinator bool `json:"enable_partition_cache_coordinator,omitempty"`
+
+	// PartitionCacheStrategy defines how cache is allocated to different partitions.
+	// Options: "tiered" (default)
+	// - tiered: Active=60%, Recent=30%, Historical=10%
+	// Default: "tiered"
+	PartitionCacheStrategy string `json:"partition_cache_strategy,omitempty"`
+
+	// PartitionCacheActivePct is the percentage of cache allocated to active partitions.
+	// Default: 60
+	PartitionCacheActivePct int `json:"partition_cache_active_pct,omitempty"`
+
+	// PartitionCacheRecentPct is the percentage of cache allocated to recent partitions.
+	// Default: 30
+	PartitionCacheRecentPct int `json:"partition_cache_recent_pct,omitempty"`
+
+	// PartitionActiveCount defines how many partitions are considered "active".
+	// Default: 2
+	PartitionActiveCount int `json:"partition_active_count,omitempty"`
+
+	// PartitionRecentCount defines how many partitions are considered "recent".
+	// Default: 4
+	PartitionRecentCount int `json:"partition_recent_count,omitempty"`
 }
 
 // SearchTypeMapConfig defines the mapping from tag names to search type codes (from manifest.json).
@@ -652,21 +681,27 @@ func (c *Config) ToIndexConfig() index.Config {
 	pageSize := uint32(c.ToStoragePageSize())
 
 	return index.Config{
-		Dir:                         c.IndexConfig.IndexDir,
-		TagNameToSearchTypeCode:     mapping,
-		EnabledSearchTypes:          enabledTypes,
-		PrimaryIndexCacheMB:         c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
-		AuthorTimeIndexCacheMB:      c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
-		SearchIndexCacheMB:          c.IndexConfig.CacheConfig.SearchIndexCacheMB,
-		PageSize:                    pageSize,
-		FlushIntervalMs:             c.IndexConfig.FlushIntervalMs,
-		DirtyThreshold:              c.IndexConfig.DirtyThreshold,
-		DynamicAllocation:           c.IndexConfig.CacheConfig.DynamicAllocation,
-		TotalCacheMB:                c.IndexConfig.CacheConfig.TotalCacheMB,
-		MinCachePerIndexMB:          c.IndexConfig.CacheConfig.MinCachePerIndexMB,
-		ReallocationIntervalMinutes: c.IndexConfig.CacheConfig.ReallocationIntervalMinutes,
-		EnableTimePartitioning:      c.IndexConfig.EnableTimePartitioning,
-		PartitionGranularity:        c.IndexConfig.PartitionGranularity,
+		Dir:                             c.IndexConfig.IndexDir,
+		TagNameToSearchTypeCode:         mapping,
+		EnabledSearchTypes:              enabledTypes,
+		PrimaryIndexCacheMB:             c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
+		AuthorTimeIndexCacheMB:          c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
+		SearchIndexCacheMB:              c.IndexConfig.CacheConfig.SearchIndexCacheMB,
+		PageSize:                        pageSize,
+		FlushIntervalMs:                 c.IndexConfig.FlushIntervalMs,
+		DirtyThreshold:                  c.IndexConfig.DirtyThreshold,
+		DynamicAllocation:               c.IndexConfig.CacheConfig.DynamicAllocation,
+		TotalCacheMB:                    c.IndexConfig.CacheConfig.TotalCacheMB,
+		MinCachePerIndexMB:              c.IndexConfig.CacheConfig.MinCachePerIndexMB,
+		ReallocationIntervalMinutes:     c.IndexConfig.CacheConfig.ReallocationIntervalMinutes,
+		EnableTimePartitioning:          c.IndexConfig.EnableTimePartitioning,
+		PartitionGranularity:            c.IndexConfig.PartitionGranularity,
+		EnablePartitionCacheCoordinator: c.IndexConfig.EnablePartitionCacheCoordinator,
+		PartitionCacheStrategy:          c.IndexConfig.PartitionCacheStrategy,
+		PartitionCacheActivePct:         c.IndexConfig.PartitionCacheActivePct,
+		PartitionCacheRecentPct:         c.IndexConfig.PartitionCacheRecentPct,
+		PartitionActiveCount:            c.IndexConfig.PartitionActiveCount,
+		PartitionRecentCount:            c.IndexConfig.PartitionRecentCount,
 	}
 }
 
@@ -730,10 +765,16 @@ func DefaultConfig() *Config {
 				MinCachePerIndexMB:          20,
 				ReallocationIntervalMinutes: 10,
 			},
-			FlushIntervalMs:        100,
-			DirtyThreshold:         128,
-			EnableTimePartitioning: false,
-			PartitionGranularity:   "monthly",
+			FlushIntervalMs:                 100,
+			DirtyThreshold:                  128,
+			EnableTimePartitioning:          false,
+			PartitionGranularity:            "monthly",
+			EnablePartitionCacheCoordinator: true,
+			PartitionCacheStrategy:          "tiered",
+			PartitionCacheActivePct:         60,
+			PartitionCacheRecentPct:         30,
+			PartitionActiveCount:            2,
+			PartitionRecentCount:            4,
 		},
 		WALConfig: WALConfig{
 			Disabled:             false,

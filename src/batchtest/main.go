@@ -177,6 +177,7 @@ func initStore(dir string) (eventstore.EventStore, error) {
 
 	cfg.IndexConfig.PartitionGranularity = "weekly"
 	cfg.IndexConfig.EnableTimePartitioning = true
+	cfg.IndexConfig.EnablePartitionCacheCoordinator = false // Disable coordinator for maximum cache utilization
 	// Increase cache sizes for large datasets (especially search index)
 	// For 100K events, search index needs ~150MB (37K nodes * 4KB/node)
 	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 150

@@ -142,6 +142,10 @@ func (pi *PartitionedIndex) Get(ctx context.Context, key []byte) (types.RecordLo
 	if err == nil {
 		partition, err := pi.getPartitionForTimestamp(timestamp)
 		if err == nil {
+			// Record access for cache rebalancing
+			if pi.cacheCoordinator != nil {
+				pi.cacheCoordinator.RecordAccess(partition.FilePath)
+			}
 			return partition.Index.Get(ctx, key)
 		}
 	}
@@ -159,6 +163,10 @@ func (pi *PartitionedIndex) Get(ctx context.Context, key []byte) (types.RecordLo
 			return types.RecordLocation{}, false, err
 		}
 		if found {
+			// Record access for cache rebalancing
+			if pi.cacheCoordinator != nil {
+				pi.cacheCoordinator.RecordAccess(p.FilePath)
+			}
 			return loc, true, nil
 		}
 	}
@@ -282,12 +290,21 @@ func (pi *PartitionedIndex) Range(ctx context.Context, minKey []byte, maxKey []b
 
 	// If only one partition, return its iterator directly (supports Prev)
 	if len(partitions) == 1 {
+		// Record access for this partition
+		if pi.cacheCoordinator != nil {
+			pi.cacheCoordinator.RecordAccess(partitions[0].FilePath)
+		}
 		return partitions[0].Index.Range(ctx, minKey, maxKey)
 	}
 
 	// Create iterators for each partition.
 	iterators := make([]Iterator, 0, len(partitions))
 	for _, p := range partitions {
+		// Record access for cache rebalancing
+		if pi.cacheCoordinator != nil {
+			pi.cacheCoordinator.RecordAccess(p.FilePath)
+		}
+
 		iter, err := p.Index.Range(ctx, minKey, maxKey)
 		if err != nil {
 			// Close previously opened iterators.
@@ -331,6 +348,10 @@ func (pi *PartitionedIndex) RangeDesc(ctx context.Context, minKey []byte, maxKey
 
 	// If only one partition, return its iterator directly (supports Prev)
 	if len(partitions) == 1 {
+		// Record access for this partition
+		if pi.cacheCoordinator != nil {
+			pi.cacheCoordinator.RecordAccess(partitions[0].FilePath)
+		}
 		return partitions[0].Index.RangeDesc(ctx, minKey, maxKey)
 	}
 
@@ -343,6 +364,11 @@ func (pi *PartitionedIndex) RangeDesc(ctx context.Context, minKey []byte, maxKey
 	// Create reverse iterators for each partition.
 	iterators := make([]Iterator, 0, len(partitions))
 	for _, p := range partitions {
+		// Record access for cache rebalancing
+		if pi.cacheCoordinator != nil {
+			pi.cacheCoordinator.RecordAccess(p.FilePath)
+		}
+
 		iter, err := p.Index.RangeDesc(ctx, minKey, maxKey)
 		if err != nil {
 			// Close previously opened iterators.

@@ -130,6 +130,16 @@ type PartitionedIndex struct {
 
 	// sharedCache is the shared cache instance used by all partitions.
 	sharedCache *cache.BTreeCache
+
+	// cacheCoordinator manages cache allocation across partitions with dynamic rebalancing.
+	// Nil if partitioning is disabled or coordinator is not enabled.
+	cacheCoordinator *cache.PartitionCacheCoordinator
+
+	// rebalanceTimer controls the background cache rebalancing goroutine.
+	rebalanceTimer *time.Ticker
+
+	// done signals the background goroutine to stop.
+	done chan struct{}
 }
 
 // NewPartitionedIndex creates a new time-partitioned index.
@@ -173,6 +183,44 @@ func NewPartitionedIndex(
 	// - Historical partitions: ~2-5MB each
 	// This tiered allocation ensures new data performs well while old data uses minimal cache.
 	pi.sharedCache = nil
+
+	// Initialize cache: either with coordinator (smart allocation) or direct shared cache (maximum utilization).
+	totalCacheMB := cacheMBForIndexType(pi.config, pi.indexType)
+	if totalCacheMB > 0 {
+		// Create shared cache for all partitions
+		if pi.sharedCache == nil {
+			pi.sharedCache = cache.NewBTreeCacheWithoutWriter(totalCacheMB, 4096)
+		}
+
+		// Check if cache coordinator is enabled
+		if pi.config.EnablePartitionCacheCoordinator {
+			// Use coordinator for dynamic cache rebalancing across partitions
+			activePct := pi.config.PartitionCacheActivePct
+			if activePct <= 0 || activePct > 100 {
+				activePct = 60
+			}
+			recentPct := pi.config.PartitionCacheRecentPct
+			if recentPct <= 0 {
+				recentPct = 30
+			}
+
+			pi.cacheCoordinator = cache.NewPartitionCacheCoordinator(
+				pi.sharedCache,
+				totalCacheMB,
+				activePct,
+				recentPct,
+			)
+
+			// Start background cache rebalancer (every 5 minutes)
+			pi.done = make(chan struct{})
+			pi.cacheCoordinator.StartRebalancer(5 * time.Minute)
+			fmt.Printf("[partition] Cache coordinator enabled for %s (total: %d MB, tiered allocation)\n", pi.basePath, totalCacheMB)
+		} else {
+			// No coordinator: all partitions share cache directly for maximum utilization
+			fmt.Printf("[partition] Cache coordinator disabled for %s (total: %d MB, direct sharing)\n", pi.basePath, totalCacheMB)
+		}
+	}
+
 	fmt.Printf("[partition] Using per-partition independent caches with tiered allocation\n")
 
 	// Discover existing partition files.
@@ -218,6 +266,7 @@ func NewPartitionedIndex(
 
 // allocateCacheToPartitions dynamically allocates cache to partitions based on their age.
 // Uses tiered allocation: Active partitions get 60%, Recent get 30%, Historical get 10%.
+// Also registers partitions with the cache coordinator to enable dynamic rebalancing.
 func (pi *PartitionedIndex) allocateCacheToPartitions() {
 	if len(pi.partitions) == 0 {
 		return
@@ -226,6 +275,12 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 	totalCacheMB := cacheMBForIndexType(pi.config, pi.indexType)
 	if totalCacheMB <= 0 {
 		totalCacheMB = 10
+	}
+
+	// If coordinator is disabled, skip allocation - all partitions share cache directly
+	if pi.cacheCoordinator == nil {
+		fmt.Printf("[partition] Cache mode for %s: Direct sharing (total: %d MB, no coordinator)\n", pi.basePath, totalCacheMB)
+		return
 	}
 
 	activePct := pi.config.PartitionCacheActivePct
@@ -245,6 +300,9 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 	// Single partition gets all cache
 	if len(pi.partitions) == 1 {
 		pi.partitions[0].CacheSizeMB = totalCacheMB
+		if pi.cacheCoordinator != nil {
+			pi.cacheCoordinator.RegisterPartition(pi.partitions[0].FilePath, 2) // active
+		}
 		return
 	}
 
@@ -273,6 +331,10 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 		}
 		for i := activeStartIdx; i <= activeIdx; i++ {
 			pi.partitions[i].CacheSizeMB = perActiveCache
+			// Register as active (priority=2)
+			if pi.cacheCoordinator != nil {
+				pi.cacheCoordinator.RegisterPartition(pi.partitions[i].FilePath, 2)
+			}
 		}
 	}
 
@@ -286,7 +348,7 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 		recentStartIdx = 0
 	}
 
-	//Allocate to recent partitions
+	// Allocate to recent partitions
 	if recentStartIdx < activeStartIdx {
 		recentPartitionCount := activeStartIdx - recentStartIdx
 		perRecentCache := recentCacheMB / recentPartitionCount
@@ -295,6 +357,10 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 		}
 		for i := recentStartIdx; i < activeStartIdx; i++ {
 			pi.partitions[i].CacheSizeMB = perRecentCache
+			// Register as recent (priority=1)
+			if pi.cacheCoordinator != nil {
+				pi.cacheCoordinator.RegisterPartition(pi.partitions[i].FilePath, 1)
+			}
 		}
 	}
 
@@ -307,7 +373,30 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 		}
 		for i := 0; i < recentStartIdx; i++ {
 			pi.partitions[i].CacheSizeMB = perHistoricalCache
+			// Register as historical (priority=0)
+			if pi.cacheCoordinator != nil {
+				pi.cacheCoordinator.RegisterPartition(pi.partitions[i].FilePath, 0)
+			}
 		}
+	}
+
+	// Trigger immediate rebalance in coordinator
+	if pi.cacheCoordinator != nil {
+		if err := pi.cacheCoordinator.Rebalance(); err != nil {
+			fmt.Printf("[partition] Warning: failed to rebalance cache: %v\n", err)
+		}
+	}
+
+	// Log allocation status
+	fmt.Printf("[partition] Cache allocation for %s (total: %d MB):\n", pi.basePath, totalCacheMB)
+	for i, p := range pi.partitions {
+		priority := 0
+		if i >= activeStartIdx {
+			priority = 2
+		} else if i >= recentStartIdx {
+			priority = 1
+		}
+		fmt.Printf("[partition]   %s: %d MB (priority: %d)\n", p.FilePath, p.CacheSizeMB, priority)
 	}
 }
 
@@ -437,7 +526,7 @@ func (pi *PartitionedIndex) parsePartitionFilename(filePath string) (*TimePartit
 		return nil, fmt.Errorf("failed to open partition index: %w", err)
 	}
 
-	return &TimePartition{
+	partition := &TimePartition{
 		StartTime:   startTime,
 		EndTime:     endTime,
 		FilePath:    filePath,
@@ -445,7 +534,14 @@ func (pi *PartitionedIndex) parsePartitionFilename(filePath string) (*TimePartit
 		IsReadOnly:  false, // Will be set later if needed
 		IsActive:    false,
 		CacheSizeMB: defaultCacheMB, // Will be updated by allocateCacheToPartitions
-	}, nil
+	}
+
+	// Register with cache coordinator (priority will be updated in allocateCacheToPartitions)
+	if pi.cacheCoordinator != nil {
+		pi.cacheCoordinator.RegisterPartition(filePath, 0) // Placeholder priority
+	}
+
+	return partition, nil
 }
 
 // createPartitionForTime creates a new partition covering the given time.
@@ -557,6 +653,11 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 		CacheSizeMB: newPartitionCacheMB,
 	}
 
+	// Register new partition with cache coordinator
+	if pi.cacheCoordinator != nil {
+		pi.cacheCoordinator.RegisterPartition(filePath, 2) // New partitions start as active
+	}
+
 	pi.partitions = append(pi.partitions, partition)
 
 	// Re-sort partitions.
@@ -630,6 +731,12 @@ func (pi *PartitionedIndex) getPartitionsForRange(minTimestamp, maxTimestamp uin
 func (pi *PartitionedIndex) Close() error {
 	pi.mu.Lock()
 	defer pi.mu.Unlock()
+
+	// Stop cache coordinator background rebalancer if it exists
+	if pi.cacheCoordinator != nil {
+		pi.cacheCoordinator.StopRebalancer()
+		fmt.Printf("[partition] Cache coordinator stopped for %s\n", pi.basePath)
+	}
 
 	if pi.legacyIndex != nil {
 		return pi.legacyIndex.Close()
@@ -721,6 +828,14 @@ func (pi *PartitionedIndex) GetPartitionInfo() []PartitionInfo {
 	}
 
 	return result
+}
+
+// GetCacheCoordinator returns the cache coordinator for this partitioned index.
+// Used for testing and monitoring cache rebalancing behavior.
+func (pi *PartitionedIndex) GetCacheCoordinator() *cache.PartitionCacheCoordinator {
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+	return pi.cacheCoordinator
 }
 
 // PartitionInfo contains information about a single partition.

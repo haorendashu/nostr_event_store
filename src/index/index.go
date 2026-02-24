@@ -285,6 +285,13 @@ type Config struct {
 	// PartitionRecentCount defines how many partitions are considered "recent".
 	// Default: 4
 	PartitionRecentCount int
+
+	// EnablePartitionCacheCoordinator enables dynamic cache allocation across partitions.
+	// When true, uses PartitionCacheCoordinator to intelligently allocate cache based on access patterns.
+	// When false, all partitions share the same BTreeCache directly without smart allocation.
+	// Setting this to false is recommended for memory rebuilding scenarios to maximize cache utilization.
+	// Default: true
+	EnablePartitionCacheCoordinator bool
 }
 
 // BTreeConfig holds B+Tree-specific tuning parameters.

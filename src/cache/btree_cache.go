@@ -25,6 +25,7 @@ type cacheEntry struct {
 	node   BTreeNode
 	elem   *list.Element
 	dirty  bool
+	writer NodeWriter // Each entry records its own writer to support multi-writer scenarios
 }
 
 type BTreeCache struct {
@@ -96,11 +97,26 @@ func (c *BTreeCache) Get(offset uint64) (BTreeNode, bool) {
 }
 
 func (c *BTreeCache) Put(node BTreeNode) error {
+	return c.PutWithWriter(node, c.writer)
+}
+
+// PutWithWriter adds a node to the cache with a specific writer.
+// This method enables multi-writer support for partitioned indexes where different
+// partitions may write to different files. Each cache entry records its own writer,
+// ensuring that when the entry is evicted, it's written to the correct destination.
+//
+// Parameters:
+//   - node: The B-tree node to cache
+//   - writer: The NodeWriter responsible for persisting this node (can be nil, which falls back to the cache's global writer)
+//
+// Returns: error if cache operations fail
+func (c *BTreeCache) PutWithWriter(node BTreeNode, writer NodeWriter) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if entry, ok := c.entries[node.Offset()]; ok {
 		entry.node = node
+		entry.writer = writer // Update writer for this entry
 		if node.IsDirty() && !entry.dirty {
 			entry.dirty = true
 			c.dirtyCount++
@@ -116,7 +132,7 @@ func (c *BTreeCache) Put(node BTreeNode) error {
 	}
 
 	elem := c.lru.PushFront(node.Offset())
-	entry := &cacheEntry{offset: node.Offset(), node: node, elem: elem, dirty: node.IsDirty()}
+	entry := &cacheEntry{offset: node.Offset(), node: node, elem: elem, dirty: node.IsDirty(), writer: writer}
 	c.entries[node.Offset()] = entry
 	if entry.dirty {
 		c.dirtyCount++
@@ -146,7 +162,8 @@ func (c *BTreeCache) evictOne() error {
 	offset := back.Value.(uint64)
 	entry := c.entries[offset]
 	if entry.dirty {
-		if err := c.writeNode(entry.node); err != nil {
+		// Use the entry's own writer to avoid cross-writer conflicts
+		if err := c.writeNodeWithWriter(entry.node, entry.writer); err != nil {
 			return err
 		}
 		entry.dirty = false
@@ -159,11 +176,26 @@ func (c *BTreeCache) evictOne() error {
 }
 
 func (c *BTreeCache) writeNode(node BTreeNode) error {
+	return c.writeNodeWithWriter(node, c.writer)
+}
+
+// writeNodeWithWriter writes a node using the specified writer.
+// This enables multi-writer support for partitioned indexes.
+// If writer is nil, falls back to the global cache writer.
+func (c *BTreeCache) writeNodeWithWriter(node BTreeNode, writer NodeWriter) error {
+	if writer == nil {
+		// Fallback to global writer for backward compatibility
+		if c.writer == nil {
+			return fmt.Errorf("no writer available for node offset %d", node.Offset())
+		}
+		writer = c.writer
+	}
+
 	buf, err := node.Serialize(c.pageSize)
 	if err != nil {
 		return err
 	}
-	if err := c.writer.WriteNodePage(node.Offset(), buf); err != nil {
+	if err := writer.WriteNodePage(node.Offset(), buf); err != nil {
 		return err
 	}
 	node.SetDirty(false)
@@ -179,7 +211,8 @@ func (c *BTreeCache) FlushDirty() (int, error) {
 		if !entry.dirty {
 			continue
 		}
-		if err := c.writeNode(entry.node); err != nil {
+		// Use the entry's own writer to avoid cross-writer conflicts
+		if err := c.writeNodeWithWriter(entry.node, entry.writer); err != nil {
 			return flushed, err
 		}
 		entry.dirty = false
