@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/cache"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // manager is the default in-memory index manager implementation.
@@ -202,6 +203,78 @@ func (m *manager) Close() error {
 		_ = m.search.Close()
 	}
 	m.isOpen = false
+	return nil
+}
+
+// InsertRecoveryBatch efficiently inserts multiple events into all indexes during recovery.
+// This batches all three index updates together and uses batch insert APIs.
+func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
+	if len(events) != len(locations) {
+		return fmt.Errorf("events and locations length mismatch: %d vs %d", len(events), len(locations))
+	}
+
+	if len(events) == 0 {
+		return nil
+	}
+
+	// Pre-allocate slices for batch operations
+	primaryKeys := make([][]byte, len(events))
+	authorTimeKeys := make([][]byte, len(events))
+	searchKeys := make([][]byte, 0, len(events)*3) // Rough estimate: avg 3 tags per event
+	searchLocations := make([]types.RecordLocation, 0, len(events)*3)
+
+	// Get tag mapping once
+	tagMapping := m.keyBuilder.TagNameToSearchTypeCode()
+
+	// Build all keys
+	for i, event := range events {
+		// Primary index key
+		primaryKeys[i] = m.keyBuilder.BuildPrimaryKey(event.ID)
+
+		// Author-time index key
+		authorTimeKeys[i] = m.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
+
+		// Search index keys for all configured tags
+		for _, tag := range event.Tags {
+			if len(tag) < 2 {
+				continue
+			}
+
+			tagName := tag[0]
+			tagValue := tag[1]
+
+			searchTypeCode, ok := tagMapping[tagName]
+			if !ok {
+				continue
+			}
+
+			searchKey := m.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+			searchKeys = append(searchKeys, searchKey)
+			searchLocations = append(searchLocations, locations[i])
+		}
+	}
+
+	// Batch insert into primary index
+	if m.primary != nil {
+		if err := m.primary.InsertBatch(ctx, primaryKeys, locations); err != nil {
+			return fmt.Errorf("primary index batch insert: %w", err)
+		}
+	}
+
+	// Batch insert into author-time index
+	if m.authorTime != nil {
+		if err := m.authorTime.InsertBatch(ctx, authorTimeKeys, locations); err != nil {
+			return fmt.Errorf("author-time index batch insert: %w", err)
+		}
+	}
+
+	// Batch insert into search index
+	if m.search != nil && len(searchKeys) > 0 {
+		if err := m.search.InsertBatch(ctx, searchKeys, searchLocations); err != nil {
+			return fmt.Errorf("search index batch insert: %w", err)
+		}
+	}
+
 	return nil
 }
 

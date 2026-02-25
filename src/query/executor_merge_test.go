@@ -196,6 +196,10 @@ func (m *mockIndexManagerForMerge) AllStats() map[string]index.Stats {
 	return nil
 }
 
+func (m *mockIndexManagerForMerge) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
+	return nil
+}
+
 // mockStoreForMerge implements storage.Store
 type mockStoreForMerge struct {
 	events map[string]*types.Event // key: "segmentID:offset"

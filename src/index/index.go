@@ -186,6 +186,12 @@ type Manager interface {
 	// Callers should use this to ensure key encoding matches runtime config.
 	KeyBuilder() KeyBuilder
 
+	// InsertRecoveryBatch efficiently inserts multiple events into all indexes during recovery.
+	// This is optimized for bulk recovery and batches updates to all three indexes.
+	// events and locations must have the same length.
+	// Returns error if any index insert fails.
+	InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error
+
 	// Flush flushes all indexes to disk.
 	// After Flush, all index operations are durable.
 	// ctx is used for cancellation and timeouts.

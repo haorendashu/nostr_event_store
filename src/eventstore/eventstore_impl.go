@@ -1697,84 +1697,189 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 		return fmt.Errorf("reopen index manager: %w", err)
 	}
 	e.indexMgr = indexMgrImpl
-	e.logger.Printf("Index manager recreated, starting rebuild from %d segments...", len(segmentIDs))
+	e.logger.Printf("Index manager recreated, starting optimized batch recovery from %d segments...", len(segmentIDs))
 
-	replayer := &indexReplayer{
-		storage:    e.storage,
-		indexMgr:   e.indexMgr,
-		keyBuilder: e.keyBuilder,
-		serializer: e.storage.Serializer(),
-		logger:     e.logger,
+	// Use optimized batch recovery with parallel segment scanning
+	return e.rebuildIndexesFromSegmentsParallel(ctx, segmentIDs)
+}
+
+// recoveryEvent combines an event with its location for batch processing
+type recoveryEvent struct {
+	event    *types.Event
+	location types.RecordLocation
+}
+
+// rebuildIndexesFromSegmentsParallel performs parallel segment scanning with batch index updates
+func (e *eventStoreImpl) rebuildIndexesFromSegmentsParallel(ctx context.Context, segmentIDs []uint32) error {
+	const (
+		numWorkers    = 6     // Parallel segment scanners
+		batchSize     = 5000  // Events per batch insert
+		progressEvery = 50000 // Log progress every N events
+	)
+
+	serializer := e.storage.Serializer()
+
+	// Channel for workers to send scanned events
+	eventCh := make(chan recoveryEvent, batchSize*2)
+
+	// Error channel for worker errors
+	errorCh := make(chan error, numWorkers)
+
+	// WaitGroup for workers
+	var workerWg sync.WaitGroup
+
+	// Channel to distribute segment IDs to workers
+	segmentCh := make(chan uint32, len(segmentIDs))
+	for _, segID := range segmentIDs {
+		segmentCh <- segID
+	}
+	close(segmentCh)
+
+	// Statistics
+	var totalRecovered, totalSkippedDeleted, totalSkippedCorrupted atomic.Uint64
+	startTime := time.Now()
+
+	// Start worker goroutines for parallel segment scanning
+	e.logger.Printf("Starting %d parallel segment scanners...", numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		workerWg.Add(1)
+		go func(workerID int) {
+			defer workerWg.Done()
+
+			for segmentID := range segmentCh {
+				segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
+				if err != nil {
+					e.logger.Printf("Worker %d: segment %d open failed: %v", workerID, segmentID, err)
+					continue
+				}
+
+				fileSeg, ok := segment.(*storage.FileSegment)
+				if !ok {
+					e.logger.Printf("Worker %d: segment %d is not file-based", workerID, segmentID)
+					continue
+				}
+
+				scanner := storage.NewScanner(fileSeg)
+				pageSize := fileSeg.PageSize()
+				var segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted uint64
+
+				for {
+					record, location, err := scanner.Next(ctx)
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						// Skip to next page boundary to avoid infinite loop on corrupted records
+						currentOffset := scanner.CurrentOffset()
+						nextPageOffset := ((currentOffset / pageSize) + 1) * pageSize
+						scanner.Seek(nextPageOffset)
+						segmentSkippedCorrupted++
+						continue
+					}
+
+					// Skip deleted or replaced records
+					if record.Flags.IsDeleted() || record.Flags.IsReplaced() {
+						segmentSkippedDeleted++
+						continue
+					}
+
+					event, err := serializer.Deserialize(record)
+					if err != nil {
+						segmentSkippedCorrupted++
+						continue
+					}
+
+					// Send event to batch processor
+					select {
+					case eventCh <- recoveryEvent{event: event, location: location}:
+						segmentRecovered++
+					case <-ctx.Done():
+						return
+					}
+				}
+
+				totalRecovered.Add(segmentRecovered)
+				totalSkippedDeleted.Add(segmentSkippedDeleted)
+				totalSkippedCorrupted.Add(segmentSkippedCorrupted)
+
+				if segmentSkippedDeleted > 0 || segmentSkippedCorrupted > 0 {
+					e.logger.Printf("Worker %d - Segment %d: recovered=%d, skipped_deleted=%d, skipped_corrupted=%d",
+						workerID, segmentID, segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted)
+				}
+			}
+		}(i)
 	}
 
-	var totalRecovered, totalSkippedDeleted, totalSkippedCorrupted uint64
-	e.logger.Printf("Rebuilding indexes from %d segments...", len(segmentIDs))
+	// Goroutine to close eventCh when all workers are done
+	go func() {
+		workerWg.Wait()
+		close(eventCh)
+	}()
 
-	for _, segmentID := range segmentIDs {
-		segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
-		if err != nil {
-			e.logger.Printf("Recovery warning: open segment %d failed: %v", segmentID, err)
-			continue
+	// Main goroutine: batch process events from channel
+	e.logger.Printf("Processing events in batches of %d...", batchSize)
+
+	eventBatch := make([]*types.Event, 0, batchSize)
+	locationBatch := make([]types.RecordLocation, 0, batchSize)
+	var processedCount uint64
+	var lastProgressLog time.Time
+
+	for recEvent := range eventCh {
+		eventBatch = append(eventBatch, recEvent.event)
+		locationBatch = append(locationBatch, recEvent.location)
+		processedCount++
+
+		// Flush batch when full
+		if len(eventBatch) >= batchSize {
+			if err := e.indexMgr.InsertRecoveryBatch(ctx, eventBatch, locationBatch); err != nil {
+				e.logger.Printf("Batch insert error: %v", err)
+				return fmt.Errorf("batch index insert failed: %w", err)
+			}
+
+			// Clear batches
+			eventBatch = eventBatch[:0]
+			locationBatch = locationBatch[:0]
 		}
 
-		fileSeg, ok := segment.(*storage.FileSegment)
-		if !ok {
-			e.logger.Printf("Recovery warning: segment %d is not file-based", segmentID)
-			continue
+		// Log progress periodically
+		if processedCount%progressEvery == 0 {
+			now := time.Now()
+			elapsed := now.Sub(startTime).Seconds()
+			rate := float64(processedCount) / elapsed
+			if now.Sub(lastProgressLog) >= time.Second {
+				e.logger.Printf("Recovery progress: %d events processed (%.0f events/sec, %.1f min elapsed)",
+					processedCount, rate, elapsed/60.0)
+				lastProgressLog = now
+			}
 		}
-
-		scanner := storage.NewScanner(fileSeg)
-		pageSize := fileSeg.PageSize()
-		var segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted uint64
-
-		for {
-			record, location, err := scanner.Next(ctx)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				e.logger.Printf("Recovery warning: segment %d offset %d read error: %v", segmentID, location.Offset, err)
-				// Skip to next page boundary to avoid infinite loop on corrupted records
-				currentOffset := scanner.CurrentOffset()
-				nextPageOffset := ((currentOffset / pageSize) + 1) * pageSize
-				scanner.Seek(nextPageOffset)
-				segmentSkippedCorrupted++
-				continue
-			}
-
-			// Skip deleted or replaced records
-			if record.Flags.IsDeleted() || record.Flags.IsReplaced() {
-				segmentSkippedDeleted++
-				continue
-			}
-
-			event, err := replayer.serializer.Deserialize(record)
-			if err != nil {
-				e.logger.Printf("Recovery warning: segment %d offset %d deserialize error: %v", segmentID, location.Offset, err)
-				continue
-			}
-
-			if err := replayer.OnInsert(ctx, event, location); err != nil {
-				e.logger.Printf("Recovery warning: segment %d offset %d index insert error: %v", segmentID, location.Offset, err)
-				continue
-			}
-
-			segmentRecovered++
-		}
-
-		if segmentSkippedDeleted > 0 || segmentSkippedCorrupted > 0 {
-			e.logger.Printf("Segment %d recovery: recovered=%d, skipped_deleted=%d, skipped_corrupted=%d",
-				segmentID, segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted)
-		}
-
-		totalRecovered += segmentRecovered
-		totalSkippedDeleted += segmentSkippedDeleted
-		totalSkippedCorrupted += segmentSkippedCorrupted
 	}
 
-	if totalSkippedDeleted > 0 || totalSkippedCorrupted > 0 {
-		e.logger.Printf("Index recovery summary: recovered=%d events, skipped_deleted=%d, skipped_corrupted=%d",
-			totalRecovered, totalSkippedDeleted, totalSkippedCorrupted)
+	// Flush remaining events
+	if len(eventBatch) > 0 {
+		if err := e.indexMgr.InsertRecoveryBatch(ctx, eventBatch, locationBatch); err != nil {
+			e.logger.Printf("Final batch insert error: %v", err)
+			return fmt.Errorf("final batch index insert failed: %w", err)
+		}
+	}
+
+	// Check for worker errors
+	select {
+	case err := <-errorCh:
+		return fmt.Errorf("worker error: %w", err)
+	default:
+	}
+
+	// Final statistics
+	elapsed := time.Since(startTime)
+	recovered := totalRecovered.Load()
+	skippedDeleted := totalSkippedDeleted.Load()
+	skippedCorrupted := totalSkippedCorrupted.Load()
+
+	e.logger.Printf("Index recovery completed in %.1f minutes", elapsed.Minutes())
+	e.logger.Printf("Recovery summary: recovered=%d events, skipped_deleted=%d, skipped_corrupted=%d",
+		recovered, skippedDeleted, skippedCorrupted)
+	if recovered > 0 {
+		e.logger.Printf("Recovery rate: %.0f events/sec", float64(recovered)/elapsed.Seconds())
 	}
 
 	return nil

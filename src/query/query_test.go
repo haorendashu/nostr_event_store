@@ -54,6 +54,10 @@ func (m *mockIndexManager) AllStats() map[string]index.Stats {
 	return nil
 }
 
+func (m *mockIndexManager) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
+	return nil
+}
+
 // mockIndex implements index.Index for testing.
 type mockIndex struct {
 	mgr       *mockIndexManager
