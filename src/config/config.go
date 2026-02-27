@@ -172,6 +172,9 @@ type CacheConfig struct {
 	// SearchIndexCacheMB is the cache size for the unified search index.
 	// Default: 100 MB
 	SearchIndexCacheMB int `json:"search_index_cache_mb,omitempty"`
+	// KindTimeIndexCacheMB is the cache size for the kind+time index.
+	// Default: 50 MB
+	KindTimeIndexCacheMB int `json:"kind_time_index_cache_mb,omitempty"`
 
 	// EvictionPolicy is the cache eviction algorithm ("lru", "lfu").
 	// Default: "lru"
@@ -526,6 +529,9 @@ func (m *ManagerImpl) SetDefaults() {
 	if m.config.IndexConfig.CacheConfig.SearchIndexCacheMB == 0 {
 		m.config.IndexConfig.CacheConfig.SearchIndexCacheMB = defaults.IndexConfig.CacheConfig.SearchIndexCacheMB
 	}
+	if m.config.IndexConfig.CacheConfig.KindTimeIndexCacheMB == 0 {
+		m.config.IndexConfig.CacheConfig.KindTimeIndexCacheMB = defaults.IndexConfig.CacheConfig.KindTimeIndexCacheMB
+	}
 	if m.config.IndexConfig.CacheConfig.EvictionPolicy == "" {
 		m.config.IndexConfig.CacheConfig.EvictionPolicy = defaults.IndexConfig.CacheConfig.EvictionPolicy
 	}
@@ -687,6 +693,7 @@ func (c *Config) ToIndexConfig() index.Config {
 		PrimaryIndexCacheMB:             c.IndexConfig.CacheConfig.PrimaryIndexCacheMB,
 		AuthorTimeIndexCacheMB:          c.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB,
 		SearchIndexCacheMB:              c.IndexConfig.CacheConfig.SearchIndexCacheMB,
+		KindTimeIndexCacheMB:            c.IndexConfig.CacheConfig.KindTimeIndexCacheMB,
 		PageSize:                        pageSize,
 		FlushIntervalMs:                 c.IndexConfig.FlushIntervalMs,
 		DirtyThreshold:                  c.IndexConfig.DirtyThreshold,
@@ -758,6 +765,7 @@ func DefaultConfig() *Config {
 				PrimaryIndexCacheMB:         50,
 				AuthorTimeIndexCacheMB:      50,
 				SearchIndexCacheMB:          100,
+				KindTimeIndexCacheMB:        50,
 				EvictionPolicy:              "lru",
 				CacheConcurrency:            16,
 				DynamicAllocation:           false,

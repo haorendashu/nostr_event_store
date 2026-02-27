@@ -110,6 +110,8 @@ func cacheMBForIndexType(cfg Config, indexType uint32) int {
 		return cfg.AuthorTimeIndexCacheMB
 	case indexTypeSearch:
 		return cfg.SearchIndexCacheMB
+	case indexTypeKindTime:
+		return cfg.KindTimeIndexCacheMB
 	default:
 		return 10
 	}

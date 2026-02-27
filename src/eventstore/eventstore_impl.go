@@ -1597,6 +1597,7 @@ func hasIndexFiles(indexDir string) bool {
 		"primary.idx",
 		"author_time.idx",
 		"search.idx",
+		"kind_time.idx",
 	}
 
 	for _, name := range indexFiles {

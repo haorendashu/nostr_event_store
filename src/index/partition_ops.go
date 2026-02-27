@@ -515,6 +515,15 @@ func extractTimestampFromKey(key []byte, indexType uint32) (uint32, error) {
 		timestamp := binary.BigEndian.Uint32(key[len(key)-4:])
 		return timestamp, nil
 
+	case indexTypeKindTime:
+		// Key format: kind(2) + created_at(4) = 6 bytes
+		if len(key) < 6 {
+			return 0, ErrInvalidKeyFormat
+		}
+		// Timestamp is the last 4 bytes (bytes 2-6).
+		timestamp := binary.BigEndian.Uint32(key[2:6])
+		return timestamp, nil
+
 	default:
 		return 0, ErrUnknownIndexType
 	}

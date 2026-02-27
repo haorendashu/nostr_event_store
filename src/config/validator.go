@@ -52,6 +52,9 @@ func ValidateConfig(cfg *Config) error {
 	if cfg.IndexConfig.CacheConfig.SearchIndexCacheMB <= 0 {
 		return fmt.Errorf("index.cache.search_index_cache_mb must be > 0")
 	}
+	if cfg.IndexConfig.CacheConfig.KindTimeIndexCacheMB <= 0 {
+		return fmt.Errorf("index.cache.kind_time_index_cache_mb must be > 0")
+	}
 	if cfg.IndexConfig.CacheConfig.CacheConcurrency <= 0 {
 		return fmt.Errorf("index.cache.cache_concurrency must be > 0")
 	}

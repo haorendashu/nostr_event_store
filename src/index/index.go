@@ -235,6 +235,11 @@ type Config struct {
 	SearchIndexCacheMB int
 
 	// PageSize is the page size used for index nodes (must match storage page size).
+
+	// KindTimeIndexCacheMB is the cache size for the kind+time index in MB.
+	KindTimeIndexCacheMB int
+
+	// PageSize is the page size used for index nodes (must match storage page size).
 	// Valid values: 4096, 8192, 16384.
 	PageSize uint32
 

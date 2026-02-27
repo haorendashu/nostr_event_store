@@ -519,6 +519,8 @@ func (pi *PartitionedIndex) parsePartitionFilename(filePath string) (*TimePartit
 		tempConfig.AuthorTimeIndexCacheMB = defaultCacheMB
 	case indexTypeSearch:
 		tempConfig.SearchIndexCacheMB = defaultCacheMB
+	case indexTypeKindTime:
+		tempConfig.KindTimeIndexCacheMB = defaultCacheMB
 	}
 
 	index, err := NewPersistentBTreeIndexWithType(filePath, tempConfig, pi.indexType)
@@ -630,6 +632,8 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 		tempConfig.AuthorTimeIndexCacheMB = newPartitionCacheMB
 	case indexTypeSearch:
 		tempConfig.SearchIndexCacheMB = newPartitionCacheMB
+	case indexTypeKindTime:
+		tempConfig.KindTimeIndexCacheMB = newPartitionCacheMB
 	}
 
 	fmt.Printf("[partition] Creating partition file: %s (for time %s) with %d MB cache\n",
