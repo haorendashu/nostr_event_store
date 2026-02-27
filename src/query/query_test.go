@@ -38,6 +38,10 @@ func (m *mockIndexManager) SearchIndex() index.Index {
 	return &mockIndex{mgr: m, indexType: "search"}
 }
 
+func (m *mockIndexManager) KindTimeIndex() index.Index {
+	return &mockIndex{mgr: m, indexType: "kind_time"}
+}
+
 func (m *mockIndexManager) KeyBuilder() index.KeyBuilder {
 	return index.NewKeyBuilder(index.DefaultSearchTypeCodes())
 }
@@ -239,6 +243,22 @@ func TestFilterMatching(t *testing.T) {
 			name: "Timestamp too old",
 			filter: &types.QueryFilter{
 				Since: 2000,
+			},
+			match: false,
+		},
+		{
+			name: "Kind with until - createdAt before cutoff",
+			filter: &types.QueryFilter{
+				Kinds: []uint16{1},
+				Until: 1500,
+			},
+			match: true,
+		},
+		{
+			name: "Kind with until - createdAt after cutoff",
+			filter: &types.QueryFilter{
+				Kinds: []uint16{1},
+				Until: 900,
 			},
 			match: false,
 		},

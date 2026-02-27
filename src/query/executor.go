@@ -127,6 +127,18 @@ func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, 
 				count = impl.filter.Limit
 			}
 			return count, nil
+
+		case "kind_time":
+			extractTimestamp := impl.filter.Limit > 0
+			locationsWithTime, err := e.getKindTimeIndexResults(ctx, impl, extractTimestamp)
+			if err != nil {
+				return 0, err
+			}
+			count := len(locationsWithTime)
+			if impl.filter.Limit > 0 && count > impl.filter.Limit {
+				count = impl.filter.Limit
+			}
+			return count, nil
 		}
 	}
 
@@ -180,6 +192,13 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 				return nil, err
 			}
 
+		case "kind_time":
+			indexesUsed = append(indexesUsed, "kind_time")
+			locationsWithTime, err = e.getKindTimeIndexResults(ctx, impl, true)
+			if err != nil {
+				return nil, err
+			}
+
 		default:
 			// Fall back to regular path for other strategies
 			goto regularPath
@@ -218,6 +237,10 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 			if err != nil {
 				continue // Skip corrupted events
 			}
+			// Skip deleted events
+			if event.Flags.IsDeleted() {
+				continue
+			}
 			// Since fullyIndexed is true, no need to call MatchesFilter
 			results = append(results, event)
 		}
@@ -248,6 +271,10 @@ regularPath:
 			if err != nil {
 				continue // Skip corrupted events
 			}
+			// Skip deleted events
+			if event.Flags.IsDeleted() {
+				continue
+			}
 			results = append(results, event)
 		}
 
@@ -263,6 +290,10 @@ regularPath:
 			if err != nil {
 				continue // Skip corrupted events
 			}
+			// Skip deleted events
+			if event.Flags.IsDeleted() {
+				continue
+			}
 			results = append(results, event)
 		}
 
@@ -277,6 +308,29 @@ regularPath:
 			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
 			if err != nil {
 				continue // Skip corrupted events
+			}
+			// Skip deleted events
+			if event.Flags.IsDeleted() {
+				continue
+			}
+			results = append(results, event)
+		}
+
+	case "kind_time":
+		// Use kind-time index for kind + time queries
+		indexesUsed = append(indexesUsed, "kind_time")
+		locationsWithTime, err := e.getKindTimeIndexResults(ctx, impl, false)
+		if err != nil {
+			return nil, err
+		}
+		for _, locWithTime := range locationsWithTime {
+			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
+			if err != nil {
+				continue // Skip corrupted events
+			}
+			// Skip deleted events
+			if event.Flags.IsDeleted() {
+				continue
 			}
 			results = append(results, event)
 		}
@@ -375,6 +429,22 @@ func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl
 
 	ranges := e.buildSearchRanges(plan)
 	return e.queryIndexRanges(ctx, searchIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
+}
+
+// getKindTimeIndexResults gets locations from kind_time index.
+// Results are deduplicated based on SegmentID:Offset.
+// If extractTime is true, timestamps are extracted from index keys.
+func (e *executorImpl) getKindTimeIndexResults(ctx context.Context, plan *planImpl, extractTime bool) ([]types.LocationWithTime, error) {
+	kindTimeIdx := e.indexMgr.KindTimeIndex()
+	if kindTimeIdx == nil {
+		return nil, fmt.Errorf("kind_time index not available")
+	}
+	if e.indexMgr.KeyBuilder() == nil {
+		return nil, fmt.Errorf("key builder not available")
+	}
+
+	ranges := e.buildKindTimeRanges(plan)
+	return e.queryIndexRanges(ctx, kindTimeIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
 }
 
 // extractTimestampFromKey extracts the timestamp from the last 4 bytes of an index key.
@@ -615,6 +685,32 @@ func (e *executorImpl) buildSearchRanges(plan *planImpl) []keyRange {
 				ranges = append(ranges, keyRange{start: startKey, end: endKey})
 			}
 		}
+	}
+
+	return ranges
+}
+
+// buildKindTimeRanges builds key ranges for kind_time index queries.
+// Returns key ranges for each kind.
+func (e *executorImpl) buildKindTimeRanges(plan *planImpl) []keyRange {
+	keyBuilder := e.indexMgr.KeyBuilder()
+	var ranges []keyRange
+
+	kinds := plan.filter.Kinds
+	if len(kinds) == 0 {
+		// If no specific kinds, query all kinds (0 to ^uint16(0))
+		kinds = []uint16{0}
+	}
+
+	// For each kind, build key range
+	for _, kind := range kinds {
+		startKey := keyBuilder.BuildKindTimeKey(kind, plan.filter.Since)
+		until := plan.filter.Until
+		if until == 0 {
+			until = ^uint32(0)
+		}
+		endKey := keyBuilder.BuildKindTimeKey(kind, until)
+		ranges = append(ranges, keyRange{start: startKey, end: endKey})
 	}
 
 	return ranges

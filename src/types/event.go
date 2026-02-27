@@ -32,9 +32,13 @@ type Event struct {
 	// Content is the event payload (variable length).
 	// Can be plain text, JSON, or other formats depending on kind.
 	Content string
-
 	// Sig is the Ed25519 signature (64 bytes), proving the event's authenticity.
 	Sig [64]byte
+
+	// Flags contains event record state (deleted, replaced). Not serialized in event data.
+	// Populated from record metadata during deserialization.
+	// Used by query engine to filter out deleted and replaced events.
+	Flags EventFlags
 }
 
 // RecordLocation represents the physical location of a serialized event record

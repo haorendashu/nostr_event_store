@@ -31,13 +31,14 @@ type EventDTO struct {
 
 // CommandLineFlags holds parsed command-line arguments
 type CommandLineFlags struct {
-	EventCount     int
-	BatchSize      int
-	DataDir        string
-	VerifyCount    int
-	UseSearchIndex bool
-	UseAuthorIndex bool
-	SkipSave       bool
+	EventCount       int
+	BatchSize        int
+	DataDir          string
+	VerifyCount      int
+	UseSearchIndex   bool
+	UseAuthorIndex   bool
+	UseKindtimeIndex bool
+	SkipSave         bool
 }
 
 // ProgressTracker tracks writing progress and performance metrics
@@ -119,7 +120,7 @@ func hexToBytes64(hexStr string) ([64]byte, error) {
 // generateEvent creates a unique event based on a seed event template
 func generateEvent(seed *EventDTO, index int) (*types.Event, error) {
 	event := &types.Event{
-		CreatedAt: seed.CreatedAt + uint32(index),
+		CreatedAt: seed.CreatedAt - uint32(index),
 		// CreatedAt: seed.CreatedAt - uint32(int64(time.Minute.Seconds()*float64(index))), // Spread events by 1 second to ensure different timestamps
 		Kind:    seed.Kind,
 		Content: seed.Content,
@@ -482,6 +483,57 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, seedEv
 	return nil
 }
 
+func verifyKindTimeIndex(ctx context.Context, store eventstore.EventStore) {
+	filter := &types.QueryFilter{
+		Kinds: []uint16{1},
+		Until: uint32(time.Now().Local().Unix()),
+		Limit: 10,
+	}
+
+	events, err := store.QueryAll(ctx, filter)
+	if err != nil {
+		fmt.Printf("store.QueryAll error %v.\n", err)
+		return
+	}
+	if len(events) == 0 {
+		fmt.Println("store query event not found!")
+		return
+	}
+
+	lastEventCreatedAt := events[len(events)-1].CreatedAt
+	oldestEventCreatedAt := events[0].CreatedAt
+	for _, event := range events {
+		fmt.Printf("event %v\n", event)
+		if event.CreatedAt < oldestEventCreatedAt {
+			oldestEventCreatedAt = event.CreatedAt
+		}
+	}
+	if lastEventCreatedAt != oldestEventCreatedAt {
+		fmt.Println("the last event is't the oldestEvent")
+		return
+	}
+
+	filter2 := &types.QueryFilter{
+		Kinds: []uint16{1},
+		Since: oldestEventCreatedAt,
+		Limit: 20,
+	}
+	events, err = store.QueryAll(ctx, filter2)
+	if err != nil {
+		fmt.Printf("store.QueryAll 2 error %v.\n", err)
+		return
+	}
+	if len(events) == 0 {
+		return
+	}
+	for _, event := range events {
+		fmt.Printf("event %v\n", event)
+		if event.CreatedAt > oldestEventCreatedAt {
+			fmt.Printf("query old event createdAt not correct, expected %d < %d\n", event.CreatedAt, oldestEventCreatedAt)
+		}
+	}
+}
+
 func main() {
 	// Parse command-line flags
 	flags := &CommandLineFlags{}
@@ -491,6 +543,7 @@ func main() {
 	flag.IntVar(&flags.VerifyCount, "verify", 100, "Number of events to verify after writing (0 to skip)")
 	flag.BoolVar(&flags.UseSearchIndex, "search", false, "Use search index for verification (queries by tags if available)")
 	flag.BoolVar(&flags.UseAuthorIndex, "useAuthorIndex", false, "Use author-time index for verification (queries by pubkey and time range if available)")
+	flag.BoolVar(&flags.UseKindtimeIndex, "useKindtimeIndex", false, "Use kind-time index for verification (queries by kind and time range if available)")
 	flag.BoolVar(&flags.SkipSave, "skipSave", false, "Skip saving events to disk (useful for testing)")
 	flag.Parse()
 
@@ -567,18 +620,15 @@ func main() {
 	// verifyEvents(ctx, store)
 
 	// Step 6: Verify if requested
-	if flags.VerifyCount > 0 {
-		// Flush again before verification to ensure all hot data is persisted
-		fmt.Println("\nFlushing again before verification...")
-		if err := store.Flush(ctx); err != nil {
-			fmt.Printf("Error flushing before verification: %v\n", err)
-			os.Exit(1)
-		}
-
+	if flags.VerifyCount > 0 && (flags.UseSearchIndex || flags.UseAuthorIndex) {
 		if err := verifyRandomEvents(ctx, store, seedEvents, flags.EventCount, flags.VerifyCount, flags.UseSearchIndex, flags.UseAuthorIndex); err != nil {
 			fmt.Printf("Verification error: %v\n", err)
 			os.Exit(1)
 		}
+	}
+
+	if flags.UseKindtimeIndex {
+		verifyKindTimeIndex(ctx, store)
 	}
 
 	fmt.Println("\n=== Test Complete ===")

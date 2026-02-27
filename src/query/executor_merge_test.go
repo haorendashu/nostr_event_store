@@ -180,6 +180,10 @@ func (m *mockIndexManagerForMerge) SearchIndex() index.Index {
 	return m.searchIndex
 }
 
+func (m *mockIndexManagerForMerge) KindTimeIndex() index.Index {
+	return nil // Not needed for these tests
+}
+
 func (m *mockIndexManagerForMerge) KeyBuilder() index.KeyBuilder {
 	return index.NewKeyBuilder(index.DefaultSearchTypeCodes())
 }

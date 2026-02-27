@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/haorendashu/nostr_event_store/src/config"
@@ -16,6 +17,7 @@ func TestDeleteEvent(t *testing.T) {
 
 	// Create and open the store
 	cfg := config.DefaultConfig()
+	cfg.IndexConfig.IndexDir = filepath.Join(tmpDir, "indexes")
 	store := New(&Options{
 		Config: cfg,
 	})
@@ -74,6 +76,7 @@ func TestDeleteEvents(t *testing.T) {
 
 	// Create and open the store
 	cfg := config.DefaultConfig()
+	cfg.IndexConfig.IndexDir = filepath.Join(tmpDir, "indexes")
 	store := New(&Options{
 		Config: cfg,
 	})

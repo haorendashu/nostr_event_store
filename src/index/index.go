@@ -182,6 +182,10 @@ type Manager interface {
 	// Covers kind timelines, tag searches, and replaceable event lookups.
 	SearchIndex() Index
 
+	// KindTimeIndex returns the kind+time index ((kind, created_at) → location).
+	// Used for efficient kind + time range queries without author filtering.
+	KindTimeIndex() Index
+
 	// KeyBuilder returns the key builder used by this manager.
 	// Callers should use this to ensure key encoding matches runtime config.
 	KeyBuilder() KeyBuilder
@@ -348,6 +352,11 @@ type KeyBuilder interface {
 	//   tagValuePrefix: optional tag value prefix (empty matches all tag values, specific prefix narrows the range)
 	BuildSearchKeyRange(kind uint16, searchTypeCode SearchType, tagValuePrefix []byte) ([]byte, []byte)
 
+	// BuildKindTimeKey constructs a key for the kind+time index.
+	// Key format: (kind uint16, created_at uint32) = 6 bytes
+	// Used for efficient queries filtering by kind and time range.
+	BuildKindTimeKey(kind uint16, createdAt uint32) []byte
+
 	// TagNameToSearchTypeCode returns the current mapping from tag names to SearchType codes.
 	// This is loaded from manifest.json and can change if users modify their configuration.
 	TagNameToSearchTypeCode() map[string]SearchType
@@ -428,6 +437,16 @@ func (kb *KeyBuilderImpl) BuildSearchKeyRange(kind uint16, searchTypeCode Search
 	maxKey := kb.BuildSearchKey(kind, searchTypeCode, tagValuePrefix, ^uint32(0))
 
 	return minKey, maxKey
+}
+
+// BuildKindTimeKey constructs a kind+time index key.
+// Key format: kind (2B) || created_at (4B) = 6 bytes total
+// Used for efficient range queries by kind and time.
+func (kb *KeyBuilderImpl) BuildKindTimeKey(kind uint16, createdAt uint32) []byte {
+	key := make([]byte, 2+4)
+	binary.BigEndian.PutUint16(key[0:2], kind)
+	binary.BigEndian.PutUint32(key[2:6], createdAt)
+	return key
 }
 
 // TagNameToSearchTypeCode returns the current runtime tag name to search type code mapping.

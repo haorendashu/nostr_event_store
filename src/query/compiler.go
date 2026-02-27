@@ -36,6 +36,16 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 		filter: filter,
 	}
 
+	// Strategy: If only kinds specified (no authors, no tags) and has time range, use kind_time index
+	if len(filter.Kinds) > 0 && len(filter.Authors) == 0 && len(filter.Tags) == 0 && filter.Search == "" {
+		plan.strategy = "kind_time"
+		plan.indexName = "kind_time"
+		plan.estimatedIO = 3 // Good performance with smaller keys
+		// Fully indexed if only checking kinds and time range
+		plan.fullyIndexed = true
+		return plan, nil
+	}
+
 	// Strategy: If authors specified, use author_time index
 	// The author_time index key is (pubkey, kind, created_at), so we can use it
 	// whenever we have authors, regardless of whether time range is specified
@@ -145,6 +155,9 @@ func (p *planImpl) String() string {
 	case "author_time":
 		return fmt.Sprintf("AuthorTimeIndexScan(authors=%d, since=%d, until=%d)",
 			len(p.filter.Authors), p.filter.Since, p.filter.Until)
+	case "kind_time":
+		return fmt.Sprintf("KindTimeIndexScan(kinds=%d, since=%d, until=%d)",
+			len(p.filter.Kinds), p.filter.Since, p.filter.Until)
 	case "search":
 		tagCount := 0
 		for _, tagValues := range p.filter.Tags {

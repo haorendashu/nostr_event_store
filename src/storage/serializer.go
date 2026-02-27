@@ -139,7 +139,9 @@ func (s *TLVSerializer) Deserialize(record *Record) (*types.Event, error) {
 		return nil, fmt.Errorf("record too short: %d bytes", len(data))
 	}
 
-	event := &types.Event{}
+	event := &types.Event{
+		Flags: record.Flags, // Populate flags from record metadata
+	}
 	offset := 0
 
 	// Skip record_len(4) + record_flags(1)

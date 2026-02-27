@@ -402,7 +402,14 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 		e.logger.Printf("Warning: author-time index update failed: %v", err)
 	}
 
-	// Step 6: Build tag indexes for all configured tag types
+	// Step 6: Update kind-time index
+	kindTimeIdx := e.indexMgr.KindTimeIndex()
+	kindTimeKey := e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+	if err := kindTimeIdx.Insert(ctx, kindTimeKey, loc); err != nil {
+		e.logger.Printf("Warning: kind-time index update failed: %v", err)
+	}
+
+	// Step 7: Build tag indexes for all configured tag types
 	searchIdx := e.indexMgr.SearchIndex()
 	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
 
@@ -656,6 +663,17 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		e.logger.Printf("Warning: author-time index batch update failed: %v", err)
 	}
 
+	// Kind-time index
+	kindTimeIdx := e.indexMgr.KindTimeIndex()
+	kindTimeKeys := make([][]byte, len(uniqueEvents))
+	for i, event := range uniqueEvents {
+		kindTimeKeys[i] = e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+	}
+
+	if err := kindTimeIdx.InsertBatch(ctx, kindTimeKeys, primaryLocs); err != nil {
+		e.logger.Printf("Warning: kind-time index batch update failed: %v", err)
+	}
+
 	// Search indexes (for tags)
 	searchIdx := e.indexMgr.SearchIndex()
 	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
@@ -730,6 +748,11 @@ func (e *eventStoreImpl) GetEvent(ctx context.Context, eventID [32]byte) (*types
 		return nil, fmt.Errorf("storage read: %w", err)
 	}
 
+	// Skip deleted events - return error for deleted
+	if event.Flags.IsDeleted() {
+		return nil, fmt.Errorf("event has been deleted")
+	}
+
 	return event, nil
 }
 
@@ -802,7 +825,15 @@ func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) erro
 		// Continue anyway; don't fail the entire delete operation
 	}
 
-	// Step 5: Remove from search indexes (for all tags)
+	// Step 5: Remove from kind-time index
+	kindTimeIdx := e.indexMgr.KindTimeIndex()
+	kindTimeKey := e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+	if err := kindTimeIdx.Delete(ctx, kindTimeKey); err != nil {
+		e.logger.Printf("Warning: failed to remove from kind-time index: %v", err)
+		// Continue anyway; don't fail the entire delete operation
+	}
+
+	// Step 6: Remove from search indexes (for all tags)
 	searchIdx := e.indexMgr.SearchIndex()
 	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
 
@@ -935,7 +966,19 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 		}
 	}
 
-	// Step 5: Delete from search indexes
+	// Step 5: Delete from kind-time index
+	kindTimeIdx := e.indexMgr.KindTimeIndex()
+	kindTimeKeys := make([][]byte, len(events))
+	for i, event := range events {
+		kindTimeKeys[i] = e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+	}
+	for _, key := range kindTimeKeys {
+		if err := kindTimeIdx.Delete(ctx, key); err != nil {
+			e.logger.Printf("Warning: failed to delete from kind-time index: %v", err)
+		}
+	}
+
+	// Step 6: Delete from search indexes
 	searchKeysToDelete := make([][]byte, 0)
 	for _, event := range events {
 		for _, tag := range event.Tags {
@@ -1697,6 +1740,7 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 		return fmt.Errorf("reopen index manager: %w", err)
 	}
 	e.indexMgr = indexMgrImpl
+	e.queryEngine = query.NewEngine(e.indexMgr, e.storage)
 	e.logger.Printf("Index manager recreated, starting optimized batch recovery from %d segments...", len(segmentIDs))
 
 	// Use optimized batch recovery with parallel segment scanning

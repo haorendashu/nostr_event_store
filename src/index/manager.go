@@ -18,6 +18,7 @@ type manager struct {
 	primary       Index
 	authorTime    Index
 	search        Index
+	kindTime      Index
 	isOpen        bool
 	flusher       *flushScheduler
 	allocator     *cache.DynamicCacheAllocator
@@ -104,8 +105,27 @@ func (m *manager) Open(ctx context.Context, dir string, cfg Config) error {
 	fmt.Printf("[index] Search index created successfully\n")
 	m.search = searchPartitioned
 
+	// Create kind+time index (has timestamps, benefits from partitioning)
+	kindTimePath := filepath.Join(dir, "kind_time")
+	fmt.Printf("[index] Creating kind_time index at %s (partitioning=%v)\n", kindTimePath, cfg.EnableTimePartitioning)
+	kindTimePartitioned, err := NewPartitionedIndex(kindTimePath, indexTypeKindTime, cfg, granularity, cfg.EnableTimePartitioning)
+	if err != nil {
+		m.primary.Close()
+		m.authorTime.Close()
+		m.search.Close()
+		return fmt.Errorf("failed to create kind_time index: %w", err)
+	}
+	if kindTimePartitioned == nil {
+		m.primary.Close()
+		m.authorTime.Close()
+		m.search.Close()
+		return fmt.Errorf("kind_time index is nil after creation")
+	}
+	fmt.Printf("[index] Kind_time index created successfully\n")
+	m.kindTime = kindTimePartitioned
+
 	// Start flush scheduler for periodic persistence
-	m.flusher = newFlushScheduler([]Index{m.primary, m.authorTime, m.search}, int64(cfg.FlushIntervalMs))
+	m.flusher = newFlushScheduler([]Index{m.primary, m.authorTime, m.search, m.kindTime}, int64(cfg.FlushIntervalMs))
 	m.flusher.Start(ctx)
 
 	// Initialize dynamic cache allocator if enabled
@@ -147,6 +167,11 @@ func (m *manager) SearchIndex() Index {
 	return m.search
 }
 
+// KindTimeIndex returns the kind+time index ((kind, created_at) → location).
+func (m *manager) KindTimeIndex() Index {
+	return m.kindTime
+}
+
 // KeyBuilder returns the current key builder.
 func (m *manager) KeyBuilder() KeyBuilder {
 	return m.keyBuilder
@@ -172,6 +197,11 @@ func (m *manager) Flush(ctx context.Context) error {
 	}
 	if m.search != nil {
 		if err := m.search.Flush(ctx); err != nil {
+			return err
+		}
+	}
+	if m.kindTime != nil {
+		if err := m.kindTime.Flush(ctx); err != nil {
 			return err
 		}
 	}
@@ -202,6 +232,9 @@ func (m *manager) Close() error {
 	if m.search != nil {
 		_ = m.search.Close()
 	}
+	if m.kindTime != nil {
+		_ = m.kindTime.Close()
+	}
 	m.isOpen = false
 	return nil
 }
@@ -220,6 +253,7 @@ func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event
 	// Pre-allocate slices for batch operations
 	primaryKeys := make([][]byte, len(events))
 	authorTimeKeys := make([][]byte, len(events))
+	kindTimeKeys := make([][]byte, len(events))
 	searchKeys := make([][]byte, 0, len(events)*3) // Rough estimate: avg 3 tags per event
 	searchLocations := make([]types.RecordLocation, 0, len(events)*3)
 
@@ -233,6 +267,9 @@ func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event
 
 		// Author-time index key
 		authorTimeKeys[i] = m.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
+
+		// Kind-time index key
+		kindTimeKeys[i] = m.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
 
 		// Search index keys for all configured tags
 		for _, tag := range event.Tags {
@@ -268,6 +305,13 @@ func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event
 		}
 	}
 
+	// Batch insert into kind-time index
+	if m.kindTime != nil {
+		if err := m.kindTime.InsertBatch(ctx, kindTimeKeys, locations); err != nil {
+			return fmt.Errorf("kind-time index batch insert: %w", err)
+		}
+	}
+
 	// Batch insert into search index
 	if m.search != nil && len(searchKeys) > 0 {
 		if err := m.search.InsertBatch(ctx, searchKeys, searchLocations); err != nil {
@@ -289,6 +333,9 @@ func (m *manager) AllStats() map[string]Stats {
 	}
 	if m.search != nil {
 		stats["search"] = m.search.Stats()
+	}
+	if m.kindTime != nil {
+		stats["kind_time"] = m.kindTime.Stats()
 	}
 	return stats
 }
