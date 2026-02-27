@@ -22,8 +22,8 @@ type btree struct {
 	cache      *cache.BTreeCache
 	root       uint64
 	pageSize   uint32
-	entryCount uint64     // Atomic counter for total entries
-	mu         sync.Mutex // Protects tree operations
+	entryCount uint64       // Atomic counter for total entries
+	mu         sync.RWMutex // Protects tree operations (RLock for reads, Lock for writes)
 }
 
 func openBTree(file *indexFile, cache *cache.BTreeCache) (*btree, error) {
@@ -106,8 +106,8 @@ func (t *btree) flush() error {
 }
 
 func (t *btree) get(ctx context.Context, key []byte) (types.RecordLocation, bool, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	select {
 	case <-ctx.Done():
@@ -256,6 +256,9 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 }
 
 func (t *btree) delete(ctx context.Context, key []byte) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -295,6 +298,12 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 			len(node.keys), len(node.values), node.offset)
 	}
 
+	// DEFENSIVE: Bounds check to prevent panic from corrupted data
+	if idx >= len(node.values) {
+		return fmt.Errorf("data corruption: idx=%d exceeds values length=%d (keys length=%d, offset=%d)",
+			idx, len(node.values), len(node.keys), node.offset)
+	}
+
 	// CRITICAL: Create new slices to ensure atomic update and avoid
 	// concurrent readers seeing inconsistent state during serialization
 	newKeys := make([][]byte, 0, len(node.keys)-1)
@@ -302,7 +311,10 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 	newKeys = append(newKeys, node.keys[idx+1:]...)
 	newValues := make([]types.RecordLocation, 0, len(node.values)-1)
 	newValues = append(newValues, node.values[:idx]...)
-	newValues = append(newValues, node.values[idx+1:]...)
+	// Additional bounds check before slicing
+	if idx+1 <= len(node.values) {
+		newValues = append(newValues, node.values[idx+1:]...)
+	}
 
 	node.keys = newKeys
 	node.values = newValues
@@ -640,6 +652,9 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 }
 
 func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, desc bool) (Iterator, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -1253,6 +1268,9 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 
 // stats returns tree statistics
 func (t *btree) stats() treeStats {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	// Avoid expensive leaf node counting for performance
 	// Use a rough estimate: leaf nodes ≈ (nodeCount + 1) / 2
 	nodeCount := int(t.file.header.NodeCount)
@@ -1277,6 +1295,9 @@ type treeStats struct {
 // ResizeCache adjusts the cache size to the specified MB value.
 // Returns the number of evicted entries and any error encountered.
 func (t *btree) ResizeCache(newCacheMB int) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	return t.cache.ResizeCache(newCacheMB)
 }
 
@@ -1315,6 +1336,9 @@ func (t *btree) calculateDepth() int {
 // countEntriesInTree scans all leaf nodes and counts total entries.
 // Used to initialize entryCount when loading an old index file.
 func (t *btree) countEntriesInTree() uint64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if t.root == 0 {
 		return 0
 	}
@@ -1340,6 +1364,9 @@ func (t *btree) countEntriesRecursive(nodeOffset uint64, count *uint64) {
 }
 
 func (t *btree) countLeafNodes() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if t.root == 0 {
 		return 0
 	}
