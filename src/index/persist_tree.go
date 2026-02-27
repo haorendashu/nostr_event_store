@@ -3,6 +3,9 @@ package index
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -10,6 +13,9 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/cache"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
+
+// Enable detailed diagnostics with DEBUG_BTREE_INSERT=1
+var debugBTreeInsert = os.Getenv("DEBUG_BTREE_INSERT") == "1"
 
 type btree struct {
 	file       *indexFile
@@ -818,7 +824,25 @@ type pathEntry struct {
 	index int
 }
 
-func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (bool, error) {
+func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (inserted bool, err error) {
+	// Panic recovery with detailed diagnostics
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("\n=== PANIC in insertIntoLeaf ===")
+			log.Printf("Panic: %v", r)
+			log.Printf("Node offset: %d", node.offset)
+			log.Printf("Node type: %d", node.nodeType)
+			log.Printf("Keys length: %d", len(node.keys))
+			log.Printf("Values length: %d", len(node.values))
+			log.Printf("Key to insert length: %d", len(key))
+			log.Printf("Key to insert (hex): %x", key)
+			log.Printf("Value to insert: %+v", value)
+			log.Printf("Stack trace:\n%s", debug.Stack())
+			err = fmt.Errorf("panic in insertIntoLeaf: %v", r)
+			inserted = false
+		}
+	}()
+
 	// Safety check: prevent runaway growth
 	// If we already have > 100k keys, something is very wrong with the B+Tree
 	// (should have split long before reaching this point)
@@ -826,9 +850,27 @@ func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (bo
 		return false, fmt.Errorf("leaf node has %d keys, possible B+Tree corruption or split failure", len(node.keys))
 	}
 
+	// Data consistency check: keys and values must have the same length
+	if len(node.keys) != len(node.values) {
+		log.Printf("[ERROR] Data corruption detected in leaf node:")
+		log.Printf("  Node offset: %d", node.offset)
+		log.Printf("  Keys length: %d", len(node.keys))
+		log.Printf("  Values length: %d", len(node.values))
+		if len(node.keys) > 0 {
+			log.Printf("  First key (hex): %x", node.keys[0])
+			log.Printf("  Last key (hex): %x", node.keys[len(node.keys)-1])
+		}
+		return false, fmt.Errorf("data corruption: leaf node has %d keys but %d values", len(node.keys), len(node.values))
+	}
+
 	idx := sort.Search(len(node.keys), func(i int) bool {
 		return compareKeys(node.keys[i], key) >= 0
 	})
+
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] insertIntoLeaf: offset=%d, keys=%d, values=%d, insertIdx=%d, keyLen=%d",
+			node.offset, len(node.keys), len(node.values), idx, len(key))
+	}
 
 	// CRITICAL FIX: For search index, we MUST allow duplicate keys.
 	// Multiple different events can have the same (kind, tag, createdAt) but different event IDs.
@@ -837,33 +879,169 @@ func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (bo
 
 	keyCopy := make([]byte, len(key))
 	copy(keyCopy, key)
-	node.keys = append(node.keys, nil)
-	node.values = append(node.values, types.RecordLocation{})
-	copy(node.keys[idx+1:], node.keys[idx:])
-	copy(node.values[idx+1:], node.values[idx:])
-	node.keys[idx] = keyCopy
-	node.values[idx] = value
+
+	// Preallocate with correct capacity to avoid multiple reallocations
+	oldLen := len(node.keys)
+
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Before allocation: oldLen=%d, idx=%d, will allocate newKeys[%d] newValues[%d]",
+			oldLen, idx, oldLen+1, oldLen+1)
+	}
+
+	newKeys := make([][]byte, oldLen+1)
+	newValues := make([]types.RecordLocation, oldLen+1)
+
+	// Copy elements before insertion point
+	if idx > 0 {
+		if debugBTreeInsert {
+			log.Printf("[DEBUG] Copying before: newKeys[0:%d] = node.keys[0:%d]", idx, idx)
+		}
+		copy(newKeys[:idx], node.keys[:idx])
+		copy(newValues[:idx], node.values[:idx])
+	}
+
+	// Insert new element
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Inserting at idx=%d", idx)
+	}
+	newKeys[idx] = keyCopy
+	newValues[idx] = value
+
+	// Copy elements after insertion point (if idx < oldLen)
+	if idx < oldLen {
+		if debugBTreeInsert {
+			log.Printf("[DEBUG] Copying after: newKeys[%d:%d] = node.keys[%d:%d]",
+				idx+1, oldLen+1, idx, oldLen)
+		}
+		copy(newKeys[idx+1:], node.keys[idx:])
+		copy(newValues[idx+1:], node.values[idx:])
+	}
+
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Insert successful, new length: %d", len(newKeys))
+	}
+
+	node.keys = newKeys
+	node.values = newValues
 	node.dirty = true
 	return true, nil
 }
 
-func insertIntoInternal(node *btreeNode, key []byte, childOffset uint64, insertPos int) (bool, error) {
+func insertIntoInternal(node *btreeNode, key []byte, childOffset uint64, insertPos int) (inserted bool, err error) {
+	// Panic recovery with detailed diagnostics
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("\n=== PANIC in insertIntoInternal ===")
+			log.Printf("Panic: %v", r)
+			log.Printf("Node offset: %d", node.offset)
+			log.Printf("Node type: %d", node.nodeType)
+			log.Printf("Keys length: %d", len(node.keys))
+			log.Printf("Children length: %d", len(node.children))
+			log.Printf("insertPos: %d", insertPos)
+			log.Printf("Key to insert length: %d", len(key))
+			log.Printf("Key to insert (hex): %x", key)
+			log.Printf("Child offset: %d", childOffset)
+			log.Printf("Stack trace:\n%s", debug.Stack())
+			err = fmt.Errorf("panic in insertIntoInternal: %v", r)
+			inserted = false
+		}
+	}()
+
 	// Safety check: prevent runaway growth
 	if len(node.keys) > 100000 {
 		return false, fmt.Errorf("internal node has %d keys, possible B+Tree corruption or split failure", len(node.keys))
 	}
 
+	// Data consistency check: for internal nodes, children should be keys + 1
+	if len(node.children) != len(node.keys)+1 {
+		log.Printf("[ERROR] Data corruption detected in internal node:")
+		log.Printf("  Node offset: %d", node.offset)
+		log.Printf("  Keys length: %d", len(node.keys))
+		log.Printf("  Children length: %d (expected %d)", len(node.children), len(node.keys)+1)
+		return false, fmt.Errorf("data corruption: internal node has %d keys but %d children (expected %d)",
+			len(node.keys), len(node.children), len(node.keys)+1)
+	}
+
+	// Boundary check for insertPos
+	if insertPos < 0 || insertPos > len(node.keys) {
+		log.Printf("[ERROR] Invalid insertPos in internal node:")
+		log.Printf("  Node offset: %d", node.offset)
+		log.Printf("  Keys length: %d", len(node.keys))
+		log.Printf("  insertPos: %d (must be 0 to %d)", insertPos, len(node.keys))
+		return false, fmt.Errorf("invalid insertPos %d for node with %d keys", insertPos, len(node.keys))
+	}
+
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] insertIntoInternal: offset=%d, keys=%d, children=%d, insertPos=%d, keyLen=%d",
+			node.offset, len(node.keys), len(node.children), insertPos, len(key))
+	}
+
 	keyCopy := make([]byte, len(key))
 	copy(keyCopy, key)
 
-	node.keys = append(node.keys, nil)
-	copy(node.keys[insertPos+1:], node.keys[insertPos:])
-	node.keys[insertPos] = keyCopy
+	// Preallocate with correct capacity
+	oldLen := len(node.keys)
 
-	node.children = append(node.children, 0)
-	copy(node.children[insertPos+2:], node.children[insertPos+1:])
-	node.children[insertPos+1] = childOffset
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Before allocation: oldLen=%d, insertPos=%d, will allocate newKeys[%d] newChildren[%d]",
+			oldLen, insertPos, oldLen+1, oldLen+2)
+	}
 
+	newKeys := make([][]byte, oldLen+1)
+	newChildren := make([]uint64, oldLen+2) //Children is always keys + 1
+
+	// Copy keys before insertion point
+	if insertPos > 0 {
+		if debugBTreeInsert {
+			log.Printf("[DEBUG] Copying keys before: newKeys[0:%d] = node.keys[0:%d]", insertPos, insertPos)
+		}
+		copy(newKeys[:insertPos], node.keys[:insertPos])
+	}
+
+	// Insert new key
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Inserting key at insertPos=%d", insertPos)
+	}
+	newKeys[insertPos] = keyCopy
+
+	// Copy keys after insertion point
+	if insertPos < oldLen {
+		if debugBTreeInsert {
+			log.Printf("[DEBUG] Copying keys after: newKeys[%d:%d] = node.keys[%d:%d]",
+				insertPos+1, oldLen+1, insertPos, oldLen)
+		}
+		copy(newKeys[insertPos+1:], node.keys[insertPos:])
+	}
+
+	// Copy children before insertion point (includes insertPos+1)
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Copying children before: newChildren[0:%d] = node.children[0:%d]",
+			insertPos+1, insertPos+1)
+	}
+	copy(newChildren[:insertPos+1], node.children[:insertPos+1])
+
+	// Insert new child
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Inserting child at insertPos+1=%d", insertPos+1)
+	}
+	newChildren[insertPos+1] = childOffset
+
+	// Copy children after insertion point
+	if insertPos+1 < len(node.children) {
+		if debugBTreeInsert {
+			log.Printf("[DEBUG] Copying children after: newChildren[%d:%d] = node.children[%d:%d]",
+				insertPos+2, len(newChildren), insertPos+1, len(node.children))
+		}
+		copy(newChildren[insertPos+2:], node.children[insertPos+1:])
+	}
+
+	if debugBTreeInsert {
+		log.Printf("[DEBUG] Insert successful, new keys length: %d, new children length: %d",
+			len(newKeys), len(newChildren))
+	}
+
+	node.keys = newKeys
+	node.children = newChildren
 	node.dirty = true
 	return true, nil
 }
