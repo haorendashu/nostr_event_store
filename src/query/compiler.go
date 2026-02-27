@@ -85,7 +85,11 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 			plan.indexName = "search"
 			plan.estimatedIO = 6
 			// Check if fully indexed: all tags are indexable, no other unindexed conditions
-			plan.fullyIndexed = allTagsIndexable && len(filter.Authors) == 0 && filter.Search == ""
+			// When kinds is specified, search index keys include kind, so no post-filtering needed
+			// When kinds is empty, search index requires post-filtering because key format is (kind, searchType, tagValue, time)
+			// and we cannot efficiently query specific tagValue across all kinds without also matching other tagValues
+			hasKindsFilter := len(filter.Kinds) > 0
+			plan.fullyIndexed = hasKindsFilter && allTagsIndexable && len(filter.Authors) == 0 && filter.Search == ""
 			return plan, nil
 		}
 		// If not all tags are indexable, fall through to full scan

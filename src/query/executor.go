@@ -659,8 +659,31 @@ func (e *executorImpl) buildSearchRanges(plan *planImpl) []keyRange {
 	var ranges []keyRange
 
 	kinds := plan.filter.Kinds
-	if len(kinds) == 0 {
-		kinds = []uint16{0}
+	// If no kinds specified, we need to search across all possible kinds
+	// Due to search index key format (kind, searchType, tagValue, time),
+	// we cannot efficiently query specific tagValue across all kinds
+	// We'll generate ranges for a reasonable set of common kinds (0-10000)
+	searchAllKinds := len(kinds) == 0
+	if searchAllKinds {
+		// Generate a set of common kind values to search
+		// This is a heuristic - in practice, most events use kinds < 10000
+		kinds = make([]uint16, 0, 100)
+		// Common kinds: 0-10, 20-30, 40-50, 1000-10000 by 100s
+		for i := uint16(0); i <= 10; i++ {
+			kinds = append(kinds, i)
+		}
+		for i := uint16(20); i <= 30; i++ {
+			kinds = append(kinds, i)
+		}
+		for i := uint16(40); i <= 50; i++ {
+			kinds = append(kinds, i)
+		}
+		for i := uint16(1000); i <= 10000; i += 100 {
+			kinds = append(kinds, i)
+		}
+		for i := uint16(30000); i <= 40000; i += 1000 {
+			kinds = append(kinds, i)
+		}
 	}
 
 	// Process generic Tags map
