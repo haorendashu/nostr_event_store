@@ -6,6 +6,8 @@ src/batchtest/bak/
 src/batchtest/batchtest
 src/batchtest/batchtest.exe
 src/eventstore/data/
+src/shard/data/
+src/shard/testdata/
 cmd/wal-hexdump/wal-hexdump
 cmd/wal-hexdump/wal-hexdump.exe
 cmd/wal-validator/wal-validator
