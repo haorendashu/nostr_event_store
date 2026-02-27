@@ -454,7 +454,7 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 	}
 
 	// Borrow from right sibling
-	if right != nil && t.nodeSize(right) > minSize && len(right.keys) > 1 {
+	if right != nil && t.nodeSize(right) > minSize && len(right.keys) > 1 && childIndex < len(parent.keys) {
 		if child.isLeaf() {
 			firstKey := right.keys[0]
 			firstVal := right.values[0]
@@ -550,7 +550,7 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		return parent, true, nil
 	}
 
-	if right != nil {
+	if right != nil && childIndex < len(parent.keys) {
 		if child.isLeaf() {
 			// Use atomic updates for merge
 			newChildKeys := make([][]byte, len(child.keys)+len(right.keys))
