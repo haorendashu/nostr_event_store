@@ -84,6 +84,9 @@ func (t *btree) loadNode(offset uint64) (*btreeNode, error) {
 }
 
 func (t *btree) flush() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	// Persist entry count to file header before flushing
 	t.file.header.EntryCount = atomic.LoadUint64(&t.entryCount)
 

@@ -66,6 +66,9 @@ func serializeNode(n *btreeNode, pageSize uint32) ([]byte, error) {
 	pos++
 
 	if n.isLeaf() {
+		if len(n.values) != len(n.keys) {
+			return nil, fmt.Errorf("leaf node values mismatch: keys=%d values=%d", len(n.keys), len(n.values))
+		}
 		for i, key := range n.keys {
 			if pos+2+len(key)+8 > int(pageSize)-24 {
 				return nil, fmt.Errorf("leaf node overflow")
