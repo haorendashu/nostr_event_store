@@ -289,6 +289,12 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 		return nil
 	}
 
+	// DEFENSIVE: Verify consistency before deletion
+	if len(node.keys) != len(node.values) {
+		return fmt.Errorf("data corruption detected before delete: leaf node has %d keys but %d values (offset=%d)",
+			len(node.keys), len(node.values), node.offset)
+	}
+
 	// CRITICAL: Create new slices to ensure atomic update and avoid
 	// concurrent readers seeing inconsistent state during serialization
 	newKeys := make([][]byte, 0, len(node.keys)-1)
@@ -300,6 +306,13 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 
 	node.keys = newKeys
 	node.values = newValues
+
+	// DEFENSIVE: Verify consistency immediately after update
+	if len(node.keys) != len(node.values) {
+		return fmt.Errorf("fatal error: keys/values mismatch after delete: %d keys vs %d values (offset=%d)",
+			len(node.keys), len(node.values), node.offset)
+	}
+
 	node.dirty = true
 	t.cache.MarkDirty(newBTreeNodeAdapter(node))
 	// Entry was deleted
@@ -379,6 +392,12 @@ func removeChildAt(children []uint64, idx int) []uint64 {
 }
 
 func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childIndex int) (*btreeNode, bool, error) {
+	// CRITICAL: Validate consistency before any operations
+	if child.isLeaf() && len(child.keys) != len(child.values) {
+		return nil, false, fmt.Errorf("invalid state entering rebalanceAfterDelete: leaf child has %d keys but %d values (offset=%d)",
+			len(child.keys), len(child.values), child.offset)
+	}
+
 	if !t.isUnderflow(child) {
 		return child, false, nil
 	}
@@ -474,7 +493,17 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			newChildValues[len(child.values)] = firstVal
 			child.keys = newChildKeys
 			child.values = newChildValues
-			parent.keys[childIndex] = child.cloneKey(right.keys[0])
+
+			// DEFENSIVE: Verify borrow consistency
+			if len(right.keys) != len(right.values) {
+				return nil, false, fmt.Errorf("borrow error: right leaf has %d keys but %d values after borrow (offset=%d)",
+					len(right.keys), len(right.values), right.offset)
+			}
+			if len(child.keys) != len(child.values) {
+				return nil, false, fmt.Errorf("borrow error: child leaf has %d keys but %d values after borrow (offset=%d)",
+					len(child.keys), len(child.values), child.offset)
+			}
+			parent.keys[childIndex] = child.cloneKey(firstKey)
 		} else {
 			firstKey := right.keys[0]
 			firstChild := right.children[0]
@@ -518,6 +547,13 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			copy(newLeftValues[len(left.values):], child.values)
 			left.keys = newLeftKeys
 			left.values = newLeftValues
+
+			// DEFENSIVE: Verify merge consistency
+			if len(left.keys) != len(left.values) {
+				return nil, false, fmt.Errorf("merge error: left leaf has %d keys but %d values after merge (offset=%d)",
+					len(left.keys), len(left.values), left.offset)
+			}
+
 			left.next = child.next
 			if child.next != 0 {
 				nextNode, err := t.loadNode(child.next)
@@ -561,6 +597,13 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			copy(newChildValues[len(child.values):], right.values)
 			child.keys = newChildKeys
 			child.values = newChildValues
+
+			// DEFENSIVE: Verify merge consistency
+			if len(child.keys) != len(child.values) {
+				return nil, false, fmt.Errorf("merge error: child leaf has %d keys but %d values after merge (offset=%d)",
+					len(child.keys), len(child.values), child.offset)
+			}
+
 			child.next = right.next
 			if right.next != 0 {
 				nextNode, err := t.loadNode(right.next)
