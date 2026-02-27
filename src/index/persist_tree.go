@@ -289,8 +289,17 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 		return nil
 	}
 
-	node.keys = append(node.keys[:idx], node.keys[idx+1:]...)
-	node.values = append(node.values[:idx], node.values[idx+1:]...)
+	// CRITICAL: Create new slices to ensure atomic update and avoid
+	// concurrent readers seeing inconsistent state during serialization
+	newKeys := make([][]byte, 0, len(node.keys)-1)
+	newKeys = append(newKeys, node.keys[:idx]...)
+	newKeys = append(newKeys, node.keys[idx+1:]...)
+	newValues := make([]types.RecordLocation, 0, len(node.values)-1)
+	newValues = append(newValues, node.values[:idx]...)
+	newValues = append(newValues, node.values[idx+1:]...)
+
+	node.keys = newKeys
+	node.values = newValues
 	node.dirty = true
 	t.cache.MarkDirty(newBTreeNodeAdapter(node))
 	// Entry was deleted
@@ -396,21 +405,42 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		if child.isLeaf() {
 			lastKey := left.keys[len(left.keys)-1]
 			lastVal := left.values[len(left.values)-1]
-			left.keys = left.keys[:len(left.keys)-1]
-			left.values = left.values[:len(left.values)-1]
+			// Use atomic slice updates to avoid concurrent serialization seeing inconsistent state
+			newLeftKeys := make([][]byte, len(left.keys)-1)
+			copy(newLeftKeys, left.keys[:len(left.keys)-1])
+			newLeftValues := make([]types.RecordLocation, len(left.values)-1)
+			copy(newLeftValues, left.values[:len(left.values)-1])
+			left.keys = newLeftKeys
+			left.values = newLeftValues
 
-			child.keys = append([][]byte{lastKey}, child.keys...)
-			child.values = append([]types.RecordLocation{lastVal}, child.values...)
+			newChildKeys := make([][]byte, len(child.keys)+1)
+			newChildValues := make([]types.RecordLocation, len(child.values)+1)
+			newChildKeys[0] = lastKey
+			copy(newChildKeys[1:], child.keys)
+			newChildValues[0] = lastVal
+			copy(newChildValues[1:], child.values)
+			child.keys = newChildKeys
+			child.values = newChildValues
 			parent.keys[childIndex-1] = child.cloneKey(child.keys[0])
 		} else {
 			lastKey := left.keys[len(left.keys)-1]
 			lastChild := left.children[len(left.children)-1]
-			left.keys = left.keys[:len(left.keys)-1]
-			left.children = left.children[:len(left.children)-1]
+			newLeftKeys := make([][]byte, len(left.keys)-1)
+			copy(newLeftKeys, left.keys[:len(left.keys)-1])
+			newLeftChildren := make([]uint64, len(left.children)-1)
+			copy(newLeftChildren, left.children[:len(left.children)-1])
+			left.keys = newLeftKeys
+			left.children = newLeftChildren
 
 			sepKey := parent.keys[childIndex-1]
-			child.keys = append([][]byte{sepKey}, child.keys...)
-			child.children = append([]uint64{lastChild}, child.children...)
+			newChildKeys := make([][]byte, len(child.keys)+1)
+			newChildChildren := make([]uint64, len(child.children)+1)
+			newChildKeys[0] = sepKey
+			copy(newChildKeys[1:], child.keys)
+			newChildChildren[0] = lastChild
+			copy(newChildChildren[1:], child.children)
+			child.keys = newChildKeys
+			child.children = newChildChildren
 			parent.keys[childIndex-1] = child.cloneKey(lastKey)
 		}
 
@@ -428,21 +458,42 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		if child.isLeaf() {
 			firstKey := right.keys[0]
 			firstVal := right.values[0]
-			right.keys = right.keys[1:]
-			right.values = right.values[1:]
+			// Use atomic slice updates
+			newRightKeys := make([][]byte, len(right.keys)-1)
+			copy(newRightKeys, right.keys[1:])
+			newRightValues := make([]types.RecordLocation, len(right.values)-1)
+			copy(newRightValues, right.values[1:])
+			right.keys = newRightKeys
+			right.values = newRightValues
 
-			child.keys = append(child.keys, firstKey)
-			child.values = append(child.values, firstVal)
+			newChildKeys := make([][]byte, len(child.keys)+1)
+			copy(newChildKeys, child.keys)
+			newChildKeys[len(child.keys)] = firstKey
+			newChildValues := make([]types.RecordLocation, len(child.values)+1)
+			copy(newChildValues, child.values)
+			newChildValues[len(child.values)] = firstVal
+			child.keys = newChildKeys
+			child.values = newChildValues
 			parent.keys[childIndex] = child.cloneKey(right.keys[0])
 		} else {
 			firstKey := right.keys[0]
 			firstChild := right.children[0]
-			right.keys = right.keys[1:]
-			right.children = right.children[1:]
+			newRightKeys := make([][]byte, len(right.keys)-1)
+			copy(newRightKeys, right.keys[1:])
+			newRightChildren := make([]uint64, len(right.children)-1)
+			copy(newRightChildren, right.children[1:])
+			right.keys = newRightKeys
+			right.children = newRightChildren
 
 			sepKey := parent.keys[childIndex]
-			child.keys = append(child.keys, sepKey)
-			child.children = append(child.children, firstChild)
+			newChildKeys := make([][]byte, len(child.keys)+1)
+			copy(newChildKeys, child.keys)
+			newChildKeys[len(child.keys)] = sepKey
+			newChildChildren := make([]uint64, len(child.children)+1)
+			copy(newChildChildren, child.children)
+			newChildChildren[len(child.children)] = firstChild
+			child.keys = newChildKeys
+			child.children = newChildChildren
 			parent.keys[childIndex] = child.cloneKey(firstKey)
 		}
 
@@ -458,8 +509,15 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 	// Merge with left sibling if available, otherwise with right
 	if left != nil {
 		if child.isLeaf() {
-			left.keys = append(left.keys, child.keys...)
-			left.values = append(left.values, child.values...)
+			// Use atomic updates for merge
+			newLeftKeys := make([][]byte, len(left.keys)+len(child.keys))
+			copy(newLeftKeys, left.keys)
+			copy(newLeftKeys[len(left.keys):], child.keys)
+			newLeftValues := make([]types.RecordLocation, len(left.values)+len(child.values))
+			copy(newLeftValues, left.values)
+			copy(newLeftValues[len(left.values):], child.values)
+			left.keys = newLeftKeys
+			left.values = newLeftValues
 			left.next = child.next
 			if child.next != 0 {
 				nextNode, err := t.loadNode(child.next)
@@ -472,9 +530,15 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			}
 		} else {
 			sepKey := parent.keys[childIndex-1]
-			left.keys = append(left.keys, sepKey)
-			left.keys = append(left.keys, child.keys...)
-			left.children = append(left.children, child.children...)
+			newLeftKeys := make([][]byte, len(left.keys)+1+len(child.keys))
+			copy(newLeftKeys, left.keys)
+			newLeftKeys[len(left.keys)] = sepKey
+			copy(newLeftKeys[len(left.keys)+1:], child.keys)
+			newLeftChildren := make([]uint64, len(left.children)+len(child.children))
+			copy(newLeftChildren, left.children)
+			copy(newLeftChildren[len(left.children):], child.children)
+			left.keys = newLeftKeys
+			left.children = newLeftChildren
 		}
 
 		parent.keys = removeKeyAt(parent.keys, childIndex-1)
@@ -488,8 +552,15 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 
 	if right != nil {
 		if child.isLeaf() {
-			child.keys = append(child.keys, right.keys...)
-			child.values = append(child.values, right.values...)
+			// Use atomic updates for merge
+			newChildKeys := make([][]byte, len(child.keys)+len(right.keys))
+			copy(newChildKeys, child.keys)
+			copy(newChildKeys[len(child.keys):], right.keys)
+			newChildValues := make([]types.RecordLocation, len(child.values)+len(right.values))
+			copy(newChildValues, child.values)
+			copy(newChildValues[len(child.values):], right.values)
+			child.keys = newChildKeys
+			child.values = newChildValues
 			child.next = right.next
 			if right.next != 0 {
 				nextNode, err := t.loadNode(right.next)
@@ -502,9 +573,15 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			}
 		} else {
 			sepKey := parent.keys[childIndex]
-			child.keys = append(child.keys, sepKey)
-			child.keys = append(child.keys, right.keys...)
-			child.children = append(child.children, right.children...)
+			newChildKeys := make([][]byte, len(child.keys)+1+len(right.keys))
+			copy(newChildKeys, child.keys)
+			newChildKeys[len(child.keys)] = sepKey
+			copy(newChildKeys[len(child.keys)+1:], right.keys)
+			newChildChildren := make([]uint64, len(child.children)+len(right.children))
+			copy(newChildChildren, child.children)
+			copy(newChildChildren[len(child.children):], right.children)
+			child.keys = newChildKeys
+			child.children = newChildChildren
 		}
 
 		parent.keys = removeKeyAt(parent.keys, childIndex)
@@ -921,8 +998,20 @@ func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (in
 		log.Printf("[DEBUG] Insert successful, new length: %d", len(newKeys))
 	}
 
+	// CRITICAL: Update keys and values atomically to avoid concurrent readers
+	// seeing inconsistent state during flush/serialization
+	// We must ensure both slices are updated before marking dirty
+	oldKeys := node.keys
+	oldValues := node.values
 	node.keys = newKeys
 	node.values = newValues
+	// Sanity check after assignment
+	if len(node.keys) != len(node.values) {
+		// Rollback if somehow lengths don't match
+		node.keys = oldKeys
+		node.values = oldValues
+		return false, fmt.Errorf("internal error: keys/values length mismatch after assignment")
+	}
 	node.dirty = true
 	return true, nil
 }
@@ -1053,8 +1142,14 @@ func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
 
 	right.keys = append(right.keys, node.keys[mid:]...)
 	right.values = append(right.values, node.values[mid:]...)
-	node.keys = node.keys[:mid]
-	node.values = node.values[:mid]
+	// CRITICAL: Create new slices to avoid concurrent access issues
+	// when other goroutines might be reading the node
+	newNodeKeys := make([][]byte, mid)
+	newNodeValues := make([]types.RecordLocation, mid)
+	copy(newNodeKeys, node.keys[:mid])
+	copy(newNodeValues, node.values[:mid])
+	node.keys = newNodeKeys
+	node.values = newNodeValues
 
 	right.next = node.next
 	right.prev = node.offset
@@ -1093,8 +1188,13 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 	right.keys = append(right.keys, node.keys[mid+1:]...)
 	right.children = append(right.children, node.children[mid+1:]...)
 
-	node.keys = node.keys[:mid]
-	node.children = node.children[:mid+1]
+	// CRITICAL: Create new slices to avoid concurrent access issues
+	newNodeKeys := make([][]byte, mid)
+	copy(newNodeKeys, node.keys[:mid])
+	newNodeChildren := make([]uint64, mid+1)
+	copy(newNodeChildren, node.children[:mid+1])
+	node.keys = newNodeKeys
+	node.children = newNodeChildren
 
 	node.dirty = true
 	right.dirty = true
