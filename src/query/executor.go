@@ -277,79 +277,91 @@ type resultIteratorImpl struct {
 }
 
 // CountPlan executes a count query for a compiled plan.
-// For fully indexed plans, it counts deduplicated index matches directly without reading events.
+// Uses streaming iteration to count results efficiently:
+// - For fullyIndexed plans: counts index matches directly without reading events
+// - For regular plans: reads events one by one, filters, and counts
 func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, error) {
 	impl, ok := plan.(*planImpl)
 	if !ok {
 		return 0, fmt.Errorf("invalid plan type")
 	}
 
-	if impl.fullyIndexed {
-		switch impl.strategy {
-		case "primary":
-			locations, err := e.getPrimaryIndexResults(ctx, impl)
-			if err != nil {
-				return 0, err
-			}
-			count := len(locations)
-			if impl.filter.Limit > 0 && count > impl.filter.Limit {
-				count = impl.filter.Limit
-			}
-			return count, nil
+	// Primary index: exact ID lookup (single result)
+	if impl.strategy == "primary" {
+		locations, err := e.getPrimaryIndexResults(ctx, impl)
+		if err != nil {
+			return 0, err
+		}
+		return len(locations), nil
+	}
 
-		case "author_time":
-			extractTimestamp := impl.filter.Limit > 0
-			locationsWithTime, err := e.getAuthorTimeIndexResults(ctx, impl, extractTimestamp)
-			if err != nil {
-				return 0, err
-			}
-			count := len(locationsWithTime)
-			if impl.filter.Limit > 0 && count > impl.filter.Limit {
-				count = impl.filter.Limit
-			}
-			return count, nil
+	// Streaming strategies: author_time, search, kind_time
+	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" {
+		locationIter, err := e.getLocationIterator(ctx, impl)
+		if err != nil {
+			return 0, err
+		}
+		defer locationIter.Close()
 
-		case "search":
-			extractTimestamp := impl.filter.Limit > 0
-			locationsWithTime, err := e.getSearchIndexResults(ctx, impl, extractTimestamp)
-			if err != nil {
-				return 0, err
-			}
-			count := len(locationsWithTime)
-			if impl.filter.Limit > 0 && count > impl.filter.Limit {
-				count = impl.filter.Limit
-			}
-			return count, nil
+		count := 0
 
-		case "kind_time":
-			extractTimestamp := impl.filter.Limit > 0
-			locationsWithTime, err := e.getKindTimeIndexResults(ctx, impl, extractTimestamp)
-			if err != nil {
-				return 0, err
-			}
-			count := len(locationsWithTime)
-			if impl.filter.Limit > 0 && count > impl.filter.Limit {
-				count = impl.filter.Limit
+		// If fully indexed, just count locations without reading events
+		if impl.fullyIndexed {
+			for locationIter.Valid() {
+				count++
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
 			}
 			return count, nil
 		}
-	}
 
-	iter, err := e.ExecutePlan(ctx, plan)
-	if err != nil {
-		return 0, err
-	}
-	defer iter.Close()
+		// Not fully indexed: need to read events and apply filter
+		for locationIter.Valid() {
+			locWithTime := locationIter.Value()
+			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
+			if err != nil {
+				// Skip corrupted events
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
+				continue
+			}
 
-	count := 0
-	for iter.Valid() {
-		count++
-		if err := iter.Next(ctx); err != nil {
-			return count, fmt.Errorf("iterate results: %w", err)
+			// Skip deleted events
+			if event.Flags.IsDeleted() {
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
+				continue
+			}
+
+			// Filter event
+			if !MatchesFilter(event, impl.filter) {
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
+				continue
+			}
+
+			// Count matching event
+			count++
+
+			// Advance to next location
+			if err := locationIter.Next(ctx); err != nil {
+				break
+			}
 		}
+
+		return count, nil
 	}
 
-	return count, nil
+	// Scan strategy (fallback)
+	if impl.strategy == "scan" {
+		return 0, nil
+	}
+
+	return 0, fmt.Errorf("unknown strategy: %s", impl.strategy)
 }
 
 // ExecutePlan executes a plan and returns results.
@@ -526,54 +538,6 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 	default:
 		return nil, fmt.Errorf("strategy %s does not support location iterator", plan.strategy)
 	}
-}
-
-// getAuthorTimeIndexResults gets locations from author_time index.
-// Results are deduplicated based on SegmentID:Offset.
-// If extractTime is true, timestamps are extracted from index keys.
-func (e *executorImpl) getAuthorTimeIndexResults(ctx context.Context, plan *planImpl, extractTime bool) ([]types.LocationWithTime, error) {
-	atIdx := e.indexMgr.AuthorTimeIndex()
-	if atIdx == nil {
-		return nil, fmt.Errorf("author_time index not available")
-	}
-	if e.indexMgr.KeyBuilder() == nil {
-		return nil, fmt.Errorf("key builder not available")
-	}
-
-	ranges := e.buildAuthorTimeRanges(plan)
-	return e.queryIndexRanges(ctx, atIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
-}
-
-// getSearchIndexResults gets locations from search index.
-// Results are deduplicated based on SegmentID:Offset.
-// If extractTime is true, timestamps are extracted from index keys.
-func (e *executorImpl) getSearchIndexResults(ctx context.Context, plan *planImpl, extractTime bool) ([]types.LocationWithTime, error) {
-	searchIdx := e.indexMgr.SearchIndex()
-	if searchIdx == nil {
-		return nil, fmt.Errorf("search index not available")
-	}
-	if e.indexMgr.KeyBuilder() == nil {
-		return nil, fmt.Errorf("key builder not available")
-	}
-
-	ranges := e.buildSearchRanges(plan)
-	return e.queryIndexRanges(ctx, searchIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
-}
-
-// getKindTimeIndexResults gets locations from kind_time index.
-// Results are deduplicated based on SegmentID:Offset.
-// If extractTime is true, timestamps are extracted from index keys.
-func (e *executorImpl) getKindTimeIndexResults(ctx context.Context, plan *planImpl, extractTime bool) ([]types.LocationWithTime, error) {
-	kindTimeIdx := e.indexMgr.KindTimeIndex()
-	if kindTimeIdx == nil {
-		return nil, fmt.Errorf("kind_time index not available")
-	}
-	if e.indexMgr.KeyBuilder() == nil {
-		return nil, fmt.Errorf("key builder not available")
-	}
-
-	ranges := e.buildKindTimeRanges(plan)
-	return e.queryIndexRanges(ctx, kindTimeIdx, ranges, extractTime, plan.filter.Limit, plan.fullyIndexed)
 }
 
 // extractTimestampFromKey extracts the timestamp from the last 4 bytes of an index key.

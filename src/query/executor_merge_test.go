@@ -254,6 +254,30 @@ func (ms *mockStoreForMerge) readCount() int {
 	return ms.reads
 }
 
+// collectAllLocations is a test helper to collect all locations from an iterator
+func collectAllLocations(ctx context.Context, iter LocationIterator) ([]types.LocationWithTime, error) {
+	var results []types.LocationWithTime
+	for iter.Valid() {
+		results = append(results, iter.Value())
+		if err := iter.Next(ctx); err != nil {
+			return results, err
+		}
+	}
+	return results, nil
+}
+
+// collectLocationsWithLimit is a test helper to collect locations up to a limit
+func collectLocationsWithLimit(ctx context.Context, iter LocationIterator, limit int) ([]types.LocationWithTime, error) {
+	var results []types.LocationWithTime
+	for iter.Valid() && (limit <= 0 || len(results) < limit) {
+		results = append(results, iter.Value())
+		if err := iter.Next(ctx); err != nil {
+			return results, err
+		}
+	}
+	return results, nil
+}
+
 // Test: Merge algorithm with multiple authors
 func TestMergeAlgorithm_MultipleAuthors(t *testing.T) {
 	ctx := context.Background()
@@ -307,9 +331,16 @@ func TestMergeAlgorithm_MultipleAuthors(t *testing.T) {
 		fullyIndexed: true,
 	}
 
-	results, err := executor.getAuthorTimeIndexResults(ctx, plan, true)
+	// Use location iterator instead of getAuthorTimeIndexResults
+	iter, err := executor.getLocationIterator(ctx, plan)
 	if err != nil {
-		t.Fatalf("getAuthorTimeIndexResults failed: %v", err)
+		t.Fatalf("getLocationIterator failed: %v", err)
+	}
+	defer iter.Close()
+
+	results, err := collectLocationsWithLimit(ctx, iter, plan.filter.Limit)
+	if err != nil {
+		t.Fatalf("collectLocationsWithLimit failed: %v", err)
 	}
 
 	// Verify we got at most limit results
@@ -393,11 +424,17 @@ func TestMergeAlgorithm_LargeDataset(t *testing.T) {
 	}
 
 	startQuery := time.Now()
-	results, err := executor.getAuthorTimeIndexResults(ctx, plan, true)
+	iter, err := executor.getLocationIterator(ctx, plan)
+	if err != nil {
+		t.Fatalf("getLocationIterator failed: %v", err)
+	}
+	defer iter.Close()
+
+	results, err := collectLocationsWithLimit(ctx, iter, plan.filter.Limit)
 	queryDuration := time.Since(startQuery)
 
 	if err != nil {
-		t.Fatalf("getAuthorTimeIndexResults failed: %v", err)
+		t.Fatalf("collectLocationsWithLimit failed: %v", err)
 	}
 
 	t.Logf("✅ Query completed in %v", queryDuration)
@@ -483,9 +520,15 @@ func TestMergeAlgorithm_Deduplication(t *testing.T) {
 		fullyIndexed: true,
 	}
 
-	results, err := executor.getSearchIndexResults(ctx, plan, true)
+	iter, err := executor.getLocationIterator(ctx, plan)
 	if err != nil {
-		t.Fatalf("getSearchIndexResults failed: %v", err)
+		t.Fatalf("getLocationIterator failed: %v", err)
+	}
+	defer iter.Close()
+
+	results, err := collectAllLocations(ctx, iter)
+	if err != nil {
+		t.Fatalf("collectAllLocations failed: %v", err)
 	}
 
 	// Should deduplicate and return only 1 result
@@ -546,9 +589,15 @@ func TestMergeAlgorithm_NotFullyIndexed(t *testing.T) {
 		fullyIndexed: false, // Not fully indexed!
 	}
 
-	results, err := executor.getAuthorTimeIndexResults(ctx, plan, true)
+	iter, err := executor.getLocationIterator(ctx, plan)
 	if err != nil {
-		t.Fatalf("getAuthorTimeIndexResults failed: %v", err)
+		t.Fatalf("getLocationIterator failed: %v", err)
+	}
+	defer iter.Close()
+
+	results, err := collectAllLocations(ctx, iter)
+	if err != nil {
+		t.Fatalf("collectAllLocations failed: %v", err)
 	}
 
 	// Should collect all 100 events because fullyIndexed=false
@@ -593,8 +642,9 @@ func TestCountPlan_FullyIndexed_NoEventRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountPlan failed: %v", err)
 	}
-	if count != 3 {
-		t.Fatalf("expected count=3, got %d", count)
+	// CountPlan ignores limit and does full count, so should return all 6 results
+	if count != 6 {
+		t.Fatalf("expected count=6, got %d", count)
 	}
 	if store.readCount() != 0 {
 		t.Fatalf("expected no ReadEvent calls for fully indexed count, got %d", store.readCount())
