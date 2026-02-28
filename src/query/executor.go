@@ -73,6 +73,199 @@ type executorImpl struct {
 	store    storage.Store
 }
 
+// LocationIterator provides stream-based access to sorted locations from query results.
+// Allows early termination when limit is reached without loading all locations.
+type LocationIterator interface {
+	// Valid returns true if iterator has more locations
+	Valid() bool
+	// Value returns current LocationWithTime
+	Value() types.LocationWithTime
+	// Next advances to next location, returns error if traversal fails
+	Next(ctx context.Context) error
+	// Close releases resources
+	Close() error
+}
+
+// sortedLocationIterator implements LocationIterator for already-sorted location arrays
+type sortedLocationIterator struct {
+	locations []types.LocationWithTime
+	index     int
+}
+
+func (s *sortedLocationIterator) Valid() bool {
+	return s.index < len(s.locations)
+}
+
+func (s *sortedLocationIterator) Value() types.LocationWithTime {
+	if !s.Valid() {
+		return types.LocationWithTime{}
+	}
+	return s.locations[s.index]
+}
+
+func (s *sortedLocationIterator) Next(ctx context.Context) error {
+	if s.Valid() {
+		s.index++
+	}
+	return nil
+}
+
+func (s *sortedLocationIterator) Close() error {
+	s.locations = nil
+	return nil
+}
+
+// mergeLocationIterator implements LocationIterator using heap-based merge algorithm.
+// It merges multiple descending index iterators and returns locations in timestamp descending order.
+// Automatically deduplicates by SegmentID:Offset.
+type mergeLocationIterator struct {
+	heap      *mergeHeap             // Max-heap for merging
+	iterators []index.Iterator       // Source iterators
+	seen      map[string]bool        // Deduplication map (key: "SegmentID:Offset")
+	current   types.LocationWithTime // Current location (cached after Next)
+	valid     bool                   // Whether current location is valid
+	closed    bool                   // Whether iterator is closed
+}
+
+// newMergeLocationIterator creates a new merge-based location iterator.
+func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []keyRange) (*mergeLocationIterator, error) {
+	// Create descending iterators for each range
+	var iterators []index.Iterator
+	for _, r := range ranges {
+		iter, err := idx.RangeDesc(ctx, r.start, r.end)
+		if err != nil {
+			continue
+		}
+		iterators = append(iterators, iter)
+	}
+
+	if len(iterators) == 0 {
+		return &mergeLocationIterator{
+			heap:      &mergeHeap{},
+			iterators: nil,
+			seen:      make(map[string]bool),
+			valid:     false,
+			closed:    false,
+		}, nil
+	}
+
+	// Initialize heap with first item from each iterator
+	h := &mergeHeap{}
+	heap.Init(h)
+
+	for i, iter := range iterators {
+		if iter.Valid() {
+			loc := iter.Value()
+			createdAt := extractTimestampFromKey(iter.Key())
+			heap.Push(h, heapItem{
+				createdAt: createdAt,
+				location: types.LocationWithTime{
+					RecordLocation: loc,
+					CreatedAt:      createdAt,
+				},
+				iterator:   iter,
+				rangeIndex: i,
+			})
+		}
+	}
+
+	miter := &mergeLocationIterator{
+		heap:      h,
+		iterators: iterators,
+		seen:      make(map[string]bool),
+		valid:     false,
+		closed:    false,
+	}
+
+	// Prime the iterator by fetching the first valid item
+	if err := miter.advance(ctx); err != nil {
+		miter.Close()
+		return nil, err
+	}
+
+	return miter, nil
+}
+
+// Valid returns true if iterator has a current valid location
+func (m *mergeLocationIterator) Valid() bool {
+	return m.valid && !m.closed
+}
+
+// Value returns the current location
+func (m *mergeLocationIterator) Value() types.LocationWithTime {
+	if !m.Valid() {
+		return types.LocationWithTime{}
+	}
+	return m.current
+}
+
+// Next advances to the next unique location
+func (m *mergeLocationIterator) Next(ctx context.Context) error {
+	if m.closed {
+		return fmt.Errorf("iterator is closed")
+	}
+	return m.advance(ctx)
+}
+
+// advance fetches the next unique (deduplicated) location from the heap
+func (m *mergeLocationIterator) advance(ctx context.Context) error {
+	for m.heap.Len() > 0 {
+		// Get the item with the largest timestamp (most recent)
+		item := heap.Pop(m.heap).(heapItem)
+
+		// Deduplicate
+		dedupKey := fmt.Sprintf("%d:%d", item.location.SegmentID, item.location.Offset)
+		isUnique := !m.seen[dedupKey]
+		if isUnique {
+			m.seen[dedupKey] = true
+		}
+
+		// Advance the iterator that provided this item
+		if err := item.iterator.Next(); err == nil && item.iterator.Valid() {
+			loc := item.iterator.Value()
+			createdAt := extractTimestampFromKey(item.iterator.Key())
+			heap.Push(m.heap, heapItem{
+				createdAt: createdAt,
+				location: types.LocationWithTime{
+					RecordLocation: loc,
+					CreatedAt:      createdAt,
+				},
+				iterator:   item.iterator,
+				rangeIndex: item.rangeIndex,
+			})
+		}
+
+		// If this was a unique location, set it as current and return
+		if isUnique {
+			m.current = item.location
+			m.valid = true
+			return nil
+		}
+		// Otherwise continue to next item (skip duplicates)
+	}
+
+	// No more items
+	m.valid = false
+	return nil
+}
+
+// Close releases resources
+func (m *mergeLocationIterator) Close() error {
+	if m.closed {
+		return nil
+	}
+	m.closed = true
+	for _, iter := range m.iterators {
+		if iter != nil {
+			iter.Close()
+		}
+	}
+	m.iterators = nil
+	m.heap = nil
+	m.seen = nil
+	return nil
+}
+
 // resultIteratorImpl implements ResultIterator interface.
 type resultIteratorImpl struct {
 	events      []*types.Event
@@ -160,6 +353,7 @@ func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, 
 }
 
 // ExecutePlan executes a plan and returns results.
+// Uses streaming iteration to minimize memory usage and enable early termination.
 func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (ResultIterator, error) {
 	start := time.Now()
 	impl, ok := plan.(*planImpl)
@@ -170,63 +364,24 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	var results []*types.Event
 	indexesUsed := []string{}
 
-	// Optimization: If all conditions are satisfied by index and we have a limit,
-	// get locations with timestamps, sort, apply limit, then read only needed events
-	if impl.fullyIndexed && impl.filter.Limit > 0 {
-		var locationsWithTime []types.LocationWithTime
-		var err error
-
-		// Execute based on strategy to get locations with timestamps
-		switch impl.strategy {
-		case "author_time":
-			indexesUsed = append(indexesUsed, "author_time")
-			locationsWithTime, err = e.getAuthorTimeIndexResults(ctx, impl, true)
-			if err != nil {
-				return nil, err
-			}
-
-		case "search":
-			indexesUsed = append(indexesUsed, "search")
-			locationsWithTime, err = e.getSearchIndexResults(ctx, impl, true)
-			if err != nil {
-				return nil, err
-			}
-
-		case "kind_time":
-			indexesUsed = append(indexesUsed, "kind_time")
-			locationsWithTime, err = e.getKindTimeIndexResults(ctx, impl, true)
-			if err != nil {
-				return nil, err
-			}
-
-		default:
-			// Fall back to regular path for other strategies
-			goto regularPath
+	// Primary index strategy: exact ID lookup (single result)
+	if impl.strategy == "primary" {
+		indexesUsed = append(indexesUsed, "primary")
+		locations, err := e.getPrimaryIndexResults(ctx, impl)
+		if err != nil {
+			return nil, err
 		}
-
-		// NOTE: No need to sort or deduplicate here!
-		// When fullyIndexed=true, limit>0, and extractTime=true, queryIndexRanges
-		// calls queryIndexRangesMerge which already returns results:
-		// 1. Sorted by timestamp descending (most recent first) via max-heap
-		// 2. Deduplicated by SegmentID:Offset
-		// See queryIndexRangesMerge implementation for details.
-
-		// Apply limit early (huge optimization!)
-		if len(locationsWithTime) > impl.filter.Limit {
-			locationsWithTime = locationsWithTime[:impl.filter.Limit]
-		}
-
-		// Now read only the limited events from storage
-		for _, locWithTime := range locationsWithTime {
-			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
+		for _, loc := range locations {
+			event, err := e.store.ReadEvent(ctx, loc)
 			if err != nil {
-				continue // Skip corrupted events
+				continue
 			}
-			// Skip deleted events
 			if event.Flags.IsDeleted() {
 				continue
 			}
-			// Since fullyIndexed is true, no need to call MatchesFilter
+			if !impl.fullyIndexed && !MatchesFilter(event, impl.filter) {
+				continue
+			}
 			results = append(results, event)
 		}
 
@@ -241,131 +396,87 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 		}, nil
 	}
 
-regularPath:
-	// Regular path: Execute based on strategy
-	switch impl.strategy {
-	case "primary":
-		// Use primary index for exact ID match
-		indexesUsed = append(indexesUsed, "primary")
-		locations, err := e.getPrimaryIndexResults(ctx, impl)
-		if err != nil {
-			return nil, err
-		}
-		for _, loc := range locations {
-			event, err := e.store.ReadEvent(ctx, loc)
-			if err != nil {
-				continue // Skip corrupted events
-			}
-			// Skip deleted events
-			if event.Flags.IsDeleted() {
-				continue
-			}
-			results = append(results, event)
-		}
+	// Streaming strategy: author_time, search, kind_time
+	// Use location iterator for sorted, deduplicated results
+	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" {
+		indexesUsed = append(indexesUsed, impl.strategy)
 
-	case "author_time":
-		// Use author_time index for author + time queries
-		indexesUsed = append(indexesUsed, "author_time")
-		locationsWithTime, err := e.getAuthorTimeIndexResults(ctx, impl, false)
+		// Get streaming location iterator
+		locationIter, err := e.getLocationIterator(ctx, impl)
 		if err != nil {
 			return nil, err
 		}
-		for _, locWithTime := range locationsWithTime {
+		defer locationIter.Close()
+
+		// Stream process: read events one by one, filter, and apply limit
+		for locationIter.Valid() {
+			locWithTime := locationIter.Value()
 			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
 			if err != nil {
-				continue // Skip corrupted events
-			}
-			// Skip deleted events
-			if event.Flags.IsDeleted() {
+				// Skip corrupted events and continue
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
 				continue
 			}
-			results = append(results, event)
-		}
 
-	case "search":
-		// Use search index for tag queries
-		indexesUsed = append(indexesUsed, "search")
-		locationsWithTime, err := e.getSearchIndexResults(ctx, impl, false)
-		if err != nil {
-			return nil, err
-		}
-		for _, locWithTime := range locationsWithTime {
-			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
-			if err != nil {
-				continue // Skip corrupted events
-			}
 			// Skip deleted events
 			if event.Flags.IsDeleted() {
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
 				continue
 			}
-			results = append(results, event)
-		}
 
-	case "kind_time":
-		// Use kind-time index for kind + time queries
-		indexesUsed = append(indexesUsed, "kind_time")
-		locationsWithTime, err := e.getKindTimeIndexResults(ctx, impl, false)
-		if err != nil {
-			return nil, err
-		}
-		for _, locWithTime := range locationsWithTime {
-			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
-			if err != nil {
-				continue // Skip corrupted events
-			}
-			// Skip deleted events
-			if event.Flags.IsDeleted() {
+			// Filter event if not fully indexed
+			if !impl.fullyIndexed && !MatchesFilter(event, impl.filter) {
+				if err := locationIter.Next(ctx); err != nil {
+					break
+				}
 				continue
 			}
+
+			// Add to results
 			results = append(results, event)
+
+			// Early termination: stop when limit is reached
+			if impl.filter.Limit > 0 && len(results) >= impl.filter.Limit {
+				break
+			}
+
+			// Advance to next location
+			if err := locationIter.Next(ctx); err != nil {
+				break
+			}
 		}
 
-	case "scan":
-		// Full scan (not using indexes)
-		// This would scan all segments, but for now return empty
-		// In production, would implement actual full scan
+		duration := time.Since(start).Milliseconds()
+		return &resultIteratorImpl{
+			events:      results,
+			index:       0,
+			count:       0,
+			startTime:   start,
+			durationMs:  duration,
+			indexesUsed: indexesUsed,
+		}, nil
+	}
+
+	// Scan strategy (fallback)
+	if impl.strategy == "scan" {
+		// Full scan not implemented, return empty
 		results = []*types.Event{}
-
-	default:
-		return nil, fmt.Errorf("unknown strategy: %s", impl.strategy)
+		duration := time.Since(start).Milliseconds()
+		return &resultIteratorImpl{
+			events:      results,
+			index:       0,
+			count:       0,
+			startTime:   start,
+			durationMs:  duration,
+			indexesUsed: indexesUsed,
+		}, nil
 	}
 
-	// Post-filter results (only if not fully indexed)
-	var filtered []*types.Event
-	if impl.fullyIndexed {
-		// Skip MatchesFilter if all conditions are in the index
-		filtered = results
-	} else {
-		for _, event := range results {
-			if MatchesFilter(event, impl.filter) {
-				filtered = append(filtered, event)
-			}
-		}
-	}
-
-	// Sort by timestamp (most recent first)
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].CreatedAt != filtered[j].CreatedAt {
-			return filtered[i].CreatedAt > filtered[j].CreatedAt
-		}
-		return false
-	})
-
-	// Apply limit
-	if impl.filter.Limit > 0 && len(filtered) > impl.filter.Limit {
-		filtered = filtered[:impl.filter.Limit]
-	}
-
-	duration := time.Since(start).Milliseconds()
-
-	return &resultIteratorImpl{
-		events:      filtered,
-		index:       0,
-		count:       0,
-		startTime:   start,
-		durationMs:  duration,
-		indexesUsed: indexesUsed,
-	}, nil
+	return nil, fmt.Errorf("unknown strategy: %s", impl.strategy)
 }
 
 // getPrimaryIndexResults gets locations from primary index.
@@ -382,6 +493,39 @@ func (e *executorImpl) getPrimaryIndexResults(ctx context.Context, plan *planImp
 	}
 
 	return []types.RecordLocation{loc}, nil
+}
+
+// getLocationIterator returns a LocationIterator for the given plan.
+// This is the unified method to get sorted locations for any index strategy.
+func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) (LocationIterator, error) {
+	switch plan.strategy {
+	case "author_time":
+		atIdx := e.indexMgr.AuthorTimeIndex()
+		if atIdx == nil {
+			return nil, fmt.Errorf("author_time index not available")
+		}
+		ranges := e.buildAuthorTimeRanges(plan)
+		return newMergeLocationIterator(ctx, atIdx, ranges)
+
+	case "search":
+		searchIdx := e.indexMgr.SearchIndex()
+		if searchIdx == nil {
+			return nil, fmt.Errorf("search index not available")
+		}
+		ranges := e.buildSearchRanges(plan)
+		return newMergeLocationIterator(ctx, searchIdx, ranges)
+
+	case "kind_time":
+		kindTimeIdx := e.indexMgr.KindTimeIndex()
+		if kindTimeIdx == nil {
+			return nil, fmt.Errorf("kind_time index not available")
+		}
+		ranges := e.buildKindTimeRanges(plan)
+		return newMergeLocationIterator(ctx, kindTimeIdx, ranges)
+
+	default:
+		return nil, fmt.Errorf("strategy %s does not support location iterator", plan.strategy)
+	}
 }
 
 // getAuthorTimeIndexResults gets locations from author_time index.
@@ -480,6 +624,7 @@ func (h *mergeHeap) Pop() interface{} {
 // based on SegmentID:Offset. If extractTimestamp is true, it extracts the timestamp from the index key.
 // If fullyIndexed is true and limit > 0, uses merge algorithm to collect only the most recent
 // limit results across all ranges efficiently.
+// IMPORTANT: Returns SORTED results (by timestamp descending) suitable for streaming.
 func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ranges []keyRange, extractTimestamp bool, limit int, fullyIndexed bool) ([]types.LocationWithTime, error) {
 	// Optimization: Use merge algorithm with max-heap when fullyIndexed and limit are set
 	// This allows us to collect only the most recent 'limit' events across all ranges
@@ -487,7 +632,7 @@ func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ra
 		return e.queryIndexRangesMerge(ctx, idx, ranges, limit)
 	}
 
-	// Fallback: Simple mode - collect all results from all ranges
+	// Fallback: Collect all results from all ranges, then sort
 	var results []types.LocationWithTime
 	seen := make(map[string]bool) // key: "SegmentID:Offset"
 
@@ -519,6 +664,15 @@ func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ra
 		}
 		iter.Close()
 	}
+
+	// Sort by timestamp descending (most recent first) for consistency
+	// This ensures regularPath can process results in order without re-sorting
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].CreatedAt != results[j].CreatedAt {
+			return results[i].CreatedAt > results[j].CreatedAt
+		}
+		return false
+	})
 
 	return results, nil
 }
