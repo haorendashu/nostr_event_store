@@ -142,6 +142,12 @@ type engineImpl struct {
 	executor Executor
 }
 
+// CompilerDefaults defines default filter values injected during query compilation.
+type CompilerDefaults struct {
+	DefaultLimit int
+	DefaultKinds []uint16
+}
+
 // MonitoredEngine wraps an Engine to collect and report statistics.
 type MonitoredEngine struct {
 	engine Engine
@@ -153,8 +159,13 @@ type MonitoredEngine struct {
 // store: the storage layer for event retrieval
 // Returns the engine or error if initialization fails.
 func NewEngine(indexMgr index.Manager, store storage.Store) Engine {
+	return NewEngineWithDefaults(indexMgr, store, CompilerDefaults{})
+}
+
+// NewEngineWithDefaults creates a new query engine with configurable compiler defaults.
+func NewEngineWithDefaults(indexMgr index.Manager, store storage.Store, defaults CompilerDefaults) Engine {
 	return &engineImpl{
-		compiler: NewCompiler(indexMgr),
+		compiler: NewCompilerWithDefaults(indexMgr, defaults),
 		executor: NewExecutor(indexMgr, store),
 	}
 }
@@ -227,8 +238,14 @@ func (e *engineImpl) Explain(ctx context.Context, filter *types.QueryFilter) (st
 // NewCompiler creates a new query compiler.
 // indexMgr: the index manager (for checking available indexes)
 func NewCompiler(indexMgr index.Manager) Compiler {
+	return NewCompilerWithDefaults(indexMgr, CompilerDefaults{})
+}
+
+// NewCompilerWithDefaults creates a compiler with configurable default filter values.
+func NewCompilerWithDefaults(indexMgr index.Manager, defaults CompilerDefaults) Compiler {
 	return &compilerImpl{
 		indexMgr: indexMgr,
+		defaults: buildCompilerDefaults(defaults.DefaultLimit, defaults.DefaultKinds),
 	}
 }
 

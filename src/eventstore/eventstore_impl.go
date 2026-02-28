@@ -250,7 +250,10 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	}
 
 	// Initialize query engine
-	e.queryEngine = query.NewEngine(e.indexMgr, e.storage)
+	e.queryEngine = query.NewEngineWithDefaults(e.indexMgr, e.storage, query.CompilerDefaults{
+		DefaultLimit: cfg.QueryConfig.DefaultLimit,
+		DefaultKinds: cfg.QueryConfig.DefaultKinds,
+	})
 
 	// Recovery: Replay WAL if recovery mode is not "skip"
 	e.logger.Printf("Recovery mode: %s (indexFilesInvalidated=%v)", e.opts.RecoveryMode, e.indexFilesInvalidated)
@@ -1741,7 +1744,10 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 		return fmt.Errorf("reopen index manager: %w", err)
 	}
 	e.indexMgr = indexMgrImpl
-	e.queryEngine = query.NewEngine(e.indexMgr, e.storage)
+	e.queryEngine = query.NewEngineWithDefaults(e.indexMgr, e.storage, query.CompilerDefaults{
+		DefaultLimit: cfg.QueryConfig.DefaultLimit,
+		DefaultKinds: cfg.QueryConfig.DefaultKinds,
+	})
 	e.logger.Printf("Index manager recreated, starting optimized batch recovery from %d segments...", len(segmentIDs))
 
 	// Use optimized batch recovery with parallel segment scanning

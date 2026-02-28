@@ -414,9 +414,9 @@ func TestCompiler(t *testing.T) {
 			strategy: "search",
 		},
 		{
-			name:    "Invalid - no conditions and no limit",
-			filter:  &types.QueryFilter{},
-			wantErr: true,
+			name:     "Empty filter - use default limit and scan",
+			filter:   &types.QueryFilter{},
+			strategy: "scan",
 		},
 		{
 			name: "Invalid - since > until",
@@ -444,6 +444,106 @@ func TestCompiler(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCompilerNormalizeDefaults(t *testing.T) {
+	mgr := newMockIndexManager()
+	compiler := NewCompiler(mgr)
+
+	t.Run("Default limit applied when missing", func(t *testing.T) {
+		plan, err := compiler.Compile(&types.QueryFilter{
+			Kinds: []uint16{1},
+		})
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		impl := plan.(*planImpl)
+		if impl.filter.Limit != builtinDefaultQueryLimit {
+			t.Fatalf("normalized limit = %d, want %d", impl.filter.Limit, builtinDefaultQueryLimit)
+		}
+	})
+
+	t.Run("Default kinds applied for tag query", func(t *testing.T) {
+		plan, err := compiler.Compile(&types.QueryFilter{
+			Tags: map[string][]string{
+				"t": {"nostr"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		impl := plan.(*planImpl)
+		wantKinds := defaultSearchKinds()
+		if len(impl.filter.Kinds) != len(wantKinds) {
+			t.Fatalf("normalized kinds len = %d, want %d", len(impl.filter.Kinds), len(wantKinds))
+		}
+		for i := range wantKinds {
+			if impl.filter.Kinds[i] != wantKinds[i] {
+				t.Fatalf("normalized kinds[%d] = %d, want %d", i, impl.filter.Kinds[i], wantKinds[i])
+			}
+		}
+	})
+
+	t.Run("Default kinds applied for author query", func(t *testing.T) {
+		plan, err := compiler.Compile(&types.QueryFilter{
+			Authors: [][32]byte{{1, 2, 3}},
+		})
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		impl := plan.(*planImpl)
+		wantKinds := defaultSearchKinds()
+		if len(impl.filter.Kinds) != len(wantKinds) {
+			t.Fatalf("normalized kinds len = %d, want %d", len(impl.filter.Kinds), len(wantKinds))
+		}
+	})
+
+	t.Run("Input filter is not mutated", func(t *testing.T) {
+		filter := &types.QueryFilter{
+			Tags: map[string][]string{
+				"e": {"abc"},
+			},
+		}
+
+		_, err := compiler.Compile(filter)
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		if filter.Limit != 0 {
+			t.Fatalf("input filter limit mutated to %d", filter.Limit)
+		}
+		if len(filter.Kinds) != 0 {
+			t.Fatalf("input filter kinds mutated, len=%d", len(filter.Kinds))
+		}
+	})
+
+	t.Run("Compiler uses configurable defaults", func(t *testing.T) {
+		customCompiler := NewCompilerWithDefaults(mgr, CompilerDefaults{
+			DefaultLimit: 7,
+			DefaultKinds: []uint16{1, 6, 1111},
+		})
+
+		plan, err := customCompiler.Compile(&types.QueryFilter{
+			Tags: map[string][]string{
+				"t": {"nostr"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		impl := plan.(*planImpl)
+		if impl.filter.Limit != 7 {
+			t.Fatalf("normalized limit = %d, want 7", impl.filter.Limit)
+		}
+		if len(impl.filter.Kinds) != 3 {
+			t.Fatalf("normalized kinds len = %d, want 3", len(impl.filter.Kinds))
+		}
+	})
 }
 
 // Test: Executor with mock data

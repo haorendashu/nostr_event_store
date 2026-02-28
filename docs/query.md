@@ -128,12 +128,16 @@ type QueryFilter struct {
 ```
 
 **Field Behavior:**
-- `Kinds`, `Authors`: Empty means "match all"
+- `Kinds`, `Authors`: Empty means "match all" at type level; compiler may inject default kinds for search/tag queries when kinds are omitted
 - `Since`, `Until`: 0 means "no limit"; Until is exclusive (Since ≤ CreatedAt < Until)
 - `Tags`: Each key can have multiple values (OR logic within a tag, AND logic across tags)
 - `Search`: Case-insensitive substring match in content and tag values
-- `Limit`: 0 means "no limit"; applied after sorting
+- `Limit`: If omitted, compiler applies a configurable default limit (default: `100`); applied after sorting
 - `IDs`: Reserved for future optimization (exact event ID lookups)
+
+**Configurable Defaults:**
+- `query.default_limit`: default limit when filter omits `Limit`
+- `query.default_kinds`: default kinds applied for search/tag queries when filter omits `Kinds`
 
 ### ExecutionPlan (Interface)
 

@@ -38,6 +38,20 @@ type Config struct {
 	// ShardingConfig specifies distributed sharding parameters (Phase 3).
 	// When enabled, events are distributed across multiple local shards using consistent hashing.
 	ShardingConfig ShardingConfig `json:"sharding,omitempty"`
+
+	// QueryConfig specifies query filter defaulting behavior.
+	QueryConfig QueryConfig `json:"query,omitempty"`
+}
+
+// QueryConfig defines default query filter values injected by the query compiler.
+type QueryConfig struct {
+	// DefaultLimit is applied when filter limit is omitted (0).
+	// Default: 100
+	DefaultLimit int `json:"default_limit,omitempty"`
+
+	// DefaultKinds are applied when kinds are omitted for search/tag queries.
+	// Default: [0,1,3,6,16,20,30023,9041,1111]
+	DefaultKinds []uint16 `json:"default_kinds,omitempty"`
 }
 
 // StorageConfig defines storage layer parameters.
@@ -479,6 +493,13 @@ func (m *ManagerImpl) LoadFromEnv(ctx context.Context) error {
 		m.config.CompactionConfig.PreserveOldSegments = v
 	}
 
+	if v, ok := getEnvInt("NOSTR_STORE_QUERY_DEFAULT_LIMIT"); ok {
+		m.config.QueryConfig.DefaultLimit = v
+	}
+	if v, ok := getEnvUint16List("NOSTR_STORE_QUERY_DEFAULT_KINDS"); ok {
+		m.config.QueryConfig.DefaultKinds = v
+	}
+
 	m.SetDefaults()
 	return m.Validate()
 }
@@ -589,6 +610,13 @@ func (m *ManagerImpl) SetDefaults() {
 	}
 	if m.config.ShardingConfig.QueryTimeoutSeconds == 0 {
 		m.config.ShardingConfig.QueryTimeoutSeconds = defaults.ShardingConfig.QueryTimeoutSeconds
+	}
+
+	if m.config.QueryConfig.DefaultLimit == 0 {
+		m.config.QueryConfig.DefaultLimit = defaults.QueryConfig.DefaultLimit
+	}
+	if len(m.config.QueryConfig.DefaultKinds) == 0 {
+		m.config.QueryConfig.DefaultKinds = append([]uint16(nil), defaults.QueryConfig.DefaultKinds...)
 	}
 }
 
@@ -811,6 +839,10 @@ func DefaultConfig() *Config {
 			QueryTimeoutSeconds:  30,
 			EnableDeduplication:  true,
 		},
+		QueryConfig: QueryConfig{
+			DefaultLimit: 100,
+			DefaultKinds: []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111},
+		},
 	}
 }
 
@@ -880,6 +912,33 @@ func getEnvBool(key string) (bool, bool) {
 		return false, false
 	}
 	return parsed, true
+}
+
+func getEnvUint16List(key string) ([]uint16, bool) {
+	val, ok := getEnvString(key)
+	if !ok || val == "" {
+		return nil, false
+	}
+
+	parts := strings.Split(val, ",")
+	values := make([]uint16, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(trimmed, 10, 16)
+		if err != nil {
+			return nil, false
+		}
+		values = append(values, uint16(parsed))
+	}
+
+	if len(values) == 0 {
+		return nil, false
+	}
+
+	return values, true
 }
 
 func mergeConfig(dst *Config, src *Config) {
@@ -971,5 +1030,12 @@ func mergeConfig(dst *Config, src *Config) {
 	}
 	if src.CompactionConfig.PreserveOldSegments {
 		dst.CompactionConfig.PreserveOldSegments = src.CompactionConfig.PreserveOldSegments
+	}
+
+	if src.QueryConfig.DefaultLimit != 0 {
+		dst.QueryConfig.DefaultLimit = src.QueryConfig.DefaultLimit
+	}
+	if len(src.QueryConfig.DefaultKinds) > 0 {
+		dst.QueryConfig.DefaultKinds = append([]uint16(nil), src.QueryConfig.DefaultKinds...)
 	}
 }

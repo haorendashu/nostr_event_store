@@ -8,9 +8,19 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
+const builtinDefaultQueryLimit = 100
+
+var builtinDefaultSearchKinds = []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111}
+
+type compilerDefaults struct {
+	defaultLimit int
+	defaultKinds []uint16
+}
+
 // compilerImpl implements Compiler interface.
 type compilerImpl struct {
 	indexMgr index.Manager
+	defaults compilerDefaults
 }
 
 // planImpl implements ExecutionPlan interface.
@@ -26,18 +36,20 @@ type planImpl struct {
 
 // Compile creates an execution plan for the given filter.
 func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error) {
+	normalized := c.normalizeFilter(filter)
+
 	// Validate filter first
-	if err := c.ValidateFilter(filter); err != nil {
+	if err := c.ValidateFilter(normalized); err != nil {
 		return nil, err
 	}
 
 	// Determine execution strategy
 	plan := &planImpl{
-		filter: filter,
+		filter: normalized,
 	}
 
 	// Strategy: If only kinds specified (no authors, no tags) and has time range, use kind_time index
-	if len(filter.Kinds) > 0 && len(filter.Authors) == 0 && len(filter.Tags) == 0 && filter.Search == "" {
+	if len(normalized.Kinds) > 0 && len(normalized.Authors) == 0 && len(normalized.Tags) == 0 && normalized.Search == "" {
 		plan.strategy = "kind_time"
 		plan.indexName = "kind_time"
 		plan.estimatedIO = 3 // Good performance with smaller keys
@@ -49,30 +61,30 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 	// Strategy: If authors specified, use author_time index
 	// The author_time index key is (pubkey, kind, created_at), so we can use it
 	// whenever we have authors, regardless of whether time range is specified
-	if len(filter.Authors) > 0 {
+	if len(normalized.Authors) > 0 {
 		plan.strategy = "author_time"
 		plan.indexName = "author_time"
 		// Adjust cost based on number of authors
-		if len(filter.Authors) == 1 {
+		if len(normalized.Authors) == 1 {
 			plan.estimatedIO = 4 // Lower cost for single author
 		} else {
 			plan.estimatedIO = 5 // Higher cost for multiple authors
 		}
 		// Check if fully indexed: authors + optional time are covered, no other conditions
-		plan.fullyIndexed = len(filter.Tags) == 0 && filter.Search == ""
+		plan.fullyIndexed = len(normalized.Tags) == 0 && normalized.Search == ""
 		return plan, nil
 	}
 
 	// Strategy: If any tags, use search index
 	// But only if all tag names are in the indexable tags list
-	if len(filter.Tags) > 0 {
+	if len(normalized.Tags) > 0 {
 		// Get the current mapping of indexable tags
 		indexableTagsMapping := c.indexMgr.KeyBuilder().TagNameToSearchTypeCode()
 
 		// Check if all tag names in filter.Tags are indexable
 		canUseSearchIndex := false
 		allTagsIndexable := true
-		for tagName := range filter.Tags {
+		for tagName := range normalized.Tags {
 			if _, exists := indexableTagsMapping[tagName]; exists {
 				canUseSearchIndex = true
 			} else {
@@ -88,8 +100,8 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 			// When kinds is specified, search index keys include kind, so no post-filtering needed
 			// When kinds is empty, search index requires post-filtering because key format is (kind, searchType, tagValue, time)
 			// and we cannot efficiently query specific tagValue across all kinds without also matching other tagValues
-			hasKindsFilter := len(filter.Kinds) > 0
-			plan.fullyIndexed = hasKindsFilter && allTagsIndexable && len(filter.Authors) == 0 && filter.Search == ""
+			hasKindsFilter := len(normalized.Kinds) > 0
+			plan.fullyIndexed = hasKindsFilter && allTagsIndexable && len(normalized.Authors) == 0 && normalized.Search == ""
 			return plan, nil
 		}
 		// If not all tags are indexable, fall through to full scan
@@ -100,6 +112,75 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 	plan.indexName = ""
 	plan.estimatedIO = 100 // High cost (full scan)
 	return plan, nil
+}
+
+func (c *compilerImpl) normalizeFilter(filter *types.QueryFilter) *types.QueryFilter {
+	if filter == nil {
+		return nil
+	}
+
+	normalized := cloneFilter(filter)
+
+	if normalized.Limit == 0 {
+		normalized.Limit = c.defaults.defaultLimit
+	}
+
+	if len(normalized.Kinds) == 0 && shouldApplyDefaultKinds(normalized) {
+		normalized.Kinds = append([]uint16(nil), c.defaults.defaultKinds...)
+	}
+
+	return normalized
+}
+
+func shouldApplyDefaultKinds(filter *types.QueryFilter) bool {
+	return len(filter.Tags) > 0 || len(filter.Authors) > 0
+}
+
+func defaultSearchKinds() []uint16 {
+	return append([]uint16(nil), builtinDefaultSearchKinds...)
+}
+
+func buildCompilerDefaults(defaultLimit int, defaultKinds []uint16) compilerDefaults {
+	resolvedLimit := defaultLimit
+	if resolvedLimit <= 0 {
+		resolvedLimit = builtinDefaultQueryLimit
+	}
+
+	resolvedKinds := append([]uint16(nil), defaultKinds...)
+	if len(resolvedKinds) == 0 {
+		resolvedKinds = defaultSearchKinds()
+	}
+
+	return compilerDefaults{
+		defaultLimit: resolvedLimit,
+		defaultKinds: resolvedKinds,
+	}
+}
+
+func cloneFilter(filter *types.QueryFilter) *types.QueryFilter {
+	cloned := &types.QueryFilter{
+		Since:  filter.Since,
+		Until:  filter.Until,
+		Limit:  filter.Limit,
+		Search: filter.Search,
+	}
+
+	if len(filter.Kinds) > 0 {
+		cloned.Kinds = append([]uint16(nil), filter.Kinds...)
+	}
+
+	if len(filter.Authors) > 0 {
+		cloned.Authors = append([][32]byte(nil), filter.Authors...)
+	}
+
+	if len(filter.Tags) > 0 {
+		cloned.Tags = make(map[string][]string, len(filter.Tags))
+		for tagName, values := range filter.Tags {
+			cloned.Tags[tagName] = append([]string(nil), values...)
+		}
+	}
+
+	return cloned
 }
 
 // ValidateFilter checks if a filter is valid.

@@ -163,5 +163,12 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("compaction.max_concurrent_compactions must be > 0")
 	}
 
+	if cfg.QueryConfig.DefaultLimit < 0 {
+		return fmt.Errorf("query.default_limit must be >= 0")
+	}
+	if len(cfg.QueryConfig.DefaultKinds) > 100 {
+		return fmt.Errorf("query.default_kinds must contain <= 100 entries")
+	}
+
 	return nil
 }

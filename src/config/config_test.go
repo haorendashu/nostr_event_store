@@ -637,6 +637,8 @@ func TestLoadFromEnv(t *testing.T) {
 		"NOSTR_STORE_WAL_SYNC_MODE",
 		"NOSTR_STORE_PRIMARY_INDEX_CACHE_MB",
 		"NOSTR_STORE_COMPACTION_ENABLED",
+		"NOSTR_STORE_QUERY_DEFAULT_LIMIT",
+		"NOSTR_STORE_QUERY_DEFAULT_KINDS",
 	}
 	for _, v := range testVars {
 		originalEnv[v] = os.Getenv(v)
@@ -659,6 +661,8 @@ func TestLoadFromEnv(t *testing.T) {
 	os.Setenv("NOSTR_STORE_WAL_SYNC_MODE", "always")
 	os.Setenv("NOSTR_STORE_PRIMARY_INDEX_CACHE_MB", "999")
 	os.Setenv("NOSTR_STORE_COMPACTION_ENABLED", "false")
+	os.Setenv("NOSTR_STORE_QUERY_DEFAULT_LIMIT", "77")
+	os.Setenv("NOSTR_STORE_QUERY_DEFAULT_KINDS", "0,1,3,6,16,20,30023,9041,1111")
 
 	mgr := NewManager()
 	ctx := context.Background()
@@ -684,6 +688,12 @@ func TestLoadFromEnv(t *testing.T) {
 	if cfg.CompactionConfig.Enabled {
 		t.Error("CompactionConfig.Enabled should be false from env")
 	}
+	if cfg.QueryConfig.DefaultLimit != 77 {
+		t.Errorf("QueryConfig.DefaultLimit = %d, want 77", cfg.QueryConfig.DefaultLimit)
+	}
+	if len(cfg.QueryConfig.DefaultKinds) != 9 {
+		t.Errorf("QueryConfig.DefaultKinds length = %d, want 9", len(cfg.QueryConfig.DefaultKinds))
+	}
 }
 
 func TestUpdate(t *testing.T) {
@@ -701,6 +711,10 @@ func TestUpdate(t *testing.T) {
 		},
 		CompactionConfig: CompactionConfig{
 			FragmentationThreshold: 0.5,
+		},
+		QueryConfig: QueryConfig{
+			DefaultLimit: 42,
+			DefaultKinds: []uint16{1, 3, 6},
 		},
 	}
 
@@ -721,6 +735,12 @@ func TestUpdate(t *testing.T) {
 	}
 	if cfg.CompactionConfig.FragmentationThreshold != 0.5 {
 		t.Errorf("CompactionConfig.FragmentationThreshold = %f, want 0.5", cfg.CompactionConfig.FragmentationThreshold)
+	}
+	if cfg.QueryConfig.DefaultLimit != 42 {
+		t.Errorf("QueryConfig.DefaultLimit = %d, want 42", cfg.QueryConfig.DefaultLimit)
+	}
+	if len(cfg.QueryConfig.DefaultKinds) != 3 {
+		t.Errorf("QueryConfig.DefaultKinds length = %d, want 3", len(cfg.QueryConfig.DefaultKinds))
 	}
 }
 
