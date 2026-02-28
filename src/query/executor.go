@@ -204,27 +204,12 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 			goto regularPath
 		}
 
-		// Sort by timestamp (most recent first)
-		sort.Slice(locationsWithTime, func(i, j int) bool {
-			if locationsWithTime[i].CreatedAt != locationsWithTime[j].CreatedAt {
-				return locationsWithTime[i].CreatedAt > locationsWithTime[j].CreatedAt
-			}
-			return false
-		})
-
-		// Deduplicate locations (same event location should only appear once)
-		// This is important because when there are multiple tag conditions,
-		// the same event may be returned multiple times
-		seen := make(map[string]bool) // Use SegmentID:Offset as key
-		var uniqueLocations []types.LocationWithTime
-		for _, locWithTime := range locationsWithTime {
-			key := fmt.Sprintf("%d:%d", locWithTime.SegmentID, locWithTime.Offset)
-			if !seen[key] {
-				seen[key] = true
-				uniqueLocations = append(uniqueLocations, locWithTime)
-			}
-		}
-		locationsWithTime = uniqueLocations
+		// NOTE: No need to sort or deduplicate here!
+		// When fullyIndexed=true, limit>0, and extractTime=true, queryIndexRanges
+		// calls queryIndexRangesMerge which already returns results:
+		// 1. Sorted by timestamp descending (most recent first) via max-heap
+		// 2. Deduplicated by SegmentID:Offset
+		// See queryIndexRangesMerge implementation for details.
 
 		// Apply limit early (huge optimization!)
 		if len(locationsWithTime) > impl.filter.Limit {
@@ -540,6 +525,10 @@ func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ra
 
 // queryIndexRangesMerge uses a merge algorithm with max-heap to efficiently collect
 // the most recent 'limit' results from multiple descending ranges.
+// GUARANTEES:
+// - Results are sorted by timestamp descending (most recent first)
+// - Results are deduplicated by SegmentID:Offset
+// - Returns at most 'limit' results
 func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Index, ranges []keyRange, limit int) ([]types.LocationWithTime, error) {
 	// Create descending iterators for each range
 	var iterators []index.Iterator
