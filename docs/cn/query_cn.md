@@ -128,12 +128,16 @@ type QueryFilter struct {
 ```
 
 **字段行为：**
-- `Kinds`、`Authors`：空表示"匹配所有"
+- `Kinds`、`Authors`：空表示"匹配所有"（类型级别）；编译器在搜索/标签查询时如果省略 kinds，可能会注入默认值
 - `Since`、`Until`：0 表示"无限制"；Until 不含该值（Since ≤ CreatedAt < Until）
 - `Tags`：每个键可有多个值（标签内为 OR 逻辑，标签间为 AND 逻辑）
 - `Search`：内容和标签值中的不区分大小写子字符串匹配
-- `Limit`：0 表示"无限制"；排序后应用
+- `Limit`：如果省略，编译器应用可配置的默认限制（默认值：`100`）；排序后应用
 - `IDs`：预留用于精确事件 ID 查询
+
+**可配置的默认值：**
+- `query.default_limit`：当过滤器省略 `Limit` 时应用的默认限制
+- `query.default_kinds`：当过滤器省略 `Kinds` 时，应用于搜索/标签查询的默认 kinds
 
 ### ExecutionPlan（接口）
 
