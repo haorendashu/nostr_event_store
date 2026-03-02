@@ -266,6 +266,119 @@ func (m *mergeLocationIterator) Close() error {
 	return nil
 }
 
+// intersectionLocationIterator implements LocationIterator for multi-index intersection queries.
+// It queries two indexes independently, finds the intersection of locations, and returns sorted results.
+// This is optimized for authors + tags queries where both author_time and search indexes can be leveraged.
+type intersectionLocationIterator struct {
+	locations []types.LocationWithTime // Sorted intersection results
+	index     int                      // Current position in locations array
+	closed    bool
+}
+
+// newIntersectionLocationIterator creates a new intersection-based location iterator.
+// Algorithm: Serial filtering approach
+// 1. Query first index (author_time) and collect all locations into a map
+// 2. Query second index (search) and check each location against the map
+// 3. Collect matching locations (intersection)
+// 4. Sort by timestamp descending
+func newIntersectionLocationIterator(
+	ctx context.Context,
+	idx1 index.Index, ranges1 []keyRange,
+	idx2 index.Index, ranges2 []keyRange,
+) (*intersectionLocationIterator, error) {
+	// Step 1: Query first index (author_time) and collect all locations
+	iter1, err := newMergeLocationIterator(ctx, idx1, ranges1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create first index iterator: %w", err)
+	}
+	defer iter1.Close()
+
+	// Collect locations from first index into a map for O(1) lookup
+	seenInFirst := make(map[string]types.LocationWithTime)
+	for iter1.Valid() {
+		loc := iter1.Value()
+		key := fmt.Sprintf("%d:%d", loc.SegmentID, loc.Offset)
+		seenInFirst[key] = loc
+		if err := iter1.Next(ctx); err != nil {
+			return nil, fmt.Errorf("error advancing first iterator: %w", err)
+		}
+	}
+
+	// Early exit if first index returned no results
+	if len(seenInFirst) == 0 {
+		return &intersectionLocationIterator{
+			locations: []types.LocationWithTime{},
+			index:     0,
+			closed:    false,
+		}, nil
+	}
+
+	// Step 2: Query second index (search) and find intersection
+	iter2, err := newMergeLocationIterator(ctx, idx2, ranges2)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create second index iterator: %w", err)
+	}
+	defer iter2.Close()
+
+	var intersectionResults []types.LocationWithTime
+	for iter2.Valid() {
+		loc := iter2.Value()
+		key := fmt.Sprintf("%d:%d", loc.SegmentID, loc.Offset)
+
+		// Check if this location exists in first index results
+		if firstLoc, exists := seenInFirst[key]; exists {
+			// Use the location with metadata from first index for consistency
+			intersectionResults = append(intersectionResults, firstLoc)
+		}
+
+		if err := iter2.Next(ctx); err != nil {
+			return nil, fmt.Errorf("error advancing second iterator: %w", err)
+		}
+	}
+
+	// Step 3: Sort intersection results by timestamp descending
+	// (Both indexes independently return sorted results, but intersection may break ordering)
+	sort.Slice(intersectionResults, func(i, j int) bool {
+		return intersectionResults[i].CreatedAt > intersectionResults[j].CreatedAt
+	})
+
+	return &intersectionLocationIterator{
+		locations: intersectionResults,
+		index:     0,
+		closed:    false,
+	}, nil
+}
+
+func (i *intersectionLocationIterator) Valid() bool {
+	return !i.closed && i.index < len(i.locations)
+}
+
+func (i *intersectionLocationIterator) Value() types.LocationWithTime {
+	if !i.Valid() {
+		return types.LocationWithTime{}
+	}
+	return i.locations[i.index]
+}
+
+func (i *intersectionLocationIterator) Next(ctx context.Context) error {
+	if i.closed {
+		return fmt.Errorf("iterator is closed")
+	}
+	if i.Valid() {
+		i.index++
+	}
+	return nil
+}
+
+func (i *intersectionLocationIterator) Close() error {
+	if i.closed {
+		return nil
+	}
+	i.closed = true
+	i.locations = nil
+	return nil
+}
+
 // resultIteratorImpl implements ResultIterator interface.
 type resultIteratorImpl struct {
 	events      []*types.Event
@@ -295,8 +408,8 @@ func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, 
 		return len(locations), nil
 	}
 
-	// Streaming strategies: author_time, search, kind_time
-	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" {
+	// Streaming strategies: author_time, search, kind_time, intersection
+	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" || impl.strategy == "intersection" {
 		locationIter, err := e.getLocationIterator(ctx, impl)
 		if err != nil {
 			return 0, err
@@ -408,9 +521,9 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 		}, nil
 	}
 
-	// Streaming strategy: author_time, search, kind_time
+	// Streaming strategy: author_time, search, kind_time, intersection
 	// Use location iterator for sorted, deduplicated results
-	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" {
+	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" || impl.strategy == "intersection" {
 		indexesUsed = append(indexesUsed, impl.strategy)
 
 		// Get streaming location iterator
@@ -534,6 +647,20 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 		}
 		ranges := e.buildKindTimeRanges(plan)
 		return newMergeLocationIterator(ctx, kindTimeIdx, ranges)
+
+	case "intersection":
+		// Multi-index intersection for authors + tags queries
+		atIdx := e.indexMgr.AuthorTimeIndex()
+		if atIdx == nil {
+			return nil, fmt.Errorf("author_time index not available")
+		}
+		searchIdx := e.indexMgr.SearchIndex()
+		if searchIdx == nil {
+			return nil, fmt.Errorf("search index not available")
+		}
+		authorRanges := e.buildAuthorTimeRanges(plan)
+		searchRanges := e.buildSearchRanges(plan)
+		return newIntersectionLocationIterator(ctx, atIdx, authorRanges, searchIdx, searchRanges)
 
 	default:
 		return nil, fmt.Errorf("strategy %s does not support location iterator", plan.strategy)

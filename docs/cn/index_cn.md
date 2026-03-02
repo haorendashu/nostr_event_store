@@ -1,7 +1,7 @@
 # Index 包设计与实现指南
 
 **目标读者:** 开发者、架构师和维护者  
-**最后更新:** 2026年2月28日  
+**最后更新:** 2026年3月2日  
 **语言:** 中文
 
 ## 目录
@@ -419,6 +419,28 @@ manager.InsertRecoveryBatch
 
 该流程较逐条写入显著降低锁争用和函数调用开销。
 
+### 工作流 F：多索引查询（authors + tags）
+
+当查询同时包含 `authors + tags` 条件时，query 层可执行**多索引查询**（交集路径）：
+
+```
+compiler 选择 strategy = intersection
+  ↓
+构造 Author+Time 范围键（author、可选 kind、时间）
+  ↓
+构造 Search 范围键（kind、tag 类型/值、时间）
+  ↓
+分别执行两个索引的 RangeDesc 扫描
+  ↓
+按 RecordLocation (SegmentID:Offset) 求交集
+  ↓
+按 created_at 降序重排
+  ↓
+仅对交集候选读取 storage
+```
+
+核心收益：先在索引层收敛候选集，避免“单索引大候选 + storage 逐条过滤”造成的 I/O 放大。
+
 ---
 
 ## 设计决策与权衡
@@ -466,6 +488,14 @@ manager.InsertRecoveryBatch
 | 降低每次写入 fsync 开销 | tick 间隔内存在小的持久化窗口 |
 | 写入延迟更平稳 | 需要关闭流程确保最终 flush |
 
+### 决策 7：基于交集的多索引查询
+
+| 优势 | 成本 |
+|------|------|
+| 对 `authors + tags` 查询先做索引层过滤，显著减少 storage 读取 | 需要额外的内存集合用于求交集 |
+| 在作者/标签高扇出场景下降低尾延迟 | 查询规划与执行分支更复杂 |
+| 复用既有 Author+Time 与 Search 索引（无需新增索引格式） | 交集后需要按时间重排结果 |
+
 ---
 
 ## 性能分析
@@ -505,6 +535,15 @@ NodeCacheCapacity ≈ cacheBytes / pageSize
 2. 缓存过小导致页抖动和磁盘 I/O 放大。
 3. 分区粒度过细会增加跨分区合并开销。
 4. 过于频繁的 flush 会显著增加 fsync 压力。
+
+### 多索引查询的性能影响
+
+对于 `authors + tags` 过滤条件，I/O 路径从：
+
+- 原路径：单索引扫描 -> 大量 storage 读取 -> 内存过滤
+- 新路径：双索引扫描 -> 位置求交集 -> 更少 storage 读取
+
+当标签选择性较高时，该路径通常能明显降低 storage I/O，并改善端到端查询延迟。
 
 ---
 

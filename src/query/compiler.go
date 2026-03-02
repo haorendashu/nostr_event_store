@@ -25,13 +25,14 @@ type compilerImpl struct {
 
 // planImpl implements ExecutionPlan interface.
 type planImpl struct {
-	strategy     string // "primary", "author_time", "search", "scan"
-	filter       *types.QueryFilter
-	indexName    string
-	startKey     []byte
-	endKey       []byte
-	estimatedIO  int
-	fullyIndexed bool // true if all filter conditions are satisfied by the index
+	strategy           string // "primary", "author_time", "search", "scan", "intersection"
+	filter             *types.QueryFilter
+	indexName          string
+	secondaryIndexName string // Used for intersection strategy
+	startKey           []byte
+	endKey             []byte
+	estimatedIO        int
+	fullyIndexed       bool // true if all filter conditions are satisfied by the index
 }
 
 // Compile creates an execution plan for the given filter.
@@ -56,6 +57,30 @@ func (c *compilerImpl) Compile(filter *types.QueryFilter) (ExecutionPlan, error)
 		// Fully indexed if only checking kinds and time range
 		plan.fullyIndexed = true
 		return plan, nil
+	}
+
+	// Strategy: If both authors AND tags specified, use intersection of author_time and search indexes
+	// This significantly reduces storage reads by finding intersection before reading events
+	if len(normalized.Authors) > 0 && len(normalized.Tags) > 0 {
+		// Check if tags are indexable
+		indexableTagsMapping := c.indexMgr.KeyBuilder().TagNameToSearchTypeCode()
+		hasIndexableTags := false
+		for tagName := range normalized.Tags {
+			if _, exists := indexableTagsMapping[tagName]; exists {
+				hasIndexableTags = true
+				break
+			}
+		}
+
+		if hasIndexableTags {
+			plan.strategy = "intersection"
+			plan.indexName = "author_time"
+			plan.secondaryIndexName = "search"
+			plan.estimatedIO = 4 // Lower than single index with post-filtering
+			// Intersection results are fully indexed - both conditions satisfied by indexes
+			plan.fullyIndexed = true
+			return plan, nil
+		}
 	}
 
 	// Strategy: If authors specified, use author_time index

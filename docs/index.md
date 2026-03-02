@@ -1,7 +1,7 @@
 # Index Package Design and Implementation Guide
 
 **Target Audience:** Developers, Architects, and Maintainers  
-**Last Updated:** February 27, 2026  
+**Last Updated:** March 2, 2026  
 **Language:** English
 
 ## Table of Contents
@@ -419,6 +419,28 @@ batch insert into primary/author/kind/search
 
 This minimizes lock churn vs one-by-one insert.
 
+### Workflow F: Multi-Index Query (authors + tags)
+
+The query layer can execute a **multi-index query** for `authors + tags` predicates using index intersection:
+
+```
+compiler selects strategy = intersection
+  ↓
+build ranges for Author+Time index (author, optional kind, time)
+  ↓
+build ranges for Search index (kind, tag type/value, time)
+  ↓
+scan both indexes with RangeDesc iterators
+  ↓
+intersect by RecordLocation (SegmentID:Offset)
+  ↓
+sort intersection set by created_at desc
+  ↓
+read storage only for intersected candidates
+```
+
+Why this matters: it avoids reading a large one-index candidate set from storage and then filtering in memory.
+
 ---
 
 ## Design Decisions and Tradeoffs
@@ -466,6 +488,14 @@ This minimizes lock churn vs one-by-one insert.
 | Reduces per-write fsync overhead | Small durability window between ticks |
 | Stable ingestion latency | Requires graceful shutdown flush discipline |
 
+### Decision 7: Multi-Index Query via Intersection
+
+| Benefit | Cost |
+|---------|------|
+| Reduces storage reads for `authors + tags` queries by filtering candidates at index layer first | Extra in-memory set for intersection |
+| Improves tail latency for high fan-out author/tag combinations | Additional planner/executor branch complexity |
+| Reuses existing Author+Time and Search indexes (no new index format) | Requires result re-sort after intersection |
+
 ---
 
 ## Performance Analysis
@@ -505,6 +535,15 @@ In partition mode, total budget is distributed across partitions (active/recent/
 2. Overly small cache increases page churn and disk I/O.
 3. Very fine partition granularity increases merge/query overhead.
 4. Frequent flush + low interval increases fsync pressure.
+
+### Multi-Index Query Impact
+
+For `authors + tags` filters, the intersection path changes IO behavior from:
+
+- previous path: one index scan -> many storage reads -> post-filter
+- multi-index path: two index scans -> location intersection -> fewer storage reads
+
+In workloads where tag selectivity is high, this can materially reduce storage IO and improve end-to-end query latency.
 
 ---
 
