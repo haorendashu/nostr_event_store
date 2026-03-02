@@ -329,6 +329,14 @@ Validate WAL integrity:
 go run ./cmd/wal-validator/main.go -file wal.log
 ```
 
+### Remote Deployment (In Development)
+Run the store as a remote gRPC service with multi-client access. See the quick start guide:
+[demos/remote-quick-start/README.md](demos/remote-quick-start/README.md)
+
+### Distributed Deployment (In Development)
+Run the store with shard coordination across local/remote shards for horizontal scaling. See the demo guide:
+[demos/shard-coordinator-demo/README.md](demos/shard-coordinator-demo/README.md)
+
 ## Design Philosophy
 
 1. **Coordinator-Centric**: Storage, index, and query are independent; integration happens in EventStore

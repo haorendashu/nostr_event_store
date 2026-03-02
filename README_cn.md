@@ -329,6 +329,14 @@ go run ./cmd/wal-hexdump/main.go -file wal.log
 go run ./cmd/wal-validator/main.go -file wal.log
 ```
 
+### 远程部署（开发中）
+将存储以远程 gRPC 服务方式运行，支持多客户端接入。快速开始文档见：
+[demos/remote-quick-start/README_CN.md](demos/remote-quick-start/README_CN.md)
+
+### 分布式部署（开发中）
+通过分片协调器将本地/远程分片组成分布式存储，支持横向扩展。示例文档见：
+[demos/shard-coordinator-demo/README_CN.md](demos/shard-coordinator-demo/README_CN.md)
+
 ## 设计哲学
 
 1. **协调器中心**：存储、索引和查询是独立的；集成发生在 EventStore 中
