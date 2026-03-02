@@ -71,6 +71,23 @@ func (s *NostrEventStorage) Close() {
 }
 
 func (s *NostrEventStorage) QueryEvents(context context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
+	if filter.Authors != nil && len(filter.Authors) > 500 {
+		return nil, fmt.Errorf("too many authors in filter: %d", len(filter.Authors))
+	}
+	if filter.IDs != nil && len(filter.IDs) > 500 {
+		return nil, fmt.Errorf("too many IDs in filter: %d", len(filter.IDs))
+	}
+	if filter.Kinds != nil && len(filter.Kinds) > 100 {
+		return nil, fmt.Errorf("too many kinds in filter: %d", len(filter.Kinds))
+	}
+	if filter.Tags != nil && len(filter.Tags) > 20 {
+		return nil, fmt.Errorf("too many tags in filter: %d", len(filter.Tags))
+	}
+
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+
 	if len(filter.IDs) > 0 {
 		storeEvents := make([]*types.Event, 0)
 		for _, id := range filter.IDs {
@@ -206,6 +223,19 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 }
 
 func (s *NostrEventStorage) CountEvents(context context.Context, filter nostr.Filter) (int64, error) {
+	if filter.Authors != nil && len(filter.Authors) > 500 {
+		return -1, fmt.Errorf("too many authors in filter: %d", len(filter.Authors))
+	}
+	if filter.IDs != nil && len(filter.IDs) > 500 {
+		return -1, fmt.Errorf("too many IDs in filter: %d", len(filter.IDs))
+	}
+	if filter.Kinds != nil && len(filter.Kinds) > 100 {
+		return -1, fmt.Errorf("too many kinds in filter: %d", len(filter.Kinds))
+	}
+	if filter.Tags != nil && len(filter.Tags) > 20 {
+		return -1, fmt.Errorf("too many tags in filter: %d", len(filter.Tags))
+	}
+
 	storeFilter, err := convertFilter(filter)
 	if err != nil {
 		return 0, fmt.Errorf("failed to convert filter: %w", err)
