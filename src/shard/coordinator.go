@@ -10,10 +10,44 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
+// QueryShardStore defines the shard operations required by QueryCoordinator.
+// It supports both local-only and distributed (remote) shard stores.
+type QueryShardStore interface {
+	GetShardByPubkey(pubkey [32]byte) (Shard, error)
+	GetAllShards() []Shard
+	GetByID(ctx context.Context, eventID [32]byte) (*types.Event, error)
+	GetShardCount() int
+}
+
+type localQueryShardStoreAdapter struct {
+	store *LocalShardStore
+}
+
+func (a *localQueryShardStoreAdapter) GetShardByPubkey(pubkey [32]byte) (Shard, error) {
+	return a.store.GetShardByPubkey(pubkey)
+}
+
+func (a *localQueryShardStoreAdapter) GetAllShards() []Shard {
+	localShards := a.store.GetAllShards()
+	shards := make([]Shard, 0, len(localShards))
+	for _, shard := range localShards {
+		shards = append(shards, shard)
+	}
+	return shards
+}
+
+func (a *localQueryShardStoreAdapter) GetByID(ctx context.Context, eventID [32]byte) (*types.Event, error) {
+	return a.store.GetByID(ctx, eventID)
+}
+
+func (a *localQueryShardStoreAdapter) GetShardCount() int {
+	return a.store.GetShardCount()
+}
+
 // QueryCoordinator coordinates queries across multiple shards and merges results.
 // It handles parallel execution, result aggregation, sorting, and deduplication.
 type QueryCoordinator struct {
-	store          *LocalShardStore
+	store          QueryShardStore
 	defaultTimeout time.Duration
 	maxConcurrency int
 	enableDedupe   bool
@@ -21,6 +55,11 @@ type QueryCoordinator struct {
 
 // NewQueryCoordinator creates a new query coordinator for the given shard store.
 func NewQueryCoordinator(store *LocalShardStore) *QueryCoordinator {
+	return NewQueryCoordinatorForStore(&localQueryShardStoreAdapter{store: store})
+}
+
+// NewQueryCoordinatorForStore creates a query coordinator for any shard store implementation.
+func NewQueryCoordinatorForStore(store QueryShardStore) *QueryCoordinator {
 	return &QueryCoordinator{
 		store:          store,
 		defaultTimeout: 30 * time.Second,
@@ -63,17 +102,17 @@ func (qc *QueryCoordinator) ExecuteQuery(ctx context.Context, filter *types.Quer
 	queryCtx, cancel := context.WithTimeout(ctx, qc.defaultTimeout)
 	defer cancel()
 
-	var shardsToQuery []*LocalShard
+	var shardsToQuery []Shard
 
 	// Smart routing: If querying specific authors, only query their shards
 	if len(filter.Authors) > 0 {
-		shardSet := make(map[string]*LocalShard)
+		shardSet := make(map[string]Shard)
 		for _, author := range filter.Authors {
 			shard, err := qc.store.GetShardByPubkey(author)
 			if err != nil {
 				continue // Skip authors whose shards don't exist
 			}
-			shardSet[shard.ID] = shard
+			shardSet[shard.GetID()] = shard
 		}
 		// Convert map to slice
 		for _, shard := range shardSet {
@@ -102,7 +141,7 @@ func (qc *QueryCoordinator) ExecuteQuery(ctx context.Context, filter *types.Quer
 
 	for _, shard := range shardsToQuery {
 		wg.Add(1)
-		go func(s *LocalShard) {
+		go func(s Shard) {
 			defer wg.Done()
 
 			// Acquire semaphore

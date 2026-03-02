@@ -180,6 +180,11 @@ type Options struct {
 	// If provided, store calls will update metrics (timing, counters, etc).
 	Metrics Metrics
 
+	// Listener is an optional listener for store lifecycle events.
+	// If provided, it receives callbacks for OnOpened, OnClosed, etc.
+	// Default: NoOpListener
+	Listener Listener
+
 	// RecoveryMode determines how crash recovery is handled.
 	// Options: "auto" (automatic recovery), "skip" (no recovery), "manual" (user-triggered)
 	// Default: "auto"

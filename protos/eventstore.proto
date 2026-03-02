@@ -1,0 +1,270 @@
+syntax = "proto3";
+
+package eventstore;
+
+option go_package = "nostr_event_store/protos/eventstore";
+
+// EventStore service provides remote access to event storage operations
+service EventStore {
+  // Write a single event
+  rpc WriteEvent(WriteEventRequest) returns (WriteEventResponse);
+  
+  // Write multiple events (batch operation)
+  rpc WriteEvents(WriteEventsRequest) returns (WriteEventsResponse);
+  
+  // Get an event by its ID
+  rpc GetEvent(GetEventRequest) returns (GetEventResponse);
+  
+  // Delete a single event
+  rpc DeleteEvent(DeleteEventRequest) returns (DeleteEventResponse);
+  
+  // Delete multiple events
+  rpc DeleteEvents(DeleteEventsRequest) returns (DeleteEventsResponse);
+  
+  // Query events with filters (streaming response for large result sets)
+  rpc Query(QueryRequest) returns (stream QueryResponse);
+  
+  // Query all events (returns all results at once)
+  rpc QueryAll(QueryAllRequest) returns (QueryAllResponse);
+  
+  // Query count only
+  rpc QueryCount(QueryCountRequest) returns (QueryCountResponse);
+  
+  // Get storage statistics
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  
+  // Flush pending writes to disk
+  rpc Flush(FlushRequest) returns (FlushResponse);
+  
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Event represents a Nostr event
+message Event {
+  bytes id = 1;           // 32-byte SHA-256 hash
+  bytes pubkey = 2;       // 32-byte Ed25519 public key
+  uint32 created_at = 3;  // UNIX timestamp
+  uint32 kind = 4;        // Event type (uint16 in Go)
+  repeated Tag tags = 5;  // Event tags
+  string content = 6;     // Event content
+  bytes sig = 7;          // 64-byte Ed25519 signature
+  uint32 flags = 8;       // Event flags
+}
+
+// Tag represents a tag in an event
+message Tag {
+  repeated string values = 1;
+}
+
+// QueryFilter for filtering events
+message QueryFilter {
+  repeated uint32 kinds = 1;      // Event kinds to filter
+  repeated bytes authors = 2;     // Author pubkeys to filter
+  repeated bytes ids = 3;         // Event IDs to filter
+  uint32 since = 4;               // Minimum timestamp
+  uint32 until = 5;               // Maximum timestamp
+  int32 limit = 6;                // Maximum results to return
+  map<string, TagFilter> tags = 7; // Tag filters
+  string search = 8;              // Full-text search
+}
+
+// TagFilter for tag-based filtering
+message TagFilter {
+  repeated string values = 1;
+}
+
+// RecordLocation identifies where an event is stored
+message RecordLocation {
+  uint32 segment_id = 1;
+  uint32 offset = 2;
+}
+
+// WriteEventRequest
+message WriteEventRequest {
+  string api_key = 1;
+  Event event = 2;
+}
+
+// WriteEventResponse
+message WriteEventResponse {
+  oneof result {
+    RecordLocation location = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+// WriteEventsRequest
+message WriteEventsRequest {
+  string api_key = 1;
+  repeated Event events = 2;
+}
+
+// WriteEventsResponse
+message WriteEventsResponse {
+  oneof result {
+    WriteEventsResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message WriteEventsResult {
+  repeated RecordLocation locations = 1;
+}
+
+// GetEventRequest
+message GetEventRequest {
+  string api_key = 1;
+  bytes event_id = 2;
+}
+
+// GetEventResponse
+message GetEventResponse {
+  oneof result {
+    Event event = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+// DeleteEventRequest
+message DeleteEventRequest {
+  string api_key = 1;
+  bytes event_id = 2;
+}
+
+// DeleteEventResponse
+message DeleteEventResponse {
+  oneof result {
+    DeleteEventResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message DeleteEventResult {
+  bool deleted = 1;
+}
+
+// DeleteEventsRequest
+message DeleteEventsRequest {
+  string api_key = 1;
+  repeated bytes event_ids = 2;
+}
+
+// DeleteEventsResponse
+message DeleteEventsResponse {
+  oneof result {
+    DeleteEventsResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message DeleteEventsResult {
+  int32 deleted_count = 1;
+}
+
+// QueryRequest
+message QueryRequest {
+  string api_key = 1;
+  QueryFilter filter = 2;
+}
+
+// QueryResponse (streamed)
+message QueryResponse {
+  oneof result {
+    Event event = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+// QueryAllRequest
+message QueryAllRequest {
+  string api_key = 1;
+  QueryFilter filter = 2;
+}
+
+// QueryAllResponse
+message QueryAllResponse {
+  oneof result {
+    QueryAllResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message QueryAllResult {
+  repeated Event events = 1;
+}
+
+// QueryCountRequest
+message QueryCountRequest {
+  string api_key = 1;
+  QueryFilter filter = 2;
+}
+
+// QueryCountResponse
+message QueryCountResponse {
+  oneof result {
+    QueryCountResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message QueryCountResult {
+  int64 count = 1;
+}
+
+// StatsRequest
+message StatsRequest {
+  string api_key = 1;
+}
+
+// StatsResponse
+message StatsResponse {
+  oneof result {
+    StorageStats stats = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message StorageStats {
+  uint64 event_count = 1;
+  uint64 total_size = 2;
+  uint64 segment_count = 3;
+  uint64 index_size = 4;
+  uint64 wal_size = 5;
+  map<string, int64> custom_stats = 6;
+}
+
+// FlushRequest
+message FlushRequest {
+  string api_key = 1;
+}
+
+// FlushResponse
+message FlushResponse {
+  oneof result {
+    FlushResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message FlushResult {
+  bool flushed = 1;
+}
+
+// HealthCheckRequest
+message HealthCheckRequest {
+  string api_key = 1;
+}
+
+// HealthCheckResponse
+message HealthCheckResponse {
+  bool healthy = 1;
+  string status = 2;
+}
+
+// ErrorResponse for error handling
+message ErrorResponse {
+  string code = 1;       // Error code (e.g., "ErrEventNotFound")
+  string message = 2;    // Human-readable error message
+  string details = 3;    // Additional error details
+}

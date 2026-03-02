@@ -98,6 +98,19 @@ func (s *LocalShard) Insert(ctx context.Context, event *types.Event) error {
 	return err
 }
 
+// InsertBatch adds multiple events to this shard in a batch.
+func (s *LocalShard) InsertBatch(ctx context.Context, events []*types.Event) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if !s.isOpen {
+		return fmt.Errorf("shard %s not open", s.ID)
+	}
+
+	_, err := s.store.WriteEvents(ctx, events)
+	return err
+}
+
 // GetByID retrieves an event by its ID from this shard.
 func (s *LocalShard) GetByID(ctx context.Context, eventID [32]byte) (*types.Event, error) {
 	s.mu.RLock()
@@ -122,6 +135,23 @@ func (s *LocalShard) Delete(ctx context.Context, eventID [32]byte) error {
 	return s.store.DeleteEvent(ctx, eventID)
 }
 
+// DeleteBatch marks multiple events as deleted.
+func (s *LocalShard) DeleteBatch(ctx context.Context, eventIDs [][32]byte) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if !s.isOpen {
+		return 0, fmt.Errorf("shard %s not open", s.ID)
+	}
+
+	err := s.store.DeleteEvents(ctx, eventIDs)
+	if err != nil {
+		return 0, err
+	}
+	// EventStore.DeleteEvents doesn't return count, return length as success indicator
+	return len(eventIDs), nil
+}
+
 // Query performs a query on this shard using the provided filter.
 func (s *LocalShard) Query(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
 	s.mu.RLock()
@@ -137,6 +167,62 @@ func (s *LocalShard) Query(ctx context.Context, filter *types.QueryFilter) ([]*t
 // Store returns the underlying event store.
 func (s *LocalShard) Store() eventstore.EventStore {
 	return s.store
+}
+
+// GetID returns the shard ID (implements Shard interface).
+func (s *LocalShard) GetID() string {
+	return s.ID
+}
+
+// GetAddr returns empty string for local shards (implements Shard interface).
+func (s *LocalShard) GetAddr() string {
+	return ""
+}
+
+// QueryCount returns the count of events matching the filter.
+func (s *LocalShard) QueryCount(ctx context.Context, filter *types.QueryFilter) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if !s.isOpen {
+		return 0, fmt.Errorf("shard %s not open", s.ID)
+	}
+
+	count, err := s.store.QueryCount(ctx, filter)
+	return int64(count), err
+}
+
+// IsHealthy returns true if the shard is operational.
+func (s *LocalShard) IsHealthy(ctx context.Context) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.isOpen && s.store.IsHealthy(ctx)
+}
+
+// Stats returns shard statistics.
+func (s *LocalShard) Stats(ctx context.Context) (ShardStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := ShardStats{
+		ShardID:   s.ID,
+		IsHealthy: s.isOpen && s.store.IsHealthy(ctx),
+		IsRemote:  false,
+	}
+
+	if s.isOpen {
+		storeStats := s.store.Stats()
+		stats.EventCount = storeStats.TotalEvents
+		stats.TotalSize = storeStats.TotalDataSizeBytes
+	}
+
+	return stats, nil
+}
+
+// IsLocal returns true for local shards.
+func (s *LocalShard) IsLocal() bool {
+	return true
 }
 
 // IsOpen returns whether the shard is open.

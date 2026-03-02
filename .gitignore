@@ -13,3 +13,6 @@ cmd/wal-hexdump/wal-hexdump.exe
 cmd/wal-validator/wal-validator
 cmd/wal-validator/wal-validator.exe
 tempdocs/
+demos/remote-quick-start/data/
+demos/remote-quick-start/remote-quick-start.exe
+demos/shard-coordinator-demo/shard-coordinator-demo.exe

@@ -41,6 +41,14 @@ type Config struct {
 
 	// QueryConfig specifies query filter defaulting behavior.
 	QueryConfig QueryConfig `json:"query,omitempty"`
+
+	// RemoteConfig specifies remote gRPC server and client settings.
+	// Enables distributed deployment with EventStore instances accessible over network.
+	RemoteConfig RemoteConfig `json:"remote,omitempty"`
+
+	// DistributedShardConfig specifies distributed shard endpoints.
+	// When enabled, shards can be located on different remote EventStore instances.
+	DistributedShardConfig DistributedShardConfig `json:"distributed_sharding,omitempty"`
 }
 
 // QueryConfig defines default query filter values injected by the query compiler.
@@ -327,6 +335,99 @@ type ShardingConfig struct {
 	// When true, removes duplicate events across shards (by event ID).
 	// Default: true
 	EnableDeduplication bool `json:"enable_deduplication,omitempty"`
+}
+
+// RemoteConfig defines remote gRPC server and client settings.
+// Enables network-accessible EventStore for distributed deployments.
+type RemoteConfig struct {
+	// Mode specifies the operational mode.
+	// Options: "local" (embedded only, no network), "remote" (start gRPC server),
+	//          "hybrid" (both local and remote access)
+	// Default: "local"
+	Mode string `json:"mode,omitempty"`
+
+	// GRPCListenAddr is the address for the gRPC server to listen on.
+	// Format: "host:port" or ":port" for all interfaces.
+	// Default: ":50051"
+	GRPCListenAddr string `json:"grpc_listen_addr,omitempty"`
+
+	// APIKey is the authentication key for API requests.
+	// If empty, authentication is disabled (use only in trusted networks).
+	// Default: "" (no authentication)
+	APIKey string `json:"api_key,omitempty"`
+
+	// MaxConnections is the maximum number of concurrent gRPC connections.
+	// Default: 100
+	MaxConnections int `json:"max_connections,omitempty"`
+
+	// RequestTimeout is the timeout for RPC requests in seconds.
+	// Default: 10 seconds
+	RequestTimeout int `json:"request_timeout,omitempty"`
+
+	// EnableTLS enables TLS encryption for gRPC connections.
+	// Requires TLSCertFile and TLSKeyFile to be set.
+	// Default: false
+	EnableTLS bool `json:"enable_tls,omitempty"`
+
+	// TLSCertFile is the path to the TLS certificate file.
+	TLSCertFile string `json:"tls_cert_file,omitempty"`
+
+	// TLSKeyFile is the path to the TLS key file.
+	TLSKeyFile string `json:"tls_key_file,omitempty"`
+}
+
+// DistributedShardConfig defines distributed shard endpoints.
+// Enables true distributed architecture with shards on different machines.
+type DistributedShardConfig struct {
+	// Enabled enables distributed sharding.
+	// When false, uses local sharding only (ShardingConfig).
+	// Default: false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Shards is the list of shard endpoints.
+	// Each shard corresponds to a remote EventStore instance.
+	Shards []ShardEndpoint `json:"shards,omitempty"`
+
+	// HealthCheckInterval is the interval for health checking remote shards in seconds.
+	// Default: 5 seconds
+	HealthCheckInterval int `json:"health_check_interval,omitempty"`
+
+	// MaxRetry is the maximum number of retries for failed shard operations.
+	// Default: 3
+	MaxRetry int `json:"max_retry,omitempty"`
+
+	// RetryBackoffMs is the initial backoff duration for retries in milliseconds.
+	// Uses exponential backoff: backoff * 2^retry
+	// Default: 100 ms
+	RetryBackoffMs int `json:"retry_backoff_ms,omitempty"`
+
+	// ConnectionTimeout is the timeout for establishing connections in seconds.
+	// Default: 5 seconds
+	ConnectionTimeout int `json:"connection_timeout,omitempty"`
+
+	// EnableFailover enables automatic failover to healthy shards.
+	// When true, queries skip unhealthy shards and distribute to healthy ones.
+	// Default: true
+	EnableFailover bool `json:"enable_failover,omitempty"`
+}
+
+// ShardEndpoint represents a remote shard endpoint.
+type ShardEndpoint struct {
+	// ID is the unique identifier for this shard.
+	ID string `json:"id"`
+
+	// Addr is the gRPC server address for this shard.
+	// Format: "host:port"
+	Addr string `json:"addr"`
+
+	// APIKey is the authentication key for this shard.
+	// If empty, no authentication is used.
+	APIKey string `json:"api_key,omitempty"`
+
+	// Weight is the relative weight for consistent hashing.
+	// Higher weight = more data assigned to this shard.
+	// Default: 1
+	Weight int `json:"weight,omitempty"`
 }
 
 // Manager manages configuration loading, validation, and hot updating.
@@ -842,6 +943,25 @@ func DefaultConfig() *Config {
 		QueryConfig: QueryConfig{
 			DefaultLimit: 100,
 			DefaultKinds: []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111},
+		},
+		RemoteConfig: RemoteConfig{
+			Mode:           "local",
+			GRPCListenAddr: ":50051",
+			APIKey:         "",
+			MaxConnections: 100,
+			RequestTimeout: 10,
+			EnableTLS:      false,
+			TLSCertFile:    "",
+			TLSKeyFile:     "",
+		},
+		DistributedShardConfig: DistributedShardConfig{
+			Enabled:             false,
+			Shards:              []ShardEndpoint{},
+			HealthCheckInterval: 5,
+			MaxRetry:            3,
+			RetryBackoffMs:      100,
+			ConnectionTimeout:   5,
+			EnableFailover:      true,
 		},
 	}
 }

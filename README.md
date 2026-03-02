@@ -302,7 +302,7 @@ See [docs/testing.md](docs/testing.md) for comprehensive testing guide.
 ### Base Relay
 A relay server implementation showcasing the event store:
 ```bash
-go run ./cmd/base-relay/main.go
+go run ./demos/base-relay/main.go
 ```
 
 ### Nostr Store

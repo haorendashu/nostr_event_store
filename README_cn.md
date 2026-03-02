@@ -302,7 +302,7 @@ go build -o batchtest.exe
 ### 基础中继
 展示事件存储的中继服务器实现：
 ```bash
-go run ./cmd/base-relay/main.go
+go run ./demos/base-relay/main.go
 ```
 
 ### Nostr 存储

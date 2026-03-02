@@ -133,6 +133,9 @@ func New(opts *Options) EventStore {
 	if opts.Metrics == nil {
 		opts.Metrics = NoOpMetrics{}
 	}
+	if opts.Listener == nil {
+		opts.Listener = NoOpListener{}
+	}
 	if opts.RecoveryMode == "" {
 		opts.RecoveryMode = "auto"
 	}
@@ -142,12 +145,13 @@ func New(opts *Options) EventStore {
 	configMgr.Get().IndexConfig = opts.Config.IndexConfig
 	configMgr.Get().WALConfig = opts.Config.WALConfig
 	configMgr.Get().CompactionConfig = opts.Config.CompactionConfig
+	configMgr.Get().RemoteConfig = opts.Config.RemoteConfig
 
 	return &eventStoreImpl{
 		config:   configMgr,
 		logger:   opts.Logger,
 		metrics:  opts.Metrics,
-		listener: NoOpListener{},
+		listener: opts.Listener,
 		opts:     opts,
 	}
 }
