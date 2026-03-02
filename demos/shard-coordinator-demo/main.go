@@ -26,109 +26,8 @@ const (
 	localShardDataDir   = "./coordinator_demo_local_data"
 )
 
-// HybridCoordinator 是一个混合模式的 Coordinator
-// 支持同时管理本地和远程 shard
-type HybridCoordinator struct {
-	shards   map[string]shard.Shard
-	hashRing *shard.HashRing
-	ctx      context.Context
-}
-
-// NewHybridCoordinator 创建一个新的混合 Coordinator
-func NewHybridCoordinator() *HybridCoordinator {
-	return &HybridCoordinator{
-		shards:   make(map[string]shard.Shard),
-		hashRing: shard.NewHashRing(150), // 150 个虚拟节点
-		ctx:      context.Background(),
-	}
-}
-
-// AddLocalShard 添加一个本地 shard
-func (c *HybridCoordinator) AddLocalShard(id, dataDir string, cfg config.Config) error {
-	localShard, err := shard.NewLocalShard(id, dataDir, cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create local shard: %w", err)
-	}
-
-	if err := localShard.Open(c.ctx); err != nil {
-		return fmt.Errorf("failed to open local shard: %w", err)
-	}
-
-	c.shards[id] = localShard
-	c.hashRing.AddNode(id)
-	fmt.Printf("   ✅ Added local shard: %s\n", id)
-	return nil
-}
-
-// AddRemoteShard 添加一个远程 shard
-func (c *HybridCoordinator) AddRemoteShard(id, addr, apiKey string, cfg *config.RemoteConfig) error {
-	remoteShard, err := shard.NewRemoteShard(id, addr, apiKey, cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create remote shard: %w", err)
-	}
-
-	if err := remoteShard.Open(c.ctx); err != nil {
-		return fmt.Errorf("failed to connect to remote shard: %w", err)
-	}
-
-	c.shards[id] = remoteShard
-	c.hashRing.AddNode(id)
-	fmt.Printf("   ✅ Added remote shard: %s (addr=%s)\n", id, addr)
-	return nil
-}
-
-// GetShardByPubkey 根据 pubkey 获取对应的 shard
-func (c *HybridCoordinator) GetShardByPubkey(pubkey [32]byte) (shard.Shard, error) {
-	shardID, err := c.hashRing.GetNode(pubkey[:])
-	if err != nil {
-		return nil, err
-	}
-
-	s, exists := c.shards[shardID]
-	if !exists {
-		return nil, fmt.Errorf("shard %s not found", shardID)
-	}
-
-	return s, nil
-}
-
-// Insert 插入事件（自动路由到对应的 shard）
-func (c *HybridCoordinator) Insert(event *types.Event) error {
-	s, err := c.GetShardByPubkey(event.Pubkey)
-	if err != nil {
-		return err
-	}
-
-	return s.Insert(c.ctx, event)
-}
-
-// InsertBatch 批量插入事件（自动按 pubkey 路由）
-func (c *HybridCoordinator) InsertBatch(events []*types.Event) error {
-	// 按 shard 分组
-	batches := make(map[string][]*types.Event)
-
-	for _, event := range events {
-		s, err := c.GetShardByPubkey(event.Pubkey)
-		if err != nil {
-			return err
-		}
-		batches[s.GetID()] = append(batches[s.GetID()], event)
-	}
-
-	// 并发写入各个 shard
-	for shardID, events := range batches {
-		s := c.shards[shardID]
-		if err := s.InsertBatch(c.ctx, events); err != nil {
-			return fmt.Errorf("failed to insert to shard %s: %w", shardID, err)
-		}
-	}
-
-	return nil
-}
-
-// QueryByAuthor 查询指定作者的事件
-func (c *HybridCoordinator) QueryByAuthor(pubkey [32]byte, limit int) ([]*types.Event, error) {
-	s, err := c.GetShardByPubkey(pubkey)
+func queryByAuthor(ctx context.Context, store *shard.DistributedShardStore, pubkey [32]byte, limit int) ([]*types.Event, error) {
+	s, err := store.GetShardByPubkey(pubkey)
 	if err != nil {
 		return nil, err
 	}
@@ -138,60 +37,32 @@ func (c *HybridCoordinator) QueryByAuthor(pubkey [32]byte, limit int) ([]*types.
 		Limit:   limit,
 	}
 
-	return s.Query(c.ctx, filter)
+	return s.Query(ctx, filter)
 }
 
-// QueryAll 查询所有 shard（跨 shard 查询）
-func (c *HybridCoordinator) QueryAll(filter *types.QueryFilter) ([]*types.Event, error) {
+func queryAll(ctx context.Context, store *shard.DistributedShardStore, filter *types.QueryFilter) ([]*types.Event, error) {
 	var allResults []*types.Event
-
-	for _, s := range c.shards {
-		results, err := s.Query(c.ctx, filter)
+	for _, s := range store.GetAllShards() {
+		results, err := s.Query(ctx, filter)
 		if err != nil {
 			log.Printf("Warning: query shard %s failed: %v", s.GetID(), err)
 			continue
 		}
 		allResults = append(allResults, results...)
 	}
-
 	return allResults, nil
 }
 
-// GetByID 根据 ID 获取事件（需要查询所有 shard）
-func (c *HybridCoordinator) GetByID(eventID [32]byte) (*types.Event, error) {
-	for _, s := range c.shards {
-		event, err := s.GetByID(c.ctx, eventID)
-		if err == nil {
-			return event, nil
-		}
-	}
-
-	return nil, fmt.Errorf("event not found")
-}
-
-// GetStats 获取所有 shard 的统计信息
-func (c *HybridCoordinator) GetStats() (map[string]shard.ShardStats, error) {
+func getShardStats(ctx context.Context, store *shard.DistributedShardStore) (map[string]shard.ShardStats, error) {
 	stats := make(map[string]shard.ShardStats)
-
-	for id, s := range c.shards {
-		stat, err := s.Stats(c.ctx)
+	for _, s := range store.GetAllShards() {
+		stat, err := s.Stats(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get stats for shard %s: %w", id, err)
+			return nil, fmt.Errorf("failed to get stats for shard %s: %w", s.GetID(), err)
 		}
-		stats[id] = stat
+		stats[s.GetID()] = stat
 	}
-
 	return stats, nil
-}
-
-// Close 关闭所有 shard
-func (c *HybridCoordinator) Close() error {
-	for _, s := range c.shards {
-		if err := s.Close(c.ctx); err != nil {
-			log.Printf("Error closing shard %s: %v", s.GetID(), err)
-		}
-	}
-	return nil
 }
 
 func main() {
@@ -265,29 +136,31 @@ func runRemoteServer(done chan struct{}) {
 
 // runCoordinatorDemo 演示 Coordinator 的使用
 func runCoordinatorDemo() error {
+	ctx := context.Background()
+
 	// ========== 创建 Coordinator ==========
-	fmt.Println("\n🎯 Creating Hybrid Coordinator...")
-	coordinator := NewHybridCoordinator()
-	defer coordinator.Close()
+	fmt.Println("\n🎯 Creating DistributedShardStore...")
+	storeCfg := config.DefaultConfig()
+	storeCfg.DistributedShardConfig.Enabled = true
+	coordinator := shard.NewDistributedShardStore(*storeCfg)
+	defer coordinator.Close(ctx)
 
 	// ========== 添加本地 Shard ==========
 	fmt.Println("\n📦 Adding Local Shard...")
 	localCfg := config.DefaultConfig()
 	localCfg.WALConfig.Disabled = true
 
-	if err := coordinator.AddLocalShard("local-shard-01", localShardDataDir, *localCfg); err != nil {
+	if err := coordinator.AddLocalShard(ctx, "local-shard-01", localShardDataDir, *localCfg); err != nil {
 		return err
 	}
+	fmt.Println("   ✅ Added local shard: local-shard-01")
 
 	// ========== 添加远程 Shard ==========
 	fmt.Println("\n🌐 Adding Remote Shard...")
-	remoteCfg := &config.RemoteConfig{
-		RequestTimeout: 10,
-	}
-
-	if err := coordinator.AddRemoteShard("remote-shard-01", remoteAddr, apiKey, remoteCfg); err != nil {
+	if err := coordinator.AddRemoteShard(ctx, "remote-shard-01", remoteAddr, apiKey); err != nil {
 		return err
 	}
+	fmt.Printf("   ✅ Added remote shard: %s (addr=%s)\n", "remote-shard-01", remoteAddr)
 
 	fmt.Println("\n✅ Coordinator initialized with 2 shards")
 
@@ -305,7 +178,7 @@ func runCoordinatorDemo() error {
 	}
 
 	fmt.Printf("   Writing %d events through coordinator...\n", len(events))
-	if err := coordinator.InsertBatch(events); err != nil {
+	if err := coordinator.InsertBatch(ctx, events); err != nil {
 		return fmt.Errorf("failed to insert batch: %w", err)
 	}
 	fmt.Println("   ✅ Successfully wrote events (auto-routed by pubkey)")
@@ -327,7 +200,7 @@ func runCoordinatorDemo() error {
 	alicePubkey := stringToPubkey("Alice")
 
 	fmt.Println("   Querying Alice's events (auto-routed to specific shard)...")
-	aliceResults, err := coordinator.QueryByAuthor(alicePubkey, 10)
+	aliceResults, err := queryByAuthor(ctx, coordinator, alicePubkey, 10)
 	if err != nil {
 		return fmt.Errorf("failed to query: %w", err)
 	}
@@ -342,7 +215,7 @@ func runCoordinatorDemo() error {
 	fmt.Println("\n🔍 Testing Cross-Shard Query...")
 	fmt.Println("   Querying all kind=1 events across all shards...")
 
-	allResults, err := coordinator.QueryAll(&types.QueryFilter{
+	allResults, err := queryAll(ctx, coordinator, &types.QueryFilter{
 		Kinds: []uint16{1},
 		Limit: 20,
 	})
@@ -357,7 +230,7 @@ func runCoordinatorDemo() error {
 	eventID := events[0].ID
 	fmt.Printf("   Looking for event ID %s...\n", hex.EncodeToString(eventID[:8]))
 
-	event, err := coordinator.GetByID(eventID)
+	event, err := coordinator.GetByID(ctx, eventID)
 	if err != nil {
 		return fmt.Errorf("failed to get event: %w", err)
 	}
@@ -365,7 +238,7 @@ func runCoordinatorDemo() error {
 
 	// ========== 获取统计信息 ==========
 	fmt.Println("\n📊 Getting Statistics from All Shards...")
-	stats, err := coordinator.GetStats()
+	stats, err := getShardStats(ctx, coordinator)
 	if err != nil {
 		return fmt.Errorf("failed to get stats: %w", err)
 	}

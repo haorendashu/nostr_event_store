@@ -9,8 +9,8 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
-// DistributedShardStore manages remote shards using consistent hashing.
-// It consumes config.DistributedShardConfig and routes by author pubkey.
+// DistributedShardStore manages mixed local/remote shards using consistent hashing.
+// It consumes config.DistributedShardConfig for remote endpoints and routes by author pubkey.
 type DistributedShardStore struct {
 	mu       sync.RWMutex
 	shards   map[string]Shard
@@ -44,6 +44,31 @@ func (store *DistributedShardStore) Open(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+// AddLocalShard creates, opens, and registers a local shard.
+func (store *DistributedShardStore) AddLocalShard(ctx context.Context, shardID string, dataDir string, cfg config.Config) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	if shardID == "" {
+		return fmt.Errorf("shard id cannot be empty")
+	}
+	if _, exists := store.shards[shardID]; exists {
+		return fmt.Errorf("shard %s already exists", shardID)
+	}
+
+	localShard, err := NewLocalShard(shardID, dataDir, cfg)
+	if err != nil {
+		return err
+	}
+	if err := localShard.Open(ctx); err != nil {
+		return err
+	}
+
+	store.shards[shardID] = localShard
+	store.hashRing.AddNode(shardID)
 	return nil
 }
 
@@ -91,7 +116,7 @@ func (store *DistributedShardStore) RemoveShard(ctx context.Context, shardID str
 	return nil
 }
 
-// Close closes all remote shard connections.
+// Close closes all registered shard connections.
 func (store *DistributedShardStore) Close(ctx context.Context) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
