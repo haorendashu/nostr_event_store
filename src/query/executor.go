@@ -19,6 +19,99 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
+// Context keys for storing metadata - using string keys to avoid identity issues across packages
+const (
+	queryMetadataContextKey     = "nostr_query_metadata"
+	operationMetadataContextKey = "nostr_operation_metadata"
+)
+
+// OperationType identifies the type of operation being performed
+type OperationType string
+
+const (
+	OpTypeQuery       OperationType = "Query"
+	OpTypeInsert      OperationType = "Insert"
+	OpTypeDelete      OperationType = "Delete"
+	OpTypeBatchDelete OperationType = "BatchDelete"
+	OpTypeCompaction  OperationType = "Compaction"
+	OpTypeRecovery    OperationType = "Recovery"
+	OpTypeInternal    OperationType = "Internal"
+)
+
+// OperationMetadata stores diagnostic information about the current operation
+type OperationMetadata struct {
+	Type      OperationType
+	StartTime time.Time
+	Details   map[string]interface{} // Operation-specific details
+}
+
+// WithOperationMetadata attaches operation metadata to context
+func WithOperationMetadata(ctx context.Context, opType OperationType, details map[string]interface{}) context.Context {
+	meta := &OperationMetadata{
+		Type:      opType,
+		StartTime: time.Now(),
+		Details:   details,
+	}
+	return context.WithValue(ctx, operationMetadataContextKey, meta)
+}
+
+// GetOperationMetadata retrieves operation metadata from context
+func GetOperationMetadata(ctx context.Context) *OperationMetadata {
+	if meta, ok := ctx.Value(operationMetadataContextKey).(*OperationMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// QueryMetadata stores diagnostic information about the current query
+type QueryMetadata struct {
+	StartTime    time.Time
+	AuthorsCount int
+	KindsCount   int
+	TagsCount    int
+	Limit        int
+	Since        uint32
+	Until        uint32
+	Kinds        []uint16
+	TagKeys      []string // Tag keys being queried (e.g., ["e", "p", "t"])
+}
+
+// WithQueryMetadata attaches query metadata to context
+func WithQueryMetadata(ctx context.Context, filter *types.QueryFilter) context.Context {
+	if filter == nil {
+		return ctx
+	}
+
+	tagKeys := make([]string, 0, len(filter.Tags))
+	tagsCount := 0
+	for key, values := range filter.Tags {
+		tagKeys = append(tagKeys, key)
+		tagsCount += len(values)
+	}
+
+	meta := &QueryMetadata{
+		StartTime:    time.Now(),
+		AuthorsCount: len(filter.Authors),
+		KindsCount:   len(filter.Kinds),
+		TagsCount:    tagsCount,
+		Limit:        filter.Limit,
+		Since:        filter.Since,
+		Until:        filter.Until,
+		Kinds:        filter.Kinds,
+		TagKeys:      tagKeys,
+	}
+
+	return context.WithValue(ctx, queryMetadataContextKey, meta)
+}
+
+// GetQueryMetadata retrieves query metadata from context
+func GetQueryMetadata(ctx context.Context) *QueryMetadata {
+	if meta, ok := ctx.Value(queryMetadataContextKey).(*QueryMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
 var (
 	searchIndexRangeLogEnabled     bool
 	searchIndexRangeLogTag         string
@@ -209,7 +302,50 @@ func (m *mergeLocationIterator) Next(ctx context.Context) error {
 
 // advance fetches the next unique (deduplicated) location from the heap
 func (m *mergeLocationIterator) advance(ctx context.Context) error {
+	iterCount := 0
 	for m.heap.Len() > 0 {
+		// Check context cancellation periodically (every 1000 iterations) to prevent CPU spinning
+		iterCount++
+		if iterCount%1000 == 0 {
+			select {
+			case <-ctx.Done():
+				// Output diagnostic information when timeout occurs
+				fmt.Printf("\n[TIMEOUT DIAGNOSTIC] Query iterator canceled after %d iterations\n", iterCount)
+
+				// Show query metadata if available
+				if meta := GetQueryMetadata(ctx); meta != nil {
+					duration := time.Since(meta.StartTime)
+					fmt.Printf("  📋 Query Info:\n")
+					fmt.Printf("     - Duration: %v\n", duration)
+					fmt.Printf("     - Filter: Authors=%d, Kinds=%v, TagKeys=%v, Tags=%d, Limit=%d\n",
+						meta.AuthorsCount, meta.Kinds, meta.TagKeys, meta.TagsCount, meta.Limit)
+					if meta.Since > 0 || meta.Until > 0 {
+						fmt.Printf("     - Time range: Since=%d, Until=%d\n", meta.Since, meta.Until)
+					}
+				}
+
+				// Show iterator state
+				fmt.Printf("  🔍 Iterator State:\n")
+				fmt.Printf("     - Heap size: %d\n", m.heap.Len())
+				fmt.Printf("     - Deduplicated entries: %d\n", len(m.seen))
+				fmt.Printf("     - Active iterators: %d\n", len(m.iterators))
+				if m.heap.Len() > 0 {
+					// Show top item in heap for debugging
+					topItem := (*m.heap)[0]
+					fmt.Printf("     - Current processing: rangeIndex=%d, timestamp=%d, location=%d:%d\n",
+						topItem.rangeIndex, topItem.createdAt, topItem.location.SegmentID, topItem.location.Offset)
+				}
+				fmt.Printf("  ❌ Error: %v\n\n", ctx.Err())
+				return ctx.Err()
+			default:
+			}
+			// Log warning if iteration count is abnormally high
+			if iterCount%10000 == 0 {
+				fmt.Printf("[WARNING] Query iterator: high iteration count (%d), heap size: %d, deduped: %d\n",
+					iterCount, m.heap.Len(), len(m.seen))
+			}
+		}
+
 		// Get the item with the largest timestamp (most recent)
 		item := heap.Pop(m.heap).(heapItem)
 

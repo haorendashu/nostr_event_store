@@ -2,9 +2,11 @@ package index
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"sort"
 	"sync"
@@ -661,6 +663,26 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	default:
 	}
 
+	// Ensure context has operation metadata for diagnostics
+	// Using string constant for key to match query/executor.go implementation
+	const operationMetadataContextKey = "nostr_operation_metadata"
+
+	if ctx.Value(operationMetadataContextKey) == nil {
+		// No metadata found - this is potentially an unmapped context source
+		stackTrace := string(debug.Stack())
+		ctx = context.WithValue(ctx, operationMetadataContextKey, map[string]interface{}{
+			"reason":      "context_missing_metadata_at_btree_entry",
+			"is_backward": desc,
+			"stack_trace": stackTrace,
+			"min_key":     hex.EncodeToString(minKey),
+			"max_key":     hex.EncodeToString(maxKey),
+		})
+
+		// Log to stderr so it persists even if normal logging is disabled
+		fmt.Fprintf(os.Stderr, "[DIAGNOSTIC] B+Tree called without operation metadata:\n%s\nMin key: %s\nMax key: %s\n\n",
+			stackTrace, hex.EncodeToString(minKey), hex.EncodeToString(maxKey))
+	}
+
 	node, err := t.loadNode(t.root)
 	if err != nil {
 		return nil, err
@@ -716,6 +738,61 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	}
 	iter.advance()
 	return iter, nil
+}
+
+// printContextMetadata prints operation and query metadata from context
+// Uses reflection to avoid import cycle with query package
+func printContextMetadata(ctx context.Context) {
+	// Use the same context keys as defined in query package
+	// query/executor.go: const (queryMetadataKey contextKey = iota; operationMetadataKey)
+	// These resolve to: queryMetadataKey = 0, operationMetadataKey = 1
+	type contextKey int
+	const (
+		queryMetadataKey     contextKey = 0
+		operationMetadataKey contextKey = 1
+	)
+
+	// Check for OperationMetadata (priority: check operation first)
+	// Note: This works only if the caller used query.WithOperationMetadata() with the same contextKey
+	if opMeta := ctx.Value(operationMetadataKey); opMeta != nil {
+		fmt.Printf("  📝 Operation Context:\n")
+
+		// Use reflection to extract fields
+		val := reflect.ValueOf(opMeta)
+		if val.Kind() == reflect.Ptr {
+			val = val.Elem()
+		}
+
+		if val.Kind() == reflect.Struct {
+			// Extract Type field
+			if typeField := val.FieldByName("Type"); typeField.IsValid() {
+				fmt.Printf("     - Operation: %v\n", typeField.Interface())
+			}
+
+			// Extract Details map
+			if detailsField := val.FieldByName("Details"); detailsField.IsValid() {
+				if detailsMap, ok := detailsField.Interface().(map[string]interface{}); ok {
+					for key, value := range detailsMap {
+						fmt.Printf("     - %s: %v\n", key, value)
+					}
+				}
+			}
+		}
+		return
+	}
+
+	// Check for QueryMetadata
+	if queryMeta := ctx.Value(queryMetadataKey); queryMeta != nil {
+		fmt.Printf("  📋 Query context available (check query iterator diagnostic for details)\n")
+		return
+	}
+
+	// No metadata found - this usually means the context was created without WithOperationMetadata or WithQueryMetadata
+	// This can happen if:
+	// 1. Context was created with context.Background() in a background goroutine (e.g., flush scheduler)
+	// 2. Context was intercepted or recreated somewhere without preserving metadata
+	// 3. This is from an internal index operation that wasn't wrapped with metadata
+	fmt.Printf("  📋 No operation metadata found in context (check if this is from background operation, timeout context, or internal maintenance)\n")
 }
 
 type btreeIterator struct {
@@ -872,7 +949,70 @@ func (it *btreeIterator) advance() {
 	}
 
 	if !it.desc {
+		loopCount := 0
 		for {
+			// Check context periodically and prevent infinite loops from circular references
+			loopCount++
+			if loopCount%100 == 0 {
+				select {
+				case <-it.ctx.Done():
+					// Output diagnostic information when iterator is canceled
+					fmt.Printf("\n[TIMEOUT DIAGNOSTIC] B+Tree iterator (forward) canceled after %d iterations\n", loopCount)
+
+					// Try to get context metadata (avoid import cycle by using interface{})
+					printContextMetadata(it.ctx)
+
+					// Show iterator state
+					fmt.Printf("  🔍 B+Tree State:\n")
+					if it.current != nil {
+						fmt.Printf("     - Current node: offset=%d, keyCount=%d, isLeaf=%v\n",
+							it.current.offset, len(it.current.keys), it.current.isLeaf())
+						if it.index >= 0 && it.index < len(it.current.keys) {
+							fmt.Printf("     - Current key index: %d/%d\n", it.index, len(it.current.keys))
+						}
+						if it.minKey != nil {
+							fmt.Printf("     - Min key bound: %s...\n", hex.EncodeToString(it.minKey)[:min(32, len(it.minKey))])
+						}
+						if it.maxKey != nil {
+							fmt.Printf("     - Max key bound: %s...\n", hex.EncodeToString(it.maxKey)[:min(32, len(it.maxKey))])
+						}
+					}
+					fmt.Printf("  ❌ Error: %v\n\n", it.ctx.Err())
+					it.valid = false
+					return
+				default:
+				}
+			}
+			// Safety limit: prevent infinite loops from index corruption
+			if loopCount > 10000 {
+				// Output detailed diagnostic information
+				fmt.Printf("\n[ERROR] B+Tree iterator (forward): exceeded safety limit after %d iterations\n", loopCount)
+				fmt.Printf("  🚨 Possible index corruption or circular reference detected\n")
+
+				// Try to get context metadata
+				printContextMetadata(it.ctx)
+
+				// Show iterator state
+				fmt.Printf("  🔍 B+Tree State:\n")
+				if it.current != nil {
+					fmt.Printf("     - Current node: offset=%d, keyCount=%d, isLeaf=%v\n",
+						it.current.offset, len(it.current.keys), it.current.isLeaf())
+					if it.index >= 0 && it.index < len(it.current.keys) {
+						fmt.Printf("     - Current key index: %d/%d\n", it.index, len(it.current.keys))
+						fmt.Printf("     - Current key: %s...\n", hex.EncodeToString(it.current.keys[it.index])[:min(32, len(it.current.keys[it.index]))])
+					}
+					if it.minKey != nil {
+						fmt.Printf("     - Min key bound: %s...\n", hex.EncodeToString(it.minKey)[:min(32, len(it.minKey))])
+					}
+					if it.maxKey != nil {
+						fmt.Printf("     - Max key bound: %s...\n", hex.EncodeToString(it.maxKey)[:min(32, len(it.maxKey))])
+					}
+				}
+				fmt.Printf("\n")
+				it.valid = false
+				return
+			}
+
 			if it.index < 0 || it.index >= len(it.current.keys) {
 				if it.current.next == 0 {
 					it.valid = false
@@ -901,12 +1041,86 @@ func (it *btreeIterator) advance() {
 			return
 		}
 	} else {
+		loopCount := 0
+		skipCount := 0 // Track consecutive skips for optimization
 		for {
+			// Check context periodically and prevent infinite loops from circular references
+			loopCount++
+			if loopCount%100 == 0 {
+				select {
+				case <-it.ctx.Done():
+					// Output diagnostic information when iterator is canceled
+					fmt.Printf("\n[TIMEOUT DIAGNOSTIC] B+Tree iterator (backward) canceled after %d iterations\n", loopCount)
+
+					// Try to get context metadata
+					printContextMetadata(it.ctx)
+
+					// Show iterator state
+					fmt.Printf("  🔍 B+Tree State:\n")
+					if it.current != nil {
+						fmt.Printf("     - Current node: offset=%d, keyCount=%d, isLeaf=%v\n",
+							it.current.offset, len(it.current.keys), it.current.isLeaf())
+						if it.index >= 0 && it.index < len(it.current.keys) {
+							fmt.Printf("     - Current key index: %d/%d\n", it.index, len(it.current.keys))
+						}
+						if it.minKey != nil {
+							fmt.Printf("     - Min key bound: %s...\n", hex.EncodeToString(it.minKey)[:min(32, len(it.minKey))])
+						}
+						if it.maxKey != nil {
+							fmt.Printf("     - Max key bound: %s...\n", hex.EncodeToString(it.maxKey)[:min(32, len(it.maxKey))])
+						}
+					}
+					fmt.Printf("  ❌ Error: %v\n\n", it.ctx.Err())
+					it.valid = false
+					return
+				default:
+				}
+			}
+			// Safety limit: prevent infinite loops from index corruption
+			if loopCount > 10000 {
+				// Output detailed diagnostic information
+				fmt.Printf("\n[ERROR] B+Tree iterator (backward): exceeded safety limit after %d iterations\n", loopCount)
+				fmt.Printf("  🚨 Possible index corruption or circular reference detected\n")
+
+				// Try to get context metadata
+				printContextMetadata(it.ctx)
+
+				// Show iterator state
+				fmt.Printf("  🔍 B+Tree State:\n")
+				if it.current != nil {
+					fmt.Printf("     - Current node: offset=%d, keyCount=%d, isLeaf=%v\n",
+						it.current.offset, len(it.current.keys), it.current.isLeaf())
+					if it.index >= 0 && it.index < len(it.current.keys) {
+						fmt.Printf("     - Current key index: %d/%d\n", it.index, len(it.current.keys))
+						fmt.Printf("     - Current key: %s...\n", hex.EncodeToString(it.current.keys[it.index])[:min(32, len(it.current.keys[it.index]))])
+					}
+					if it.minKey != nil {
+						fmt.Printf("     - Min key bound: %s...\n", hex.EncodeToString(it.minKey)[:min(32, len(it.minKey))])
+					}
+					if it.maxKey != nil {
+						fmt.Printf("     - Max key bound: %s...\n", hex.EncodeToString(it.maxKey)[:min(32, len(it.maxKey))])
+					}
+				}
+				fmt.Printf("\n")
+				it.valid = false
+				return
+			}
+
 			if it.index < 0 || it.index >= len(it.current.keys) {
+				// Need to move to previous node
+				// But first check: if we're doing a point query and have already
+				// skipped many keys, we should check if continuing makes sense
+				if skipCount > 100 && it.minKey != nil && compareKeys(it.minKey, it.maxKey) == 0 {
+					// Point query after 100+ skips - likely no matching keys exist
+					it.valid = false
+					return
+				}
+
 				if it.current.prev == 0 {
 					it.valid = false
 					return
 				}
+
 				node, err := it.tree.loadNode(it.current.prev)
 				if err != nil {
 					it.valid = false
@@ -914,13 +1128,69 @@ func (it *btreeIterator) advance() {
 				}
 				it.current = node
 				it.index = len(it.current.keys) - 1
+
+				// CRITICAL: Check if the new node contains any keys in range
+				// For backward iteration, check the last key (largest in node)
+				if it.index >= 0 && len(it.current.keys) > 0 {
+					lastKey := it.current.keys[it.index]
+
+					// If even the largest key < minKey, we're completely past the range
+					if it.minKey != nil && compareKeys(lastKey, it.minKey) < 0 {
+						it.valid = false
+						return
+					}
+
+					// Also check the first key to see if entire node is above range
+					firstKey := it.current.keys[0]
+					if it.maxKey != nil && compareKeys(firstKey, it.maxKey) > 0 {
+						// Entire node is above maxKey, use binary search on this node
+						// to find the transition point, or continue to next node
+						it.index = -1 // Force another node load on next iteration
+						skipCount++   // Count this as a skip
+						continue
+					}
+				}
 				continue
 			}
 
 			key := it.current.keys[it.index]
 			if it.maxKey != nil && compareKeys(key, it.maxKey) > 0 {
-				it.index--
-				continue
+				// Performance optimization: if we've skipped many keys in a row,
+				// use binary search to find the right position instead of linear scan
+				skipCount++
+				if skipCount > 10 && it.minKey != nil && compareKeys(it.minKey, it.maxKey) == 0 {
+					// This is a point query (minKey == maxKey) with many consecutive skips
+					// Use binary search to find LAST key <= maxKey (for backward iteration)
+					// Find first key > maxKey, then step back one position
+					firstGreater := sort.Search(it.index+1, func(i int) bool {
+						return compareKeys(it.current.keys[i], it.maxKey) > 0
+					})
+					newIdx := firstGreater - 1
+
+					if newIdx >= 0 {
+						it.index = newIdx
+						skipCount = 0 // Reset counter after binary search
+						// Validate the found key
+						key = it.current.keys[it.index]
+						if compareKeys(key, it.maxKey) <= 0 && (it.minKey == nil || compareKeys(key, it.minKey) >= 0) {
+							it.valid = true
+							return
+						}
+						// If still out of range, continue linear backwards
+						it.index--
+						continue
+					} else {
+						// All keys in this node are > maxKey, move to prev node
+						it.index = -1
+						continue
+					}
+				} else {
+					// Normal linear scan
+					it.index--
+					continue
+				}
+			} else {
+				skipCount = 0 // Reset counter when we find a key in range
 			}
 			if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
 				it.valid = false

@@ -365,6 +365,12 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 		return types.RecordLocation{}, err
 	}
 
+	// Add operation metadata for diagnostic purposes
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeInsert, map[string]interface{}{
+		"event_id": hex.EncodeToString(event.ID[:]),
+		"kind":     event.Kind,
+	})
+
 	// Check for duplicates using primary index
 	primaryIdx := e.indexMgr.PrimaryIndex()
 	eventKeyBytes := e.keyBuilder.BuildPrimaryKey(event.ID)
@@ -469,6 +475,11 @@ func (e *eventStoreImpl) WriteEvents(ctx context.Context, events []*types.Event)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	// Add operation metadata for diagnostic purposes
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeInsert, map[string]interface{}{
+		"batch_size": len(events),
+	})
 
 	if len(events) == 0 {
 		return []types.RecordLocation{}, nil
@@ -776,6 +787,11 @@ func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) erro
 		return err
 	}
 
+	// Attach operation metadata to context for diagnostics
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeDelete, map[string]interface{}{
+		"event_id": fmt.Sprintf("%x", eventID[:8]),
+	})
+
 	// Look up event in primary index
 	primaryIdx := e.indexMgr.PrimaryIndex()
 	eventKeyBytes := e.keyBuilder.BuildPrimaryKey(eventID)
@@ -882,6 +898,11 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 	if len(eventIDs) == 0 {
 		return nil
 	}
+
+	// Attach operation metadata to context for diagnostics
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeBatchDelete, map[string]interface{}{
+		"batch_size": len(eventIDs),
+	})
 
 	primaryIdx := e.indexMgr.PrimaryIndex()
 	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
@@ -1027,7 +1048,50 @@ func (e *eventStoreImpl) Query(ctx context.Context, filter *types.QueryFilter) (
 		return nil, err
 	}
 
+	// Attach query metadata to context for timeout diagnostics
+	ctx = query.WithQueryMetadata(ctx, filter)
+
+	// CRITICAL: Also add operation metadata so B+Tree layer can track the query
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeQuery, map[string]interface{}{
+		"num_authors": len(filter.Authors),
+		"num_kinds":   len(filter.Kinds),
+		"limit":       filter.Limit,
+	})
+
+	// Log query start for timeout diagnostics
+	queryStartTime := time.Now()
+	if e.opts.Config.Debug {
+		e.logger.Printf("[QUERY START] Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d, Since=%v, Until=%v",
+			len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit, filter.Since, filter.Until)
+	}
+
+	// Apply query execution timeout to prevent infinite loops or extremely slow queries
+	cfg := e.config.Get()
+	if cfg.QueryConfig.ExecutionTimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(cfg.QueryConfig.ExecutionTimeoutSeconds)*time.Second)
+		// Wrap context with diagnostic information
+		defer func() {
+			if ctx.Err() != nil {
+				// Query was canceled or timed out
+				duration := time.Since(queryStartTime)
+				e.logger.Printf("[QUERY TIMEOUT] Duration: %v, Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d",
+					duration, len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit)
+			}
+			cancel()
+		}()
+	}
+
 	return e.queryEngine.Query(ctx, filter)
+}
+
+// countTags counts total number of tag filters
+func countTags(filter *types.QueryFilter) int {
+	count := 0
+	for _, values := range filter.Tags {
+		count += len(values)
+	}
+	return count
 }
 
 // QueryAll executes a query and returns all results.
@@ -1062,6 +1126,13 @@ func (e *eventStoreImpl) QueryCount(ctx context.Context, filter *types.QueryFilt
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
+	// Add operation metadata for diagnostic purposes
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeQuery, map[string]interface{}{
+		"operation":   "count",
+		"num_authors": len(filter.Authors),
+		"num_kinds":   len(filter.Kinds),
+	})
 
 	return e.queryEngine.Count(ctx, filter)
 }
@@ -1334,6 +1405,11 @@ func (n noOpCompactionManager) Close() error {
 // recoverFromWAL replays WAL entries to rebuild indexes after a crash or restart.
 // Note: This method is called from Open() which already holds e.mu.Lock()
 func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
+	// Attach operation context for diagnostic tracing
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeRecovery, map[string]interface{}{
+		"operation": "recover_from_wal",
+	})
+
 	// Set recovering flag to block concurrent writes
 	// Note: No lock needed here as Open() already holds the lock
 	e.recovering = true
@@ -1402,6 +1478,11 @@ func (e *eventStoreImpl) RebuildIndexes(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Attach operation context for diagnostic tracing
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeRecovery, map[string]interface{}{
+		"operation": "rebuild_indexes",
+	})
 
 	e.logger.Printf("Starting manual index rebuild...")
 	return e.rebuildIndexesFromSegments(ctx)

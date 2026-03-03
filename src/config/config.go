@@ -60,6 +60,12 @@ type QueryConfig struct {
 	// DefaultKinds are applied when kinds are omitted for search/tag queries.
 	// Default: [0,1,3,6,16,20,30023,9041,1111]
 	DefaultKinds []uint16 `json:"default_kinds,omitempty"`
+
+	// ExecutionTimeoutSeconds is the maximum time allowed for a single query execution.
+	// Prevents infinite loops or extremely slow queries from blocking indefinitely.
+	// Set to 0 to disable timeout (not recommended for production).
+	// Default: 30
+	ExecutionTimeoutSeconds int `json:"execution_timeout_seconds,omitempty"`
 }
 
 // StorageConfig defines storage layer parameters.
@@ -719,6 +725,9 @@ func (m *ManagerImpl) SetDefaults() {
 	if len(m.config.QueryConfig.DefaultKinds) == 0 {
 		m.config.QueryConfig.DefaultKinds = append([]uint16(nil), defaults.QueryConfig.DefaultKinds...)
 	}
+	if m.config.QueryConfig.ExecutionTimeoutSeconds == 0 {
+		m.config.QueryConfig.ExecutionTimeoutSeconds = defaults.QueryConfig.ExecutionTimeoutSeconds
+	}
 }
 
 // Validate validates the configuration.
@@ -942,8 +951,9 @@ func DefaultConfig() *Config {
 			EnableDeduplication:  true,
 		},
 		QueryConfig: QueryConfig{
-			DefaultLimit: 100,
-			DefaultKinds: []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111},
+			DefaultLimit:            100,
+			DefaultKinds:            []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111},
+			ExecutionTimeoutSeconds: 30,
 		},
 		RemoteConfig: RemoteConfig{
 			Mode:           "local",

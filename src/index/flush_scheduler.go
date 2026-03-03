@@ -89,10 +89,25 @@ func (fs *flushScheduler) flushLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			// Periodic flush
+			// Periodic flush - create context with operation metadata
+			type OperationType string
+			const OpTypeInternal OperationType = "Internal"
+			type contextKey int
+			const operationMetadataKey contextKey = 1 // Must match query.operationMetadataKey
+			type OperationMetadata struct {
+				Type      OperationType
+				StartTime time.Time
+				Details   map[string]interface{}
+			}
+			flushCtx := context.WithValue(ctx, operationMetadataKey, &OperationMetadata{
+				Type:      OpTypeInternal,
+				StartTime: time.Now(),
+				Details:   map[string]interface{}{"operation": "periodic_flush"},
+			})
+
 			for _, idx := range fs.indexes {
 				if idx != nil {
-					_ = idx.Flush(ctx)
+					_ = idx.Flush(flushCtx)
 				}
 			}
 		case <-fs.stopChan:

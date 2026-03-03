@@ -924,7 +924,22 @@ func scanSegmentForLastEntry(path string) (uint64, *Checkpoint, error) {
 	entryHeader := make([]byte, 21)
 	checksumTable := crc64.MakeTable(crc64.ECMA)
 
+	// Get file size to calculate max iterations (prevent infinite loop on corrupted files)
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return lastLSN, checkpoint, fmt.Errorf("stat file: %w", err)
+	}
+	fileSize := fileInfo.Size()
+	// Assume minimum entry size is 29 bytes (21 header + 0 data + 8 checksum)
+	maxIterations := int(fileSize/29) + 100 // Add buffer for safety
+	iterations := 0
+
 	for {
+		iterations++
+		if iterations > maxIterations {
+			return lastLSN, checkpoint, fmt.Errorf("exceeded max iterations (%d), possible file corruption", maxIterations)
+		}
+
 		_, err := io.ReadFull(file, entryHeader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
@@ -992,7 +1007,21 @@ func scanSegmentForFirstLastLSN(path string) (uint64, uint64, error) {
 	entryHeader := make([]byte, 21)
 	checksumTable := crc64.MakeTable(crc64.ECMA)
 
+	// Get file size to calculate max iterations (prevent infinite loop on corrupted files)
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return firstLSN, lastLSN, fmt.Errorf("stat file: %w", err)
+	}
+	fileSize := fileInfo.Size()
+	maxIterations := int(fileSize/29) + 100
+	iterations := 0
+
 	for {
+		iterations++
+		if iterations > maxIterations {
+			return firstLSN, lastLSN, fmt.Errorf("exceeded max iterations (%d), possible file corruption", maxIterations)
+		}
+
 		_, err := io.ReadFull(file, entryHeader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
@@ -1050,7 +1079,21 @@ func scanSegmentCheckpoints(path string) ([]Checkpoint, error) {
 	checksumTable := crc64.MakeTable(crc64.ECMA)
 	checkpoints := []Checkpoint{}
 
+	// Get file size to calculate max iterations (prevent infinite loop on corrupted files)
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat file: %w", err)
+	}
+	fileSize := fileInfo.Size()
+	maxIterations := int(fileSize/29) + 100
+	iterations := 0
+
 	for {
+		iterations++
+		if iterations > maxIterations {
+			return nil, fmt.Errorf("exceeded max iterations (%d), possible file corruption", maxIterations)
+		}
+
 		_, err := io.ReadFull(file, entryHeader)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break

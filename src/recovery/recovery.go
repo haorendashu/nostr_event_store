@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/storage"
 	"github.com/haorendashu/nostr_event_store/src/types"
@@ -64,6 +65,23 @@ func NewManager(walDir string, segmentManager storage.SegmentManager, serializer
 // so we count WAL entries directly. Full event data is recovered by scanning segments.
 // When the WAL format is upgraded to include full records, we can switch to wal.ReplayWAL.
 func (m *Manager) RecoverFromCheckpoint(ctx context.Context, startLSN wal.LSN) (*RecoveryState, error) {
+	// Attach operation context for diagnostic tracing
+	type OperationType string
+	const OpTypeRecovery OperationType = "Recovery"
+	type contextKey int
+	const operationMetadataKey contextKey = 1
+	type OperationMetadata struct {
+		Type      OperationType
+		StartTime time.Time
+		Details   map[string]interface{}
+	}
+	ctx = context.WithValue(ctx, operationMetadataKey, &OperationMetadata{
+		Type:      OpTypeRecovery,
+		StartTime: time.Now(),
+		Details: map[string]interface{}{
+			"start_lsn": startLSN,
+		},
+	})
 	state := &RecoveryState{
 		LastValidLSN:     startLSN,
 		EventIDMap:       make(map[[32]byte]types.RecordLocation),
@@ -185,9 +203,19 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 		// Scan segment for all records
 		scanner := storage.NewScanner(fileSeg)
 		pageSize := fileSeg.PageSize()
+		segmentSize := fileSeg.Size()
+		maxPages := int(segmentSize/uint64(pageSize)) + 10 // Add buffer for safety
 		var segmentRecovered, segmentSkippedDeleted, segmentSkippedCorrupted uint64
+		pageSeekCount := 0
 
 		for {
+			// Check context to prevent long-running operations from blocking
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
 			record, location, err := scanner.Next(ctx)
 			if err == io.EOF {
 				break
@@ -200,8 +228,16 @@ func (m *Manager) rebuildEventIDMap(ctx context.Context, state *RecoveryState) e
 				nextPageOffset := ((currentOffset / pageSize) + 1) * pageSize
 				scanner.Seek(nextPageOffset)
 				segmentSkippedCorrupted++
+				pageSeekCount++
+				// Prevent infinite loop if every page is corrupted
+				if pageSeekCount > maxPages {
+					state.ValidationErrors = append(state.ValidationErrors,
+						fmt.Sprintf("segment %d: exceeded max page seeks (%d), stopping scan", segmentID, maxPages))
+					break
+				}
 				continue
 			}
+			pageSeekCount = 0 // Reset on successful read
 
 			// Skip deleted or replaced records
 			if record.Flags.IsDeleted() || record.Flags.IsReplaced() {

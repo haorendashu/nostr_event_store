@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/storage"
 )
@@ -94,12 +95,25 @@ func (c *CompactorImpl) AnalyzeSegments(ctx context.Context) ([]FragmentStats, e
 
 		// Scan segment to count live vs deleted
 		scanner := storage.NewScanner(fileSeg)
+		errorCount := 0
 		for {
+			// Check context to prevent infinite loops
+			select {
+			case <-ctx.Done():
+				return stats, ctx.Err()
+			default:
+			}
+
 			record, _, err := scanner.Next(ctx)
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
+				// Prevent infinite loop on corrupted segments
+				errorCount++
+				if errorCount > 1000 {
+					break
+				}
 				continue
 			}
 
@@ -147,6 +161,26 @@ func (c *CompactorImpl) SelectCompactionCandidates(ctx context.Context) ([]Fragm
 // DoCompact performs the actual compaction of selected segment IDs.
 // Creates a new segment, copies live records, removes old segments.
 func (c *CompactorImpl) DoCompact(ctx context.Context, segmentIDsToCompact []uint32) (*CompactionResult, error) {
+	// Attach operation context for diagnostic tracing
+	// IMPORTANT: Using same contextKey and metadata types as query package to ensure retrieval works
+	type OperationType string
+	const OpTypeCompaction OperationType = "Compaction"
+	type contextKey int
+	const operationMetadataKey contextKey = 1 // Must match query.operationMetadataKey
+	type OperationMetadata struct {
+		Type      OperationType
+		StartTime time.Time
+		Details   map[string]interface{}
+	}
+	ctx = context.WithValue(ctx, operationMetadataKey, &OperationMetadata{
+		Type:      OpTypeCompaction,
+		StartTime: time.Now(),
+		Details: map[string]interface{}{
+			"segment_ids": segmentIDsToCompact,
+			"count":       len(segmentIDsToCompact),
+		},
+	})
+
 	result := &CompactionResult{
 		CompactedSegmentIDs: segmentIDsToCompact,
 		EventIDMap:          make(map[[32]byte]*FragmentStats),
