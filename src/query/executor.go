@@ -118,6 +118,9 @@ var (
 	searchIndexRangeLogValuePrefix string
 	searchIndexRangeLogLimit       int64
 	searchIndexRangeLogCount       int64
+	kindTimeQueryLogEnabled        bool
+	kindTimeQueryLogLimit          int64
+	kindTimeQueryLogCount          int64
 )
 
 func init() {
@@ -129,6 +132,14 @@ func init() {
 	if limitStr := os.Getenv("SEARCH_INDEX_LOG_LIMIT"); limitStr != "" {
 		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
 			searchIndexRangeLogLimit = limit
+		}
+	}
+	if os.Getenv("KINDTIME_QUERY_LOG") == "1" {
+		kindTimeQueryLogEnabled = true
+	}
+	if limitStr := os.Getenv("KINDTIME_QUERY_LOG_LIMIT"); limitStr != "" {
+		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
+			kindTimeQueryLogLimit = limit
 		}
 	}
 }
@@ -158,6 +169,29 @@ func shouldLogSearchIndexRange(tagName, tagValue string) bool {
 		}
 	}
 	return true
+}
+
+func shouldLogKindTimeQuery() bool {
+	if !kindTimeQueryLogEnabled {
+		return false
+	}
+	if kindTimeQueryLogLimit > 0 {
+		if atomic.AddInt64(&kindTimeQueryLogCount, 1) > kindTimeQueryLogLimit {
+			return false
+		}
+	}
+	return true
+}
+
+func shortHex(key []byte, n int) string {
+	if len(key) == 0 {
+		return ""
+	}
+	hexStr := hex.EncodeToString(key)
+	if len(hexStr) <= n {
+		return hexStr
+	}
+	return hexStr[:n] + "..."
 }
 
 // executorImpl implements Executor interface.
@@ -621,6 +655,7 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	if !ok {
 		return nil, fmt.Errorf("invalid plan type")
 	}
+	logKindTime := impl.strategy == "kind_time" && shouldLogKindTimeQuery()
 
 	var results []*types.Event
 	indexesUsed := []string{}
@@ -661,6 +696,10 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	// Use location iterator for sorted, deduplicated results
 	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" || impl.strategy == "intersection" {
 		indexesUsed = append(indexesUsed, impl.strategy)
+		if logKindTime {
+			log.Printf("[kindtime] execute start: kinds=%d since=%d until=%d limit=%d fully_indexed=%v",
+				len(impl.filter.Kinds), impl.filter.Since, impl.filter.Until, impl.filter.Limit, impl.fullyIndexed)
+		}
 
 		// Get streaming location iterator
 		locationIter, err := e.getLocationIterator(ctx, impl)
@@ -712,6 +751,10 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 		}
 
 		duration := time.Since(start).Milliseconds()
+		if logKindTime {
+			log.Printf("[kindtime] execute done: results=%d duration_ms=%d ctx_err=%v",
+				len(results), duration, ctx.Err())
+		}
 		return &resultIteratorImpl{
 			events:      results,
 			index:       0,
@@ -782,6 +825,14 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 			return nil, fmt.Errorf("kind_time index not available")
 		}
 		ranges := e.buildKindTimeRanges(plan)
+		if kindTimeQueryLogEnabled {
+			log.Printf("[kindtime] ranges built: kinds=%d ranges=%d since=%d until=%d",
+				len(plan.filter.Kinds), len(ranges), plan.filter.Since, plan.filter.Until)
+			for i := 0; i < len(ranges) && i < 3; i++ {
+				log.Printf("[kindtime] range[%d] start=%s end=%s",
+					i, shortHex(ranges[i].start, 32), shortHex(ranges[i].end, 32))
+			}
+		}
 		return newMergeLocationIterator(ctx, kindTimeIdx, ranges)
 
 	case "intersection":

@@ -1075,8 +1075,13 @@ func (e *eventStoreImpl) Query(ctx context.Context, filter *types.QueryFilter) (
 			if ctx.Err() != nil {
 				// Query was canceled or timed out
 				duration := time.Since(queryStartTime)
-				e.logger.Printf("[QUERY TIMEOUT] Duration: %v, Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d",
-					duration, len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit)
+				if ctx.Err() == context.DeadlineExceeded {
+					e.logger.Printf("[QUERY TIMEOUT] Duration: %v, Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d, Timeout=%ds",
+						duration, len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit, cfg.QueryConfig.ExecutionTimeoutSeconds)
+				} else {
+					e.logger.Printf("[QUERY CANCELED] Duration: %v, Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d, Reason=%v",
+						duration, len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit, ctx.Err())
+				}
 			}
 			cancel()
 		}()
@@ -1193,6 +1198,10 @@ func (e *eventStoreImpl) Stats() Stats {
 		if authorTimeStats, ok := allStats["author_time"]; ok {
 			stats.AuthorTimeIndexStats = authorTimeStats
 			stats.AuthorTimeIndexCacheStats = authorTimeStats.CacheStats
+		}
+		if kindTimeStats, ok := allStats["kind_time"]; ok {
+			stats.KindTimeIndexStats = kindTimeStats
+			stats.KindTimeIndexCacheStats = kindTimeStats.CacheStats
 		}
 		if searchStats, ok := allStats["search"]; ok {
 			stats.SearchIndexStats = searchStats

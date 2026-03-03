@@ -150,11 +150,13 @@ type Stats struct {
 	// Index stats
 	PrimaryIndexStats    index.Stats
 	AuthorTimeIndexStats index.Stats
+	KindTimeIndexStats   index.Stats
 	SearchIndexStats     index.Stats
 
 	// Cache stats
 	PrimaryIndexCacheStats    cache.Stats
 	AuthorTimeIndexCacheStats cache.Stats
+	KindTimeIndexCacheStats   cache.Stats
 	SearchIndexCacheStats     cache.Stats
 
 	// Compaction stats

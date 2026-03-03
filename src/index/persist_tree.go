@@ -440,6 +440,28 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		}
 	}
 
+	// Corruption-tolerant sibling validation:
+	// If a sibling is structurally invalid, skip using it for borrow/merge instead of failing hard.
+	// This keeps delete best-effort while allowing upper layers to continue serving traffic.
+	if left != nil {
+		if left.isLeaf() {
+			if len(left.keys) != len(left.values) {
+				left = nil
+			}
+		} else if len(left.children) != len(left.keys)+1 {
+			left = nil
+		}
+	}
+	if right != nil {
+		if right.isLeaf() {
+			if len(right.keys) != len(right.values) {
+				right = nil
+			}
+		} else if len(right.children) != len(right.keys)+1 {
+			right = nil
+		}
+	}
+
 	minSize := t.minNodeSize()
 	// Borrow from left sibling
 	if left != nil && t.nodeSize(left) > minSize && len(left.keys) > 1 {
@@ -835,7 +857,13 @@ type btreeIterator struct {
 }
 
 func (it *btreeIterator) Valid() bool {
-	return it.valid && it.current != nil && it.index >= 0 && it.index < len(it.current.keys)
+	if !it.valid || it.current == nil || it.index < 0 || it.index >= len(it.current.keys) {
+		return false
+	}
+	if it.current.isLeaf() && len(it.current.keys) != len(it.current.values) {
+		return false
+	}
+	return true
 }
 
 func (it *btreeIterator) Key() []byte {
@@ -978,6 +1006,7 @@ func (it *btreeIterator) advance() {
 
 	if !it.desc {
 		loopCount := 0
+		visitedNext := make(map[uint64]int)
 		for {
 			// Check context periodically and prevent infinite loops from circular references
 			loopCount++
@@ -1046,7 +1075,15 @@ func (it *btreeIterator) advance() {
 					it.valid = false
 					return
 				}
-				node, err := it.tree.loadNode(it.current.next)
+
+				nextOffset := it.current.next
+				visitedNext[nextOffset]++
+				if visitedNext[nextOffset] > 2 {
+					it.valid = false
+					return
+				}
+
+				node, err := it.tree.loadNode(nextOffset)
 				if err != nil {
 					it.valid = false
 					return
@@ -1054,6 +1091,11 @@ func (it *btreeIterator) advance() {
 				it.current = node
 				it.index = 0
 				continue
+			}
+
+			if it.current.isLeaf() && len(it.current.keys) != len(it.current.values) {
+				it.valid = false
+				return
 			}
 
 			key := it.current.keys[it.index]
@@ -1071,6 +1113,7 @@ func (it *btreeIterator) advance() {
 	} else {
 		loopCount := 0
 		skipCount := 0 // Track consecutive skips for optimization
+		visitedPrev := make(map[uint64]int)
 		for {
 			// Check context periodically and prevent infinite loops from circular references
 			loopCount++
@@ -1149,7 +1192,14 @@ func (it *btreeIterator) advance() {
 					return
 				}
 
-				node, err := it.tree.loadNode(it.current.prev)
+				prevOffset := it.current.prev
+				visitedPrev[prevOffset]++
+				if visitedPrev[prevOffset] > 2 {
+					it.valid = false
+					return
+				}
+
+				node, err := it.tree.loadNode(prevOffset)
 				if err != nil {
 					it.valid = false
 					return
@@ -1182,6 +1232,10 @@ func (it *btreeIterator) advance() {
 			}
 
 			key := it.current.keys[it.index]
+			if it.current.isLeaf() && len(it.current.keys) != len(it.current.values) {
+				it.valid = false
+				return
+			}
 			if it.maxKey != nil && compareKeys(key, it.maxKey) > 0 {
 				// Performance optimization: if we've skipped many keys in a row,
 				// use binary search to find the right position instead of linear scan
