@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
 	pb "github.com/haorendashu/nostr_event_store/protos"
@@ -34,16 +37,33 @@ type Config struct {
 
 	// Initial retry backoff
 	RetryBackoff time.Duration
+
+	// Keepalive configuration
+	// Time between sending keepalive pings (0 = disabled)
+	KeepaliveTime time.Duration
+
+	// Timeout for keepalive ping acknowledgment
+	KeepaliveTimeout time.Duration
+
+	// Allow sending keepalive pings without active streams
+	PermitWithoutStream bool
+
+	// Maximum backoff for reconnection attempts
+	MaxReconnectBackoff time.Duration
 }
 
 // DefaultConfig returns default client configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Address:        "localhost:50051",
-		ConnectTimeout: 5 * time.Second,
-		RequestTimeout: 30 * time.Second,
-		MaxRetries:     3,
-		RetryBackoff:   100 * time.Millisecond,
+		Address:             "localhost:50051",
+		ConnectTimeout:      5 * time.Second,
+		RequestTimeout:      30 * time.Second,
+		MaxRetries:          3,
+		RetryBackoff:        100 * time.Millisecond,
+		KeepaliveTime:       10 * time.Second,
+		KeepaliveTimeout:    3 * time.Second,
+		PermitWithoutStream: true,
+		MaxReconnectBackoff: 30 * time.Second,
 	}
 }
 
@@ -70,12 +90,35 @@ func NewClient(cfg *Config) (*Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, cfg.Address,
+	// Build dial options
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(16*1024*1024), // 16MB
+			grpc.MaxCallRecvMsgSize(16 * 1024 * 1024), // 16MB
 		),
-	)
+	}
+
+	// Add keepalive parameters if configured
+	if cfg.KeepaliveTime > 0 {
+		kaParams := keepalive.ClientParameters{
+			Time:                cfg.KeepaliveTime,
+			Timeout:             cfg.KeepaliveTimeout,
+			PermitWithoutStream: cfg.PermitWithoutStream,
+		}
+		dialOpts = append(dialOpts, grpc.WithKeepaliveParams(kaParams))
+	}
+
+	// Add connection parameters with backoff
+	if cfg.MaxReconnectBackoff > 0 {
+		connParams := grpc.ConnectParams{
+			Backoff: backoff.Config{
+				MaxDelay: cfg.MaxReconnectBackoff,
+			},
+		}
+		dialOpts = append(dialOpts, grpc.WithConnectParams(connParams))
+	}
+
+	conn, err := grpc.DialContext(ctx, cfg.Address, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", cfg.Address, err)
 	}
@@ -519,4 +562,59 @@ func (c *Client) HealthCheck(ctx context.Context) (bool, error) {
 	}
 
 	return resp.Healthy, nil
+}
+
+// GetConnectionState returns the current state of the gRPC connection.
+// Possible states: IDLE, CONNECTING, READY, TRANSIENT_FAILURE, SHUTDOWN
+func (c *Client) GetConnectionState() connectivity.State {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.closed || c.conn == nil {
+		return connectivity.Shutdown
+	}
+
+	return c.conn.GetState()
+}
+
+// WaitForReady waits for the connection to be in READY state.
+// Returns error if timeout is reached or context is cancelled.
+func (c *Client) WaitForReady(ctx context.Context, timeout time.Duration) error {
+	c.mu.RLock()
+	if c.closed || c.conn == nil {
+		c.mu.RUnlock()
+		return fmt.Errorf("client is closed")
+	}
+	conn := c.conn
+	c.mu.RUnlock()
+
+	// Create timeout context if not provided
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	// Wait for connection state to become READY
+	state := conn.GetState()
+	for state != connectivity.Ready {
+		if state == connectivity.Shutdown {
+			return fmt.Errorf("connection is shutdown")
+		}
+
+		// Wait for state change
+		if !conn.WaitForStateChange(ctx, state) {
+			// Context cancelled or timeout
+			return fmt.Errorf("timeout waiting for connection ready: current state %v", state)
+		}
+
+		state = conn.GetState()
+	}
+
+	return nil
+}
+
+// IsConnected returns true if the connection is in READY state.
+func (c *Client) IsConnected() bool {
+	return c.GetConnectionState() == connectivity.Ready
 }

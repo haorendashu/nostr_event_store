@@ -26,6 +26,13 @@ type RemoteShard struct {
 	lastHealthCheck time.Time
 	mu              sync.RWMutex
 
+	// Reconnection state
+	reconnectAttempts     int
+	lastReconnectTime     time.Time
+	maxReconnectRetries   int
+	connectionUptime      time.Time // When current connection was established
+	reconnectSuccessTotal int64     // Total successful reconnections
+
 	// Statistics
 	queryCount   uint64
 	writeCount   uint64
@@ -40,12 +47,13 @@ func NewRemoteShard(id string, addr string, apiKey string, cfg *config.RemoteCon
 	}
 
 	return &RemoteShard{
-		ID:          id,
-		Addr:        addr,
-		APIKey:      apiKey,
-		config:      cfg,
-		isConnected: false,
-		isHealthy:   false,
+		ID:                  id,
+		Addr:                addr,
+		APIKey:              apiKey,
+		config:              cfg,
+		isConnected:         false,
+		isHealthy:           false,
+		maxReconnectRetries: 5, // Max consecutive failures before giving up
 	}, nil
 }
 
@@ -65,12 +73,16 @@ func (s *RemoteShard) Open(ctx context.Context) error {
 	}
 
 	cli, err := client.NewClient(&client.Config{
-		Address:        s.Addr,
-		APIKey:         s.APIKey,
-		ConnectTimeout: connectTimeout,
-		RequestTimeout: requestTimeout,
-		MaxRetries:     3,
-		RetryBackoff:   100 * time.Millisecond,
+		Address:             s.Addr,
+		APIKey:              s.APIKey,
+		ConnectTimeout:      connectTimeout,
+		RequestTimeout:      requestTimeout,
+		MaxRetries:          3,
+		RetryBackoff:        100 * time.Millisecond,
+		KeepaliveTime:       10 * time.Second,
+		KeepaliveTimeout:    3 * time.Second,
+		PermitWithoutStream: true,
+		MaxReconnectBackoff: 30 * time.Second,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", s.Addr, err)
@@ -80,6 +92,8 @@ func (s *RemoteShard) Open(ctx context.Context) error {
 	s.isConnected = true
 	s.isHealthy = true
 	s.lastHealthCheck = time.Now()
+	s.connectionUptime = time.Now()
+	s.reconnectAttempts = 0 // Reset on successful connection
 
 	return nil
 }
@@ -331,6 +345,27 @@ func (s *RemoteShard) performHealthCheck(ctx context.Context) {
 		return
 	}
 
+	// Check connection state first
+	connState := cli.GetConnectionState()
+
+	// If connection is in bad state, attempt reconnection
+	if connState == 3 || connState == 4 { // TRANSIENT_FAILURE or SHUTDOWN
+		fmt.Printf("[RemoteShard %s] Connection in bad state (%v), attempting reconnect...\n", s.ID, connState)
+		if err := s.reconnect(ctx); err != nil {
+			fmt.Printf("[RemoteShard %s] Reconnect failed: %v\n", s.ID, err)
+			s.mu.Lock()
+			s.lastHealthCheck = time.Now()
+			s.isHealthy = false
+			s.mu.Unlock()
+			return
+		}
+		// Reconnect successful, update client reference
+		s.mu.RLock()
+		cli = s.client
+		s.mu.RUnlock()
+	}
+
+	// Perform health check RPC
 	healthy, err := cli.HealthCheck(ctx)
 
 	s.mu.Lock()
@@ -338,9 +373,96 @@ func (s *RemoteShard) performHealthCheck(ctx context.Context) {
 	s.lastHealthCheck = time.Now()
 	if err != nil {
 		s.isHealthy = false
+		// If health check failed, might need reconnection on next check
+		fmt.Printf("[RemoteShard %s] Health check RPC failed: %v\n", s.ID, err)
 	} else {
 		s.isHealthy = healthy
+		// Reset reconnect attempts on successful health check
+		if healthy {
+			s.reconnectAttempts = 0
+		}
 	}
+}
+
+// reconnect attempts to reconnect the client to the remote shard.
+// Must be called without holding s.mu lock.
+func (s *RemoteShard) reconnect(ctx context.Context) error {
+	s.mu.Lock()
+
+	// Check if we've exceeded max retries
+	if s.reconnectAttempts >= s.maxReconnectRetries {
+		s.mu.Unlock()
+		return fmt.Errorf("max reconnect retries (%d) exceeded", s.maxReconnectRetries)
+	}
+
+	// Implement exponential backoff
+	if !s.lastReconnectTime.IsZero() {
+		minBackoff := time.Duration(1<<uint(s.reconnectAttempts)) * time.Second
+		if minBackoff > 30*time.Second {
+			minBackoff = 30 * time.Second
+		}
+		elapsed := time.Since(s.lastReconnectTime)
+		if elapsed < minBackoff {
+			s.mu.Unlock()
+			return fmt.Errorf("backoff period not elapsed (need %v, elapsed %v)", minBackoff, elapsed)
+		}
+	}
+
+	s.reconnectAttempts++
+	s.lastReconnectTime = time.Now()
+
+	// Close old client
+	oldClient := s.client
+	s.client = nil
+	s.isConnected = false
+	s.mu.Unlock()
+
+	if oldClient != nil {
+		_ = oldClient.Close()
+	}
+
+	fmt.Printf("[RemoteShard %s] Reconnecting (attempt %d/%d)...\n", s.ID, s.reconnectAttempts, s.maxReconnectRetries)
+
+	// Create new client
+	connectTimeout := 5 * time.Second
+	requestTimeout := 10 * time.Second
+
+	s.mu.RLock()
+	if s.config != nil && s.config.RequestTimeout > 0 {
+		requestTimeout = time.Duration(s.config.RequestTimeout) * time.Second
+	}
+	addr := s.Addr
+	apiKey := s.APIKey
+	s.mu.RUnlock()
+
+	cli, err := client.NewClient(&client.Config{
+		Address:             addr,
+		APIKey:              apiKey,
+		ConnectTimeout:      connectTimeout,
+		RequestTimeout:      requestTimeout,
+		MaxRetries:          3,
+		RetryBackoff:        100 * time.Millisecond,
+		KeepaliveTime:       10 * time.Second,
+		KeepaliveTimeout:    3 * time.Second,
+		PermitWithoutStream: true,
+		MaxReconnectBackoff: 30 * time.Second,
+	})
+
+	if err != nil {
+		return fmt.Errorf("reconnect failed: %w", err)
+	}
+
+	// Update state with new client
+	s.mu.Lock()
+	s.client = cli
+	s.isConnected = true
+	s.isHealthy = true
+	s.connectionUptime = time.Now()
+	s.reconnectSuccessTotal++ // Increment successful reconnection counter
+	s.mu.Unlock()
+
+	fmt.Printf("[RemoteShard %s] Reconnect successful\n", s.ID)
+	return nil
 }
 
 // Stats returns shard statistics.
@@ -353,16 +475,32 @@ func (s *RemoteShard) Stats(ctx context.Context) (ShardStats, error) {
 		avgLatency = float64(s.totalLatency.Milliseconds()) / float64(s.queryCount+s.writeCount)
 	}
 
+	// Calculate connection uptime
+	var uptimeMs int64
+	if !s.connectionUptime.IsZero() && s.isConnected {
+		uptimeMs = time.Since(s.connectionUptime).Milliseconds()
+	}
+
+	// Get connection state
+	connState := 4 // Default to SHUTDOWN
+	if cli != nil {
+		connState = int(cli.GetConnectionState())
+	}
+
 	stats := ShardStats{
-		ShardID:         s.ID,
-		IsHealthy:       s.isHealthy,
-		QueryCount:      s.queryCount,
-		WriteCount:      s.writeCount,
-		ErrorCount:      s.errorCount,
-		AvgLatency:      avgLatency,
-		IsRemote:        true,
-		RemoteAddr:      s.Addr,
-		LastHealthCheck: s.lastHealthCheck.Unix(),
+		ShardID:             s.ID,
+		IsHealthy:           s.isHealthy,
+		QueryCount:          s.queryCount,
+		WriteCount:          s.writeCount,
+		ErrorCount:          s.errorCount,
+		AvgLatency:          avgLatency,
+		IsRemote:            true,
+		RemoteAddr:          s.Addr,
+		LastHealthCheck:     s.lastHealthCheck.Unix(),
+		ConnectionState:     connState,
+		ReconnectAttempts:   s.reconnectAttempts,
+		ConnectionUptimeMs:  uptimeMs,
+		ReconnectSuccessful: s.reconnectSuccessTotal,
 	}
 	s.mu.RUnlock()
 

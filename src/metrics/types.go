@@ -46,6 +46,13 @@ type Snapshot struct {
 	ShardSize     map[string]int64 // shard_id -> size
 	ShardsQueried int64            // average shards queried per query
 
+	// Connection metrics (for remote shards)
+	ConnectionState       map[string]int   // shard_id -> connection state (0=IDLE, 1=CONNECTING, 2=READY, 3=TRANSIENT_FAILURE, 4=SHUTDOWN)
+	ReconnectAttempts     map[string]int   // shard_id -> reconnect attempt count
+	ConnectionUptimeMs    map[string]int64 // shard_id -> connection uptime in milliseconds
+	LastHealthCheckMs     map[string]int64 // shard_id -> last health check timestamp in milliseconds since epoch
+	ReconnectSuccessTotal map[string]int64 // shard_id -> total successful reconnections
+
 	// Timestamp of snapshot
 	Timestamp time.Time
 }

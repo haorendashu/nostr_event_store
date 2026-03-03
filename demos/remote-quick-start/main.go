@@ -110,13 +110,17 @@ func runServer(done chan struct{}) {
 
 // runClient 运行客户端操作示例
 func runClient() error {
-	// 1. 创建客户端
+	// 1. 创建客户端 (展示新的 Keepalive 配置)
 	cfg := &client.Config{
-		Address:        serverAddr,
-		APIKey:         apiKey,
-		RequestTimeout: 5 * time.Second,
-		ConnectTimeout: 2 * time.Second,
-		MaxRetries:     3,
+		Address:             serverAddr,
+		APIKey:              apiKey,
+		RequestTimeout:      5 * time.Second,
+		ConnectTimeout:      2 * time.Second,
+		MaxRetries:          3,
+		KeepaliveTime:       10 * time.Second, // 每 10 秒发送心跳
+		KeepaliveTimeout:    3 * time.Second,  // 心跳超时 3 秒
+		PermitWithoutStream: true,             // 允许在没有活动流时发送心跳
+		MaxReconnectBackoff: 30 * time.Second, // 最大重连退避时间
 	}
 
 	c, err := client.NewClient(cfg)
@@ -124,6 +128,18 @@ func runClient() error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 	defer c.Close()
+
+	// 1.5. 检查连接状态（新功能）
+	fmt.Println("\n🔌 Connection State Check...")
+	connState := c.GetConnectionState()
+	fmt.Printf("   Connection State: %v\n", connState)
+	if !c.IsConnected() {
+		fmt.Println("   ⏳ Waiting for connection to be ready...")
+		if err := c.WaitForReady(context.Background(), 5*time.Second); err != nil {
+			return fmt.Errorf("connection not ready: %w", err)
+		}
+	}
+	fmt.Println("   ✅ Connection is READY")
 
 	newRequestContext := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), cfg.RequestTimeout)

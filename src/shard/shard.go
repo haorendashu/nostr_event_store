@@ -72,4 +72,10 @@ type ShardStats struct {
 	IsRemote        bool
 	RemoteAddr      string
 	LastHealthCheck int64 // Unix timestamp
+
+	// Connection metrics (for remote shards)
+	ConnectionState     int   // 0=IDLE, 1=CONNECTING, 2=READY, 3=TRANSIENT_FAILURE, 4=SHUTDOWN
+	ReconnectAttempts   int   // Current reconnect attempt count
+	ConnectionUptimeMs  int64 // Connection uptime in milliseconds
+	ReconnectSuccessful int64 // Total successful reconnections
 }
