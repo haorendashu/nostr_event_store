@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/haorendashu/nostr_event_store/src/cache"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
@@ -597,4 +598,54 @@ func TestDeleteMergeRegression(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestRebalanceAfterDeleteRightLeafValueMismatchRegression verifies malformed right sibling
+// leaf state does not cause panic during borrow-from-right path.
+func TestRebalanceAfterDeleteRightLeafValueMismatchRegression(t *testing.T) {
+	treeCache := cache.NewBTreeCacheWithoutWriter(1, 4096)
+	tree := &btree{
+		cache:    treeCache,
+		pageSize: 4096,
+		root:     999,
+	}
+
+	parent := &btreeNode{
+		nodeType: nodeTypeInternal,
+		offset:   100,
+		keys:     [][]byte{[]byte("m")},
+		children: []uint64{10, 20},
+	}
+
+	child := &btreeNode{
+		nodeType: nodeTypeLeaf,
+		offset:   10,
+		keys:     [][]byte{},
+		values:   []types.RecordLocation{},
+	}
+
+	// Build a large right leaf so nodeSize(right) > minNodeSize() and borrow path is taken.
+	bigKey1 := make([]byte, 1500)
+	bigKey2 := make([]byte, 1500)
+	right := &btreeNode{
+		nodeType: nodeTypeLeaf,
+		offset:   20,
+		keys:     [][]byte{bigKey1, bigKey2},
+		values:   []types.RecordLocation{},
+	}
+
+	if err := treeCache.Put(newBTreeNodeAdapter(right)); err != nil {
+		t.Fatalf("failed to put right node in cache: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("rebalanceAfterDelete panicked: %v", r)
+		}
+	}()
+
+	_, _, err := tree.rebalanceAfterDelete(parent, child, 0)
+	if err == nil {
+		t.Fatal("expected error for malformed right leaf (keys/values mismatch), got nil")
+	}
 }

@@ -16,12 +16,13 @@ func TestPartitionCacheCoordinatorInitialization(t *testing.T) {
 	basePath := t.TempDir() + "/test_search"
 
 	cfg := Config{
-		Dir:                     t.TempDir(),
-		TotalCacheMB:            totalCacheMB,
-		PrimaryIndexCacheMB:     totalCacheMB, // Set cache for primary index
-		PartitionCacheActivePct: 60,
-		PartitionCacheRecentPct: 30,
-		PageSize:                4096,
+		Dir:                             t.TempDir(),
+		TotalCacheMB:                    totalCacheMB,
+		PrimaryIndexCacheMB:             totalCacheMB, // Set cache for primary index
+		EnablePartitionCacheCoordinator: true,
+		PartitionCacheActivePct:         60,
+		PartitionCacheRecentPct:         30,
+		PageSize:                        4096,
 	}
 
 	// 创建分片索引

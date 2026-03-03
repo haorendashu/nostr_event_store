@@ -411,6 +411,14 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		return nil, false, fmt.Errorf("invalid state entering rebalanceAfterDelete: leaf child has %d keys but %d values (offset=%d)",
 			len(child.keys), len(child.values), child.offset)
 	}
+	if childIndex < 0 || childIndex >= len(parent.children) {
+		return nil, false, fmt.Errorf("invalid state entering rebalanceAfterDelete: childIndex=%d out of parent.children bounds=%d (parent offset=%d)",
+			childIndex, len(parent.children), parent.offset)
+	}
+	if !child.isLeaf() && len(child.children) != len(child.keys)+1 {
+		return nil, false, fmt.Errorf("invalid state entering rebalanceAfterDelete: internal child has %d keys but %d children (offset=%d)",
+			len(child.keys), len(child.children), child.offset)
+	}
 
 	if !t.isUnderflow(child) {
 		return child, false, nil
@@ -436,6 +444,13 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 	// Borrow from left sibling
 	if left != nil && t.nodeSize(left) > minSize && len(left.keys) > 1 {
 		if child.isLeaf() {
+			if len(left.values) < len(left.keys) {
+				return nil, false, fmt.Errorf("invalid left leaf state before borrow: %d keys but %d values (offset=%d)",
+					len(left.keys), len(left.values), left.offset)
+			}
+			if len(left.values) == 0 {
+				return nil, false, fmt.Errorf("invalid left leaf state before borrow: no values to borrow (offset=%d)", left.offset)
+			}
 			lastKey := left.keys[len(left.keys)-1]
 			lastVal := left.values[len(left.values)-1]
 			// Use atomic slice updates to avoid concurrent serialization seeing inconsistent state
@@ -456,6 +471,9 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			child.values = newChildValues
 			parent.keys[childIndex-1] = child.cloneKey(child.keys[0])
 		} else {
+			if len(left.children) == 0 {
+				return nil, false, fmt.Errorf("invalid left internal state before borrow: no children to borrow (offset=%d)", left.offset)
+			}
 			lastKey := left.keys[len(left.keys)-1]
 			lastChild := left.children[len(left.children)-1]
 			newLeftKeys := make([][]byte, len(left.keys)-1)
@@ -489,6 +507,13 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 	// Borrow from right sibling
 	if right != nil && t.nodeSize(right) > minSize && len(right.keys) > 1 && childIndex < len(parent.keys) {
 		if child.isLeaf() {
+			if len(right.values) < len(right.keys) {
+				return nil, false, fmt.Errorf("invalid right leaf state before borrow: %d keys but %d values (offset=%d)",
+					len(right.keys), len(right.values), right.offset)
+			}
+			if len(right.values) == 0 {
+				return nil, false, fmt.Errorf("invalid right leaf state before borrow: no values to borrow (offset=%d)", right.offset)
+			}
 			firstKey := right.keys[0]
 			firstVal := right.values[0]
 			// Use atomic slice updates
@@ -519,6 +544,9 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			}
 			parent.keys[childIndex] = child.cloneKey(firstKey)
 		} else {
+			if len(right.children) == 0 {
+				return nil, false, fmt.Errorf("invalid right internal state before borrow: no children to borrow (offset=%d)", right.offset)
+			}
 			firstKey := right.keys[0]
 			firstChild := right.children[0]
 			newRightKeys := make([][]byte, len(right.keys)-1)

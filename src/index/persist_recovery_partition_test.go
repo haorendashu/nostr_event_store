@@ -47,12 +47,22 @@ func TestValidatePartitionedIndexes(t *testing.T) {
 	primaryFile := filepath.Join(tmpDir, "primary.idx")
 	authorTimeFile := filepath.Join(tmpDir, "author_time_2025-01.idx")
 	searchFile := filepath.Join(tmpDir, "search_2025-01.idx")
+	kindTimeFile := filepath.Join(tmpDir, "kind_time_2025-01.idx")
 
 	// Create a minimal valid primary index file with proper header
-	createMinimalIndexFile(primaryFile, indexTypePrimary, 4096)
+	if err := createMinimalIndexFile(primaryFile, indexTypePrimary, 4096); err != nil {
+		t.Fatalf("failed to create primary index file: %v", err)
+	}
 	// For partition files, just create empty files (validation only checks existence)
-	os.WriteFile(authorTimeFile, []byte{}, 0644)
-	os.WriteFile(searchFile, []byte{}, 0644)
+	if err := os.WriteFile(authorTimeFile, []byte{}, 0644); err != nil {
+		t.Fatalf("failed to create author_time partition file: %v", err)
+	}
+	if err := os.WriteFile(searchFile, []byte{}, 0644); err != nil {
+		t.Fatalf("failed to create search partition file: %v", err)
+	}
+	if err := os.WriteFile(kindTimeFile, []byte{}, 0644); err != nil {
+		t.Fatalf("failed to create kind_time partition file: %v", err)
+	}
 
 	// Test validation with partitioning enabled
 	cfg := Config{
