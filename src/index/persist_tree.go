@@ -765,12 +765,12 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	// Find the starting position in the leaf node
 	var idx int
 	if desc {
+		// For descending scan, keep RangeDesc semantics as [minKey, maxKey).
+		// Start at the last key < maxKey.
+		// Find first key >= maxKey, then step back one position.
 		idx = sort.Search(len(node.keys), func(i int) bool {
 			return compareKeys(node.keys[i], maxKey) >= 0
 		}) - 1
-		if idx < 0 {
-			idx = 0
-		}
 	} else {
 		idx = sort.Search(len(node.keys), func(i int) bool {
 			return compareKeys(node.keys[i], minKey) >= 0
@@ -778,13 +778,15 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 	}
 
 	iter := &btreeIterator{
-		tree:    t,
-		current: node,
-		index:   idx,
-		minKey:  minKey,
-		maxKey:  maxKey,
-		desc:    desc,
-		ctx:     ctx,
+		tree:        t,
+		current:     node,
+		index:       idx,
+		minKey:      minKey,
+		maxKey:      maxKey,
+		desc:        desc,
+		ctx:         ctx,
+		visitedNext: make(map[uint64]int),
+		visitedPrev: make(map[uint64]int),
 	}
 	iter.advance()
 	return iter, nil
@@ -846,14 +848,16 @@ func printContextMetadata(ctx context.Context) {
 }
 
 type btreeIterator struct {
-	tree    *btree
-	current *btreeNode
-	index   int
-	minKey  []byte
-	maxKey  []byte
-	desc    bool
-	ctx     context.Context
-	valid   bool
+	tree        *btree
+	current     *btreeNode
+	index       int
+	minKey      []byte
+	maxKey      []byte
+	desc        bool
+	ctx         context.Context
+	valid       bool
+	visitedNext map[uint64]int
+	visitedPrev map[uint64]int
 }
 
 func (it *btreeIterator) Valid() bool {
@@ -898,7 +902,14 @@ func (it *btreeIterator) Next() error {
 		}
 
 		if it.current.next != 0 {
-			node, err := it.tree.loadNode(it.current.next)
+			nextOffset := it.current.next
+			it.visitedNext[nextOffset]++
+			if it.visitedNext[nextOffset] > 2 {
+				it.valid = false
+				return nil
+			}
+
+			node, err := it.tree.loadNode(nextOffset)
 			if err != nil {
 				it.valid = false
 				return err
@@ -930,7 +941,14 @@ func (it *btreeIterator) Next() error {
 		}
 
 		if it.current.prev != 0 {
-			node, err := it.tree.loadNode(it.current.prev)
+			prevOffset := it.current.prev
+			it.visitedPrev[prevOffset]++
+			if it.visitedPrev[prevOffset] > 2 {
+				it.valid = false
+				return nil
+			}
+
+			node, err := it.tree.loadNode(prevOffset)
 			if err != nil {
 				it.valid = false
 				return err
@@ -970,7 +988,14 @@ func (it *btreeIterator) Prev() error {
 		}
 
 		if it.current.prev != 0 {
-			node, err := it.tree.loadNode(it.current.prev)
+			prevOffset := it.current.prev
+			it.visitedPrev[prevOffset]++
+			if it.visitedPrev[prevOffset] > 2 {
+				it.valid = false
+				return nil
+			}
+
+			node, err := it.tree.loadNode(prevOffset)
 			if err != nil {
 				it.valid = false
 				return err

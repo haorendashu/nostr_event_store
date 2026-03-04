@@ -401,6 +401,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, seedEv
 			failedEventID := ""
 			for tagName, tagValues := range indexableTags {
 				for _, tagValue := range tagValues {
+					searchQueryCount++
 					// Create a query filter for this tag, including the event kind
 					// NOTE: Use a large limit for verification to ensure we find the target event
 					// even if it's not in the top N results by timestamp
@@ -421,8 +422,9 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, seedEv
 						continue
 					}
 					searchTotalQueryEventNum += len(results)
-					foundInSearch = true
-					successCount++
+					if len(results) > 0 {
+						foundInSearch = true
+					}
 				}
 			}
 
@@ -483,7 +485,7 @@ func verifyRandomEvents(ctx context.Context, store eventstore.EventStore, seedEv
 	return nil
 }
 
-func verifyKindTimeIndex(ctx context.Context, store eventstore.EventStore) {
+func verifyKindTimeIndex(ctx context.Context, store eventstore.EventStore) error {
 	filter := &types.QueryFilter{
 		Kinds: []uint16{1},
 		Until: uint32(time.Now().Local().Unix()),
@@ -492,25 +494,28 @@ func verifyKindTimeIndex(ctx context.Context, store eventstore.EventStore) {
 
 	events, err := store.QueryAll(ctx, filter)
 	if err != nil {
-		fmt.Printf("store.QueryAll error %v.\n", err)
-		return
+		return fmt.Errorf("kind-time verification query failed: %w", err)
 	}
 	if len(events) == 0 {
-		fmt.Println("store query event not found!")
-		return
+		return fmt.Errorf("kind-time verification query returned no events")
+	}
+	firstQueryCount := len(events)
+
+	for i := 1; i < len(events); i++ {
+		if events[i-1].CreatedAt < events[i].CreatedAt {
+			return fmt.Errorf("kind-time order check failed at index %d: %d < %d", i, events[i-1].CreatedAt, events[i].CreatedAt)
+		}
 	}
 
 	lastEventCreatedAt := events[len(events)-1].CreatedAt
 	oldestEventCreatedAt := events[0].CreatedAt
-	for _, event := range events {
-		fmt.Printf("event %v\n", event)
+	for _, event := range events[1:] {
 		if event.CreatedAt < oldestEventCreatedAt {
 			oldestEventCreatedAt = event.CreatedAt
 		}
 	}
 	if lastEventCreatedAt != oldestEventCreatedAt {
-		fmt.Println("the last event is't the oldestEvent")
-		return
+		return fmt.Errorf("kind-time oldest timestamp mismatch: tail=%d expected=%d", lastEventCreatedAt, oldestEventCreatedAt)
 	}
 
 	filter2 := &types.QueryFilter{
@@ -520,18 +525,19 @@ func verifyKindTimeIndex(ctx context.Context, store eventstore.EventStore) {
 	}
 	events, err = store.QueryAll(ctx, filter2)
 	if err != nil {
-		fmt.Printf("store.QueryAll 2 error %v.\n", err)
-		return
+		return fmt.Errorf("kind-time since-query failed: %w", err)
 	}
 	if len(events) == 0 {
-		return
+		return fmt.Errorf("kind-time since-query returned no events")
 	}
 	for _, event := range events {
-		fmt.Printf("event %v\n", event)
-		if event.CreatedAt > oldestEventCreatedAt {
-			fmt.Printf("query old event createdAt not correct, expected %d < %d\n", event.CreatedAt, oldestEventCreatedAt)
+		if event.CreatedAt < oldestEventCreatedAt {
+			return fmt.Errorf("kind-time since boundary check failed: got %d, expected >= %d", event.CreatedAt, oldestEventCreatedAt)
 		}
 	}
+
+	fmt.Printf("Kind-time verification passed: first query=%d events, second query=%d events\n", firstQueryCount, len(events))
+	return nil
 }
 
 func main() {
@@ -556,6 +562,7 @@ func main() {
 	fmt.Printf("Verification count: %d\n", flags.VerifyCount)
 	fmt.Printf("Use search index: %v\n", flags.UseSearchIndex)
 	fmt.Printf("Use author index: %v\n", flags.UseAuthorIndex)
+	fmt.Printf("Use kind-time index: %v\n", flags.UseKindtimeIndex)
 	fmt.Printf("Skip save: %v\n", flags.SkipSave)
 
 	ctx := context.Background()
@@ -628,7 +635,10 @@ func main() {
 	}
 
 	if flags.UseKindtimeIndex {
-		verifyKindTimeIndex(ctx, store)
+		if err := verifyKindTimeIndex(ctx, store); err != nil {
+			fmt.Printf("Kind-time verification error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println("\n=== Test Complete ===")

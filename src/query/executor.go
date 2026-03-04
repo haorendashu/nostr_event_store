@@ -25,6 +25,41 @@ const (
 	operationMetadataContextKey = "nostr_operation_metadata"
 )
 
+func iteratorPositionSignature(iter index.Iterator) string {
+	if iter == nil || !iter.Valid() {
+		return "invalid"
+	}
+	loc := iter.Value()
+	return fmt.Sprintf("%s|%d:%d", hex.EncodeToString(iter.Key()), loc.SegmentID, loc.Offset)
+}
+
+// advanceIteratorSafely advances an index iterator and verifies that it actually moved.
+// Some corrupted/cyclic iterator states can return Valid()==true indefinitely without progress,
+// which would otherwise cause query loops and timeout.
+func advanceIteratorSafely(iter index.Iterator, maxAttempts int) (stillValid bool, advanced bool, err error) {
+	if iter == nil || !iter.Valid() {
+		return false, false, nil
+	}
+
+	prevSig := iteratorPositionSignature(iter)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := iter.Next(); err != nil {
+			return false, false, err
+		}
+
+		if !iter.Valid() {
+			return false, true, nil
+		}
+
+		newSig := iteratorPositionSignature(iter)
+		if newSig != prevSig {
+			return true, true, nil
+		}
+	}
+
+	return false, false, nil
+}
+
 // OperationType identifies the type of operation being performed
 type OperationType string
 
@@ -249,6 +284,7 @@ type mergeLocationIterator struct {
 	heap      *mergeHeap             // Max-heap for merging
 	iterators []index.Iterator       // Source iterators
 	seen      map[string]bool        // Deduplication map (key: "SegmentID:Offset")
+	rangeSeen map[int]map[string]int // Cycle detection per rangeIndex
 	current   types.LocationWithTime // Current location (cached after Next)
 	valid     bool                   // Whether current location is valid
 	closed    bool                   // Whether iterator is closed
@@ -271,6 +307,7 @@ func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []key
 			heap:      &mergeHeap{},
 			iterators: nil,
 			seen:      make(map[string]bool),
+			rangeSeen: make(map[int]map[string]int),
 			valid:     false,
 			closed:    false,
 		}, nil
@@ -300,6 +337,7 @@ func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []key
 		heap:      h,
 		iterators: iterators,
 		seen:      make(map[string]bool),
+		rangeSeen: make(map[int]map[string]int),
 		valid:     false,
 		closed:    false,
 	}
@@ -390,8 +428,18 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 			m.seen[dedupKey] = true
 		}
 
-		// Advance the iterator that provided this item
-		if err := item.iterator.Next(); err == nil && item.iterator.Valid() {
+		if _, ok := m.rangeSeen[item.rangeIndex]; !ok {
+			m.rangeSeen[item.rangeIndex] = make(map[string]int)
+		}
+		m.rangeSeen[item.rangeIndex][dedupKey]++
+		if m.rangeSeen[item.rangeIndex][dedupKey] > 8 {
+			continue
+		}
+
+		// Advance the iterator that provided this item.
+		// If iterator stalls (no forward progress), drop it to prevent infinite loops.
+		stillValid, advanced, err := advanceIteratorSafely(item.iterator, 3)
+		if err == nil && stillValid {
 			loc := item.iterator.Value()
 			createdAt := extractTimestampFromKey(item.iterator.Key())
 			heap.Push(m.heap, heapItem{
@@ -403,6 +451,8 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 				iterator:   item.iterator,
 				rangeIndex: item.rangeIndex,
 			})
+		} else if err == nil && !advanced {
+			log.Printf("[query] dropping stalled iterator in mergeLocationIterator (range=%d)", item.rangeIndex)
 		}
 
 		// If this was a unique location, set it as current and return
@@ -433,6 +483,7 @@ func (m *mergeLocationIterator) Close() error {
 	m.iterators = nil
 	m.heap = nil
 	m.seen = nil
+	m.rangeSeen = nil
 	return nil
 }
 
@@ -1005,6 +1056,7 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 	// Merge: repeatedly take the max item (most recent) and advance that iterator
 	var results []types.LocationWithTime
 	seen := make(map[string]bool) // key: "SegmentID:Offset"
+	rangeSeen := make(map[int]map[string]int)
 
 	for h.Len() > 0 && len(results) < limit {
 		// Get the item with the largest timestamp (most recent)
@@ -1012,13 +1064,23 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 
 		// Deduplicate
 		dedupKey := fmt.Sprintf("%d:%d", item.location.SegmentID, item.location.Offset)
+		if _, ok := rangeSeen[item.rangeIndex]; !ok {
+			rangeSeen[item.rangeIndex] = make(map[string]int)
+		}
+		rangeSeen[item.rangeIndex][dedupKey]++
+		if rangeSeen[item.rangeIndex][dedupKey] > 8 {
+			continue
+		}
+
 		if !seen[dedupKey] {
 			seen[dedupKey] = true
 			results = append(results, item.location)
 		}
 
-		// Advance the iterator that provided this item
-		if err := item.iterator.Next(); err == nil && item.iterator.Valid() {
+		// Advance the iterator that provided this item.
+		// If iterator stalls (no forward progress), drop it to prevent infinite loops.
+		stillValid, advanced, err := advanceIteratorSafely(item.iterator, 3)
+		if err == nil && stillValid {
 			loc := item.iterator.Value()
 			createdAt := extractTimestampFromKey(item.iterator.Key())
 			heap.Push(h, heapItem{
@@ -1030,6 +1092,8 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 				iterator:   item.iterator,
 				rangeIndex: item.rangeIndex,
 			})
+		} else if err == nil && !advanced {
+			log.Printf("[query] dropping stalled iterator in queryIndexRangesMerge (range=%d)", item.rangeIndex)
 		}
 	}
 
