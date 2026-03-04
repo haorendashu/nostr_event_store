@@ -454,54 +454,6 @@ func (s *Server) Query(req *pb.QueryRequest, stream grpc.ServerStreamingServer[p
 	return nil
 }
 
-// QueryAll returns all events matching filters in a single response.
-func (s *Server) QueryAll(ctx context.Context, req *pb.QueryAllRequest) (*pb.QueryAllResponse, error) {
-	if err := s.validateAPIKey(ctx); err != nil {
-		return nil, err
-	}
-
-	// Convert protobuf QueryFilter to Go QueryFilter
-	filter, err := ConvertQueryFilterFromProto(req.Filter)
-	if err != nil {
-		return &pb.QueryAllResponse{
-			Result: &pb.QueryAllResponse_Error{
-				Error: &pb.ErrorResponse{
-					Code:    "INVALID_ARGUMENT",
-					Message: err.Error(),
-				},
-			},
-		}, nil
-	}
-
-	// Query from store
-	events, err := s.store.QueryAll(ctx, filter)
-	if err != nil {
-		log.Printf("QueryAll failed: %v", err)
-		return &pb.QueryAllResponse{
-			Result: &pb.QueryAllResponse_Error{
-				Error: &pb.ErrorResponse{
-					Code:    convertErrorToCode(err),
-					Message: err.Error(),
-				},
-			},
-		}, nil
-	}
-
-	// Convert to protobuf
-	pbEvents := make([]*pb.Event, len(events))
-	for i, event := range events {
-		pbEvents[i] = ConvertEventToProto(event)
-	}
-
-	return &pb.QueryAllResponse{
-		Result: &pb.QueryAllResponse_Success{
-			Success: &pb.QueryAllResult{
-				Events: pbEvents,
-			},
-		},
-	}, nil
-}
-
 // QueryCount returns the count of events matching filters.
 func (s *Server) QueryCount(ctx context.Context, req *pb.QueryCountRequest) (*pb.QueryCountResponse, error) {
 	if err := s.validateAPIKey(ctx); err != nil {

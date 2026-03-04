@@ -24,9 +24,6 @@ service EventStore {
   // Query events with filters (streaming response for large result sets)
   rpc Query(QueryRequest) returns (stream QueryResponse);
   
-  // Query all events (returns all results at once)
-  rpc QueryAll(QueryAllRequest) returns (QueryAllResponse);
-  
   // Query count only
   rpc QueryCount(QueryCountRequest) returns (QueryCountResponse);
   
@@ -174,24 +171,6 @@ message QueryResponse {
     Event event = 1;
     ErrorResponse error = 2;
   }
-}
-
-// QueryAllRequest
-message QueryAllRequest {
-  string api_key = 1;
-  QueryFilter filter = 2;
-}
-
-// QueryAllResponse
-message QueryAllResponse {
-  oneof result {
-    QueryAllResult success = 1;
-    ErrorResponse error = 2;
-  }
-}
-
-message QueryAllResult {
-  repeated Event events = 1;
 }
 
 // QueryCountRequest

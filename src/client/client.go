@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
@@ -67,6 +66,44 @@ func DefaultConfig() *Config {
 	}
 }
 
+// QueryStream provides a stream interface for query results.
+type QueryStream interface {
+	// Next returns the next event from the stream.
+	// Returns io.EOF-like error when stream is exhausted.
+	Next(ctx context.Context) (*types.Event, error)
+
+	// Close closes the stream.
+	Close() error
+}
+
+// queryStreamImpl implements QueryStream interface.
+type queryStreamImpl struct {
+	stream pb.EventStore_QueryClient
+}
+
+// Next retrieves the next event from the stream.
+func (qs *queryStreamImpl) Next(ctx context.Context) (*types.Event, error) {
+	resp, err := qs.stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+
+	// Handle response oneof
+	switch result := resp.Result.(type) {
+	case *pb.QueryResponse_Event:
+		return ConvertEventFromProto(result.Event)
+	case *pb.QueryResponse_Error:
+		return nil, fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message)
+	default:
+		return nil, fmt.Errorf("unknown response type in stream")
+	}
+}
+
+// Close closes the stream (for compatibility, handled by gRPC).
+func (qs *queryStreamImpl) Close() error {
+	return nil
+}
+
 // Client provides a simple interface to the remote EventStore.
 type Client struct {
 	config Config
@@ -108,15 +145,16 @@ func NewClient(cfg *Config) (*Client, error) {
 		dialOpts = append(dialOpts, grpc.WithKeepaliveParams(kaParams))
 	}
 
-	// Add connection parameters with backoff
-	if cfg.MaxReconnectBackoff > 0 {
-		connParams := grpc.ConnectParams{
-			Backoff: backoff.Config{
-				MaxDelay: cfg.MaxReconnectBackoff,
-			},
-		}
-		dialOpts = append(dialOpts, grpc.WithConnectParams(connParams))
-	}
+	// This option will call the client can't connect to server.
+	// // Add connection parameters with backoff
+	// if cfg.MaxReconnectBackoff > 0 {
+	// 	connParams := grpc.ConnectParams{
+	// 		Backoff: backoff.Config{
+	// 			MaxDelay: cfg.MaxReconnectBackoff,
+	// 		},
+	// 	}
+	// 	dialOpts = append(dialOpts, grpc.WithConnectParams(connParams))
+	// }
 
 	conn, err := grpc.DialContext(ctx, cfg.Address, dialOpts...)
 	if err != nil {
@@ -375,8 +413,9 @@ func (c *Client) DeleteEvents(ctx context.Context, eventIDs [][32]byte) error {
 	}
 }
 
-// QueryAll executes a query and retrieves all matching events.
-func (c *Client) QueryAll(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
+// Query executes a streaming query with the given filter.
+// Returns a QueryStream that can be used to iterate over results.
+func (c *Client) Query(ctx context.Context, filter *types.QueryFilter) (QueryStream, error) {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
@@ -393,33 +432,41 @@ func (c *Client) QueryAll(ctx context.Context, filter *types.QueryFilter) ([]*ty
 	}
 
 	pbFilter := ConvertQueryFilterToProto(filter)
-	req := &pb.QueryAllRequest{
+	req := &pb.QueryRequest{
 		ApiKey: c.config.APIKey,
 		Filter: pbFilter,
 	}
 
-	resp, err := c.client.QueryAll(ctx, req)
+	stream, err := c.client.Query(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("Query failed: %w", err)
+	}
+
+	return &queryStreamImpl{stream: stream}, nil
+}
+
+// QueryAll retrieves all events matching the filter using the Query stream.
+// This is a convenience method that collects all streamed results into a slice.
+func (c *Client) QueryAll(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
+	stream, err := c.Query(ctx, filter)
 	if err != nil {
 		return nil, fmt.Errorf("QueryAll failed: %w", err)
 	}
 
-	// Handle response oneof
-	switch result := resp.Result.(type) {
-	case *pb.QueryAllResponse_Success:
-		events := make([]*types.Event, len(result.Success.Events))
-		for i, pbEvent := range result.Success.Events {
-			event, err := ConvertEventFromProto(pbEvent)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert event at index %d: %w", i, err)
+	var events []*types.Event
+	for {
+		event, err := stream.Next(ctx)
+		if err != nil {
+			// Check if this is EOF
+			if err.Error() == "EOF" {
+				break
 			}
-			events[i] = event
+			return nil, fmt.Errorf("stream receive error: %w", err)
 		}
-		return events, nil
-	case *pb.QueryAllResponse_Error:
-		return nil, fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message)
-	default:
-		return nil, fmt.Errorf("unknown response type")
+		events = append(events, event)
 	}
+
+	return events, nil
 }
 
 // QueryCount returns the count of events matching the filter.
