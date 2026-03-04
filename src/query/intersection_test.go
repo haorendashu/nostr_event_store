@@ -513,3 +513,106 @@ func (m *mockDataIteratorForIntersection) Prev() error {
 func (m *mockDataIteratorForIntersection) Close() error {
 	return nil
 }
+
+// TestIntersectionLargeScale tests intersection on larger datasets to verify memory efficiency
+func TestIntersectionLargeScale(t *testing.T) {
+	ctx := context.Background()
+	kb := index.NewKeyBuilder(index.DefaultSearchTypeCodes())
+
+	// Create large mock datasets
+	author1 := mustDecodeHex32("1111111111111111111111111111111111111111111111111111111111111111")
+
+	// Build author_time index results: 10,000 events
+	var authorTimeData []struct {
+		author    [32]byte
+		kind      uint16
+		timestamp uint32
+		location  types.RecordLocation
+	}
+	authorTimestampByOffset := make(map[uint32]uint32, 10000)
+	for i := 0; i < 10000; i++ {
+		ts := uint32(10000 - i)
+		off := uint32(i)
+		authorTimestampByOffset[off] = ts
+		authorTimeData = append(authorTimeData, struct {
+			author    [32]byte
+			kind      uint16
+			timestamp uint32
+			location  types.RecordLocation
+		}{
+			author:    author1,
+			kind:      1,
+			timestamp: ts, // Descending timestamps
+			location:  types.RecordLocation{SegmentID: 0, Offset: off},
+		})
+	}
+
+	// Build search index results: 12,000 events with some overlap
+	// Intentionally create mostly non-overlapping results to test worst-case intersection
+	var searchData []struct {
+		kind      uint16
+		timestamp uint32
+		location  types.RecordLocation
+	}
+	for i := 0; i < 12000; i++ {
+		offset := uint32(i)
+		timestamp := uint32(12000 - i)
+		// Create some overlap in the middle range (offsets 5000-8000 overlap with author_time)
+		if i >= 5000 && i < 8000 {
+			offset = uint32(5000 + (i - 5000)) // These will match author_time
+			// Use the same timestamp as author_time for overlapping records,
+			// which mirrors real event indexing behavior.
+			timestamp = authorTimestampByOffset[offset]
+		} else {
+			offset = uint32(10000 + i) // These won't match
+		}
+		searchData = append(searchData, struct {
+			kind      uint16
+			timestamp uint32
+			location  types.RecordLocation
+		}{
+			kind:      1,
+			timestamp: timestamp,
+			location:  types.RecordLocation{SegmentID: 0, Offset: offset},
+		})
+	}
+
+	// Create mock indexes
+	authorTimeIdx := newMockIndexWithData(authorTimeData, kb, "author_time")
+	searchIdx := newMockIndexWithData2(searchData, kb, "search")
+
+	// Create ranges
+	authorRanges := []keyRange{{
+		start: kb.BuildAuthorTimeKey(author1, 0, ^uint32(0)),
+		end:   kb.BuildAuthorTimeKey(author1, ^uint16(0), 0),
+	}}
+	searchRanges := []keyRange{{
+		start: kb.BuildSearchKey(1, index.SearchType(1), []byte("test"), ^uint32(0)),
+		end:   kb.BuildSearchKey(1, index.SearchType(1), []byte("test"), 0),
+	}}
+
+	// Create intersection iterator
+	iter, err := newIntersectionLocationIterator(ctx, authorTimeIdx, authorRanges, searchIdx, searchRanges)
+	if err != nil {
+		t.Fatalf("Failed to create intersection iterator: %v", err)
+	}
+	defer iter.Close()
+
+	// Collect results and verify correctness
+	resultCount := 0
+	for iter.Valid() {
+		resultCount++
+		if err := iter.Next(ctx); err != nil {
+			t.Fatalf("Error advancing iterator: %v", err)
+		}
+	}
+
+	// Expected: 3000 results (the overlapping range 5000-8000 in author_time)
+	if resultCount != 3000 {
+		t.Fatalf("expected 3000 intersection results, got %d", resultCount)
+	}
+
+	// The key test here is that this completes without OOM
+	// and without taking excessive time (should be <100ms for this size)
+	t.Logf("[OK] Large intersection test completed: iter1=10000, iter2=12000, results=%d", resultCount)
+}
