@@ -26,33 +26,6 @@ const (
 	localShardDataDir   = "./coordinator_demo_local_data"
 )
 
-func queryByAuthor(ctx context.Context, store *shard.DistributedShardStore, pubkey [32]byte, limit int) ([]*types.Event, error) {
-	s, err := store.GetShardByPubkey(pubkey)
-	if err != nil {
-		return nil, err
-	}
-
-	filter := &types.QueryFilter{
-		Authors: [][32]byte{pubkey},
-		Limit:   limit,
-	}
-
-	return s.Query(ctx, filter)
-}
-
-func queryAll(ctx context.Context, store *shard.DistributedShardStore, filter *types.QueryFilter) ([]*types.Event, error) {
-	var allResults []*types.Event
-	for _, s := range store.GetAllShards() {
-		results, err := s.Query(ctx, filter)
-		if err != nil {
-			log.Printf("Warning: query shard %s failed: %v", s.GetID(), err)
-			continue
-		}
-		allResults = append(allResults, results...)
-	}
-	return allResults, nil
-}
-
 func getShardStats(ctx context.Context, store *shard.DistributedShardStore) (map[string]shard.ShardStats, error) {
 	stats := make(map[string]shard.ShardStats)
 	for _, s := range store.GetAllShards() {
@@ -200,14 +173,18 @@ func runCoordinatorDemo() error {
 	alicePubkey := stringToPubkey("Alice")
 
 	fmt.Println("   Querying Alice's events (auto-routed to specific shard)...")
-	aliceResults, err := queryByAuthor(ctx, coordinator, alicePubkey, 10)
+	result, err := coordinator.Query(ctx, &types.QueryFilter{
+		Authors: [][32]byte{alicePubkey},
+		Limit:   10,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to query: %w", err)
 	}
 
 	s, _ := coordinator.GetShardByPubkey(alicePubkey)
-	fmt.Printf("   ✅ Found %d events from Alice in shard %s\n", len(aliceResults), s.GetID())
-	for i, evt := range aliceResults {
+	fmt.Printf("   ✅ Found %d events from Alice in shard %s (queried %d shards)\n",
+		len(result.Events), s.GetID(), result.TotalShards)
+	for i, evt := range result.Events {
 		fmt.Printf("      %d. %s\n", i+1, evt.Content)
 	}
 
@@ -215,7 +192,7 @@ func runCoordinatorDemo() error {
 	fmt.Println("\n🔍 Testing Cross-Shard Query...")
 	fmt.Println("   Querying all kind=1 events across all shards...")
 
-	allResults, err := queryAll(ctx, coordinator, &types.QueryFilter{
+	result, err = coordinator.Query(ctx, &types.QueryFilter{
 		Kinds: []uint16{1},
 		Limit: 20,
 	})
@@ -223,7 +200,8 @@ func runCoordinatorDemo() error {
 		return fmt.Errorf("failed to query all: %w", err)
 	}
 
-	fmt.Printf("   ✅ Found %d events across all shards\n", len(allResults))
+	fmt.Printf("   ✅ Found %d events across %d shards (query time: %v)\n",
+		len(result.Events), result.TotalShards, result.Duration)
 
 	// ========== 按 ID 获取事件 ==========
 	fmt.Println("\n🔎 Testing Get Event by ID...")

@@ -9,7 +9,7 @@ import (
 
 // Rebalancer orchestrates the automatic shard rebalancing process.
 type Rebalancer struct {
-	store       *LocalShardStore
+	store       *DistributedShardStore
 	oldRing     *HashRing
 	newRing     *HashRing
 	mu          sync.RWMutex
@@ -49,7 +49,7 @@ type RebalanceMetrics struct {
 }
 
 // NewRebalancer creates a new rebalancer.
-func NewRebalancer(store *LocalShardStore, cfg *RebalanceConfig) *Rebalancer {
+func NewRebalancer(store *DistributedShardStore, cfg *RebalanceConfig) *Rebalancer {
 	if cfg == nil {
 		cfg = &RebalanceConfig{
 			BatchSize:        1000,

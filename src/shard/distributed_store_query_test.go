@@ -11,21 +11,26 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
-func TestQueryCoordinatorBasicQuery(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_basic")
+func TestDistributedStoreBasicQuery(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_basic")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -49,16 +54,13 @@ func TestQueryCoordinatorBasicQuery(t *testing.T) {
 		}
 	}
 
-	// Create coordinator
-	coordinator := NewQueryCoordinator(store)
-
 	// Query by author (uses author_time index - should work!)
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Limit:   100,
 	}
 
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
@@ -80,21 +82,26 @@ func TestQueryCoordinatorBasicQuery(t *testing.T) {
 	t.Logf("Query returned %d events in %v", len(result.Events), result.Duration)
 }
 
-func TestQueryCoordinatorSorting(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_sorting")
+func TestDistributedStoreSorting(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_sorting")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -118,14 +125,13 @@ func TestQueryCoordinatorSorting(t *testing.T) {
 		}
 	}
 
-	// Create coordinator and query
-	coordinator := NewQueryCoordinator(store)
+	// Query
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Limit:   100,
 	}
 
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
@@ -141,21 +147,26 @@ func TestQueryCoordinatorSorting(t *testing.T) {
 	t.Logf("All %d events sorted correctly (newest first)", len(result.Events))
 }
 
-func TestQueryCoordinatorLimit(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_limit")
+func TestDistributedStoreLimit(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_limit")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -177,14 +188,13 @@ func TestQueryCoordinatorLimit(t *testing.T) {
 		}
 	}
 
-	// Create coordinator and query with limit
-	coordinator := NewQueryCoordinator(store)
+	// Query with limit
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Limit:   10,
 	}
 
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
@@ -196,21 +206,26 @@ func TestQueryCoordinatorLimit(t *testing.T) {
 	t.Logf("Limit applied correctly: returned %d out of %d events", len(result.Events), eventCount)
 }
 
-func TestQueryCoordinatorTimeRange(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_timerange")
+func TestDistributedStoreTimeRange(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_timerange")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -235,11 +250,6 @@ func TestQueryCoordinatorTimeRange(t *testing.T) {
 	}
 
 	// Query with time range: Since=1030, Until=1070
-	// Note: The current query engine with author_time index returns all events for the author
-	// Time-range filtering at the index level is not yet fully implemented
-	// This test validates the coordinator works correctly, even if the underlying
-	// query engine doesn't filter by time range at the index level
-	coordinator := NewQueryCoordinator(store)
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Since:   1030,
@@ -247,17 +257,12 @@ func TestQueryCoordinatorTimeRange(t *testing.T) {
 		Limit:   100,
 	}
 
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
 
 	t.Logf("Time range query returned %d events", len(result.Events))
-
-	// For now, we just verify the query succeeds
-	// In the future when query engine supports time-range filtering at index level,
-	// we should verify: len(result.Events) == 5
-	// and all events are in range [1030, 1070]
 
 	if len(result.Events) == 0 {
 		t.Errorf("Expected some events, got 0")
@@ -266,27 +271,32 @@ func TestQueryCoordinatorTimeRange(t *testing.T) {
 	t.Logf("Time range query successful: %d events", len(result.Events))
 }
 
-func TestQueryCoordinatorDeduplication(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_dedupe")
+func TestDistributedStoreDeduplication(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_dedupe")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 1 shard
+	// Add 1 local shard
 	shardID := "shard-0"
 	dataDir := filepath.Join(testDir, shardID)
-	if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+	// Create independent config for this shard
+	shardCfg := createTestConfig()
+	shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+	if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 		t.Fatalf("Failed to add shard: %v", err)
 	}
 
 	// Create test pubkey for author filter
 	var testPubkey [32]byte
 	for i := 0; i < 32; i++ {
-		testPubkey[i] = byte(i + 170) // Different from other tests
+		testPubkey[i] = byte(i + 170)
 	}
 
 	// Insert 5 unique events
@@ -300,20 +310,17 @@ func TestQueryCoordinatorDeduplication(t *testing.T) {
 		}
 	}
 
-	// Create coordinator
-	coordinator := NewQueryCoordinator(store)
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Limit:   100,
 	}
 
 	// Query with deduplication enabled (default)
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
 
-	// Log actual result for debugging
 	t.Logf("Query returned %d events (expected %d)", len(result.Events), eventCount)
 
 	if len(result.Events) != eventCount {
@@ -327,21 +334,26 @@ func TestQueryCoordinatorDeduplication(t *testing.T) {
 	t.Logf("Deduplication test passed: %d unique events", len(result.Events))
 }
 
-func TestQueryCoordinatorQueryByID(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_byid")
+func TestDistributedStoreQueryByID(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_byid")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -355,11 +367,10 @@ func TestQueryCoordinatorQueryByID(t *testing.T) {
 		t.Fatalf("Failed to insert event: %v", err)
 	}
 
-	// Create coordinator and query by ID
-	coordinator := NewQueryCoordinator(store)
-	retrieved, err := coordinator.QueryByID(ctx, eventID)
+	// Query by ID
+	retrieved, err := store.GetByID(ctx, eventID)
 	if err != nil {
-		t.Fatalf("QueryByID failed: %v", err)
+		t.Fatalf("GetByID failed: %v", err)
 	}
 
 	if retrieved.ID != eventID {
@@ -370,24 +381,29 @@ func TestQueryCoordinatorQueryByID(t *testing.T) {
 		t.Errorf("Expected content %s, got %s", event.Content, retrieved.Content)
 	}
 
-	t.Logf("QueryByID successful for event %x", eventID)
+	t.Logf("GetByID successful for event %x", eventID)
 }
 
-func TestQueryCoordinatorConcurrency(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_concurrency")
+func TestDistributedStoreConcurrency(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_concurrency")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 4 shards
+	// Add 4 local shards
 	for i := 0; i < 4; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -411,14 +427,13 @@ func TestQueryCoordinatorConcurrency(t *testing.T) {
 
 	// Flush all shards to ensure events are persisted
 	for _, shard := range store.GetAllShards() {
-		if err := shard.Store().Flush(ctx); err != nil {
+		if err := shard.Flush(ctx); err != nil {
 			t.Errorf("Failed to flush shard: %v", err)
 		}
 	}
 
-	// Create coordinator with limited concurrency
-	coordinator := NewQueryCoordinator(store)
-	coordinator.SetMaxConcurrency(2) // Only 2 concurrent shard queries
+	// Set limited concurrency
+	store.SetMaxConcurrency(2) // Only 2 concurrent shard queries
 
 	// Execute query
 	filter := &types.QueryFilter{
@@ -426,7 +441,7 @@ func TestQueryCoordinatorConcurrency(t *testing.T) {
 		Limit:   200,
 	}
 
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query failed: %v", err)
 	}
@@ -435,29 +450,38 @@ func TestQueryCoordinatorConcurrency(t *testing.T) {
 		t.Errorf("Expected %d events, got %d", eventCount, len(result.Events))
 	}
 
-	stats := coordinator.GetStats()
-	if stats.MaxConcurrency != 2 {
-		t.Errorf("Expected max concurrency 2, got %d", stats.MaxConcurrency)
+	// Verify concurrency setting via Stats
+	stats, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get stats: %v", err)
+	}
+	if maxConc, ok := stats["max_concurrency"].(int); !ok || maxConc != 2 {
+		t.Errorf("Expected max concurrency 2, got %v", stats["max_concurrency"])
 	}
 
 	t.Logf("Concurrent query successful: %d events from %d shards in %v",
 		len(result.Events), result.TotalShards, result.Duration)
 }
 
-func TestQueryCoordinatorTimeout(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_timeout")
+func TestDistributedStoreTimeout(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_timeout")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 1 shard
+	// Add 1 local shard
 	shardID := "shard-0"
 	dataDir := filepath.Join(testDir, shardID)
-	if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+	// Create independent config for this shard
+	shardCfg := createTestConfig()
+	shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+	if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 		t.Fatalf("Failed to add shard: %v", err)
 	}
 
@@ -477,9 +501,8 @@ func TestQueryCoordinatorTimeout(t *testing.T) {
 		}
 	}
 
-	// Create coordinator with very short timeout
-	coordinator := NewQueryCoordinator(store)
-	coordinator.SetTimeout(1 * time.Millisecond)
+	// Set very short timeout
+	store.SetQueryTimeout(1 * time.Millisecond)
 
 	// Execute query (may timeout on slow systems)
 	filter := &types.QueryFilter{
@@ -487,7 +510,7 @@ func TestQueryCoordinatorTimeout(t *testing.T) {
 		Limit:   100,
 	}
 
-	result, err := coordinator.ExecuteQuery(ctx, filter)
+	result, err := store.Query(ctx, filter)
 	// Query may succeed or timeout depending on system speed
 	if err != nil {
 		t.Logf("Query timed out as expected: %v", err)
@@ -497,21 +520,26 @@ func TestQueryCoordinatorTimeout(t *testing.T) {
 	}
 }
 
-func TestQueryCoordinatorStream(t *testing.T) {
-	testDir := filepath.Join("testdata", "coord_stream")
+func TestDistributedStoreStream(t *testing.T) {
+	testDir := filepath.Join("testdata", "dist_stream")
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			t.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -533,14 +561,13 @@ func TestQueryCoordinatorStream(t *testing.T) {
 		}
 	}
 
-	// Create coordinator and stream query
-	coordinator := NewQueryCoordinator(store)
+	// Stream query
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Limit:   100,
 	}
 
-	resultChan := coordinator.ExecuteQueryStream(ctx, filter)
+	resultChan := store.QueryStream(ctx, filter)
 
 	// Consume stream
 	receivedCount := 0
@@ -558,21 +585,26 @@ func TestQueryCoordinatorStream(t *testing.T) {
 	t.Logf("Streamed %d events successfully", receivedCount)
 }
 
-func BenchmarkQueryCoordinatorQuery(b *testing.B) {
-	testDir := filepath.Join("testdata", "bench_coord_query")
+func BenchmarkDistributedStoreQuery(b *testing.B) {
+	testDir := filepath.Join("testdata", "bench_dist_query")
 	defer os.RemoveAll(testDir)
 
 	cfg := createTestConfig()
-	store := NewLocalShardStore(cfg)
+	store := NewDistributedShardStore(cfg)
 	defer store.Close(context.Background())
 
 	ctx := context.Background()
 
-	// Add 2 shards
+	// Add 2 local shards
 	for i := 0; i < 2; i++ {
 		shardID := fmt.Sprintf("shard-%d", i)
 		dataDir := filepath.Join(testDir, shardID)
-		if err := store.AddShard(ctx, shardID, dataDir); err != nil {
+
+		// Create independent config for each shard
+		shardCfg := createTestConfig()
+		shardCfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
+
+		if err := store.AddLocalShard(ctx, shardID, dataDir, shardCfg); err != nil {
 			b.Fatalf("Failed to add shard: %v", err)
 		}
 	}
@@ -593,7 +625,6 @@ func BenchmarkQueryCoordinatorQuery(b *testing.B) {
 		}
 	}
 
-	coordinator := NewQueryCoordinator(store)
 	filter := &types.QueryFilter{
 		Authors: [][32]byte{testPubkey},
 		Limit:   100,
@@ -602,7 +633,7 @@ func BenchmarkQueryCoordinatorQuery(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_, err := coordinator.ExecuteQuery(ctx, filter)
+		_, err := store.Query(ctx, filter)
 		if err != nil {
 			b.Fatalf("Query failed: %v", err)
 		}

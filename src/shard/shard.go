@@ -6,6 +6,7 @@ package shard
 import (
 	"context"
 
+	"github.com/haorendashu/nostr_event_store/src/client"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
@@ -43,8 +44,8 @@ type Shard interface {
 	// DeleteBatch marks multiple events as deleted.
 	DeleteBatch(ctx context.Context, eventIDs [][32]byte) (int, error)
 
-	// Query executes a query filter and returns matching events.
-	Query(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error)
+	// Query executes a query filter and returns a stream of matching events.
+	Query(ctx context.Context, filter *types.QueryFilter) (client.QueryStream, error)
 
 	// QueryCount returns the count of events matching the filter.
 	QueryCount(ctx context.Context, filter *types.QueryFilter) (int64, error)

@@ -10,7 +10,7 @@ import (
 // TestRebalancerCreation verifies rebalancer initialization.
 func TestRebalancerCreation(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
 	rebalancer := NewRebalancer(store, nil)
 
@@ -30,7 +30,7 @@ func TestRebalancerCreation(t *testing.T) {
 // TestRebalancerCustomConfig verifies custom configuration.
 func TestRebalancerCustomConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
 	customCfg := &RebalanceConfig{
 		BatchSize:      2000,
@@ -56,14 +56,14 @@ func TestRebalancerCustomConfig(t *testing.T) {
 // TestRebalancerStartRebalance verifies starting rebalancing.
 func TestRebalancerStartRebalance(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	ctx := context.Background()
 
 	// Add initial shards
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
-	store.AddShard(ctx, "shard-1", "/tmp/shard-1")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
+	store.AddLocalShard(ctx, "shard-1", "/tmp/shard-1", *cfg)
 
 	// Start rebalancing
 	taskID, err := rebalancer.StartRebalance(ctx, "shard-2")
@@ -88,11 +88,11 @@ func TestRebalancerStartRebalance(t *testing.T) {
 // TestRebalancerConcurrentRebalance verifies concurrent rebalance prevention.
 func TestRebalancerConcurrentRebalance(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
 
 	// Start first rebalance
 	taskID1, err := rebalancer.StartRebalance(ctx, "shard-1")
@@ -116,7 +116,7 @@ func TestRebalancerConcurrentRebalance(t *testing.T) {
 // TestRebalancerIsRebalancing verifies rebalancing state.
 func TestRebalancerIsRebalancing(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	if rebalancer.IsRebalancing() {
@@ -124,7 +124,7 @@ func TestRebalancerIsRebalancing(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
 
 	rebalancer.StartRebalance(ctx, "shard-1")
 
@@ -136,7 +136,7 @@ func TestRebalancerIsRebalancing(t *testing.T) {
 // TestRebalancerGetProgress verifies progress retrieval.
 func TestRebalancerGetProgress(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	// No task initially
@@ -145,7 +145,7 @@ func TestRebalancerGetProgress(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
 
 	rebalancer.StartRebalance(ctx, "shard-1")
 
@@ -162,7 +162,7 @@ func TestRebalancerGetProgress(t *testing.T) {
 // TestRebalancerMetrics verifies metrics tracking.
 func TestRebalancerMetrics(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	metrics := rebalancer.GetMetrics()
@@ -171,7 +171,7 @@ func TestRebalancerMetrics(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
 
 	rebalancer.StartRebalance(ctx, "shard-1")
 
@@ -188,7 +188,7 @@ func TestRebalancerMetrics(t *testing.T) {
 // TestRebalancerCancelCurrentTask verifies task cancellation.
 func TestRebalancerCancelCurrentTask(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	// Try to cancel without active task
@@ -198,7 +198,7 @@ func TestRebalancerCancelCurrentTask(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
 
 	rebalancer.StartRebalance(ctx, "shard-1")
 
@@ -217,11 +217,11 @@ func TestRebalancerCancelCurrentTask(t *testing.T) {
 // TestRebalancerStop verifies graceful shutdown.
 func TestRebalancerStop(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
 
 	rebalancer.StartRebalance(ctx, "shard-1")
 
@@ -237,12 +237,12 @@ func TestRebalancerStop(t *testing.T) {
 // TestMigrationPlanGeneration verifies basic migration planning.
 func TestMigrationPlanGeneration(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	ctx := context.Background()
-	store.AddShard(ctx, "shard-0", "/tmp/shard-0")
-	store.AddShard(ctx, "shard-1", "/tmp/shard-1")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/shard-0", *cfg)
+	store.AddLocalShard(ctx, "shard-1", "/tmp/shard-1", *cfg)
 
 	// Setup hash rings
 	oldRing := NewHashRing(150)
@@ -271,7 +271,7 @@ func TestMigrationPlanGeneration(t *testing.T) {
 // TestRebalancerZeroShards verifies handling of edge cases.
 func TestRebalancerZeroShards(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	rebalancer := NewRebalancer(store, nil)
 
 	ctx := context.Background()

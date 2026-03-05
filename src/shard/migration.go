@@ -10,13 +10,13 @@ import (
 
 // MigrationExecutor handles the actual data migration during rebalancing.
 type MigrationExecutor struct {
-	store *LocalShardStore
+	store *DistributedShardStore
 	ring  *HashRing
 	cfg   *RebalanceConfig
 }
 
 // NewMigrationExecutor creates a new migration executor.
-func NewMigrationExecutor(store *LocalShardStore, ring *HashRing, cfg *RebalanceConfig) *MigrationExecutor {
+func NewMigrationExecutor(store *DistributedShardStore, ring *HashRing, cfg *RebalanceConfig) *MigrationExecutor {
 	return &MigrationExecutor{
 		store: store,
 		ring:  ring,
@@ -115,14 +115,25 @@ func (me *MigrationExecutor) scanAndMigrateEvents(
 	}
 
 	// Query events from source shard
-	events, err := sourceSh.Query(ctx, filter)
+	stream, err := sourceSh.Query(ctx, filter)
 	if err != nil {
 		tracker.RecordEventFailed(fmt.Sprintf("query error: %v", err))
 		return results
 	}
+	defer stream.Close()
 
-	// Process each event
-	for _, event := range events {
+	// Process each event from stream
+	for {
+		event, err := stream.Next(ctx)
+		if err != nil {
+			// Check if EOF
+			if err.Error() == "EOF" {
+				break
+			}
+			tracker.RecordEventFailed(fmt.Sprintf("stream read error: %v", err))
+			break
+		}
+
 		select {
 		case <-ctx.Done():
 			// Context cancelled
@@ -210,7 +221,7 @@ func (me *MigrationExecutor) VerifyMigration(
 	tracker.StartPhase("verifying")
 
 	me.store.mu.RLock()
-	shards := make(map[string]*LocalShard)
+	shards := make(map[string]Shard)
 	for id, shard := range me.store.shards {
 		shards[id] = shard
 	}
@@ -232,13 +243,24 @@ func (me *MigrationExecutor) VerifyMigration(
 			Limit: 100,
 		}
 
-		events, err := shard.Query(ctx, filter)
+		stream, err := shard.Query(ctx, filter)
 		if err != nil {
 			tracker.RecordEventFailed(fmt.Sprintf("verification query error: %v", err))
 			continue
 		}
+		defer stream.Close()
 
-		for _, event := range events {
+		for {
+			event, err := stream.Next(ctx)
+			if err != nil {
+				// Check if EOF
+				if err.Error() == "EOF" {
+					break
+				}
+				tracker.RecordEventFailed(fmt.Sprintf("verification stream error: %v", err))
+				break
+			}
+
 			expectedShard, err := me.ring.GetNode(event.Pubkey[:])
 			if err != nil {
 				tracker.RecordEventFailed(fmt.Sprintf("verification hash error: %v", err))

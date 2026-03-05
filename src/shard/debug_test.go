@@ -15,6 +15,9 @@ func TestLocalShardQueryDirect(t *testing.T) {
 	defer cleanupTestDir(t, testDir)
 
 	cfg := createTestConfig()
+	// Set unique IndexDir for this shard
+	cfg.IndexConfig.IndexDir = filepath.Join(testDir, "indexes")
+
 	shard, err := NewLocalShard("shard-0", testDir, cfg)
 	if err != nil {
 		t.Fatalf("Failed to create shard: %v", err)
@@ -59,9 +62,26 @@ func TestLocalShardQueryDirect(t *testing.T) {
 		Limit: 100, // Add limit to satisfy query engine
 	}
 
-	events, err := shard.Query(ctx, filter)
+	stream, err := shard.Query(ctx, filter)
 	if err != nil {
 		t.Fatalf("Query with kinds filter failed: %v", err)
+	}
+
+	var events []*types.Event
+	for {
+		event, err := stream.Next(ctx)
+		if err != nil {
+			// Check if EOF
+			if err.Error() == "EOF" {
+				break
+			}
+			t.Fatalf("Stream read failed: %v", err)
+		}
+		events = append(events, event)
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Logf("Stream close failed: %v", err)
 	}
 
 	t.Logf("Query with kinds returned %d events (expected %d)", len(events), eventCount)
@@ -86,8 +106,22 @@ func TestLocalShardQueryDirect(t *testing.T) {
 				Limit: 100,
 			}
 
-			events2, err := shard.Query(ctx, timeFilter)
+			stream2, err := shard.Query(ctx, timeFilter)
 			if err == nil {
+				var events2 []*types.Event
+				for {
+					event, err := stream2.Next(ctx)
+					if err != nil {
+						// Check if EOF
+						if err.Error() == "EOF" {
+							break
+						}
+						t.Logf("Time range query stream error (non-critical): %v", err)
+						break
+					}
+					events2 = append(events2, event)
+				}
+				stream2.Close()
 				t.Logf("Query with time range returned %d events", len(events2))
 			} else {
 				t.Logf("Time range query failed (non-critical): %v", err)

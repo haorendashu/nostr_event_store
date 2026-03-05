@@ -204,8 +204,8 @@ func TestProgressSnapshotString(t *testing.T) {
 	if !contains(str, "test-task-9") {
 		t.Error("String should contain task ID")
 	}
-	if !contains(str, "1") || !contains(str, "migrated") {
-		t.Error("String should contain migration count")
+	if !contains(str, "1") || !contains(str, "Migrated") {
+		t.Errorf("String should contain migration count, got: %s", str)
 	}
 }
 

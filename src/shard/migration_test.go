@@ -11,7 +11,7 @@ import (
 // TestMigrationExecutorCreation verifies executor initialization.
 func TestMigrationExecutorCreation(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	ring := NewHashRing(150)
 	rebalanceCfg := &RebalanceConfig{BatchSize: 1000}
 
@@ -34,11 +34,11 @@ func TestMigrationExecutorCreation(t *testing.T) {
 func TestMigrationExecutorScanAndMigrate(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
 	// Add shards
-	store.AddShard(ctx, "shard-0", "/tmp/test-shard-0")
-	store.AddShard(ctx, "shard-1", "/tmp/test-shard-1")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/test-shard-0", *cfg)
+	store.AddLocalShard(ctx, "shard-1", "/tmp/test-shard-1", *cfg)
 
 	// Create ring
 	ring := NewHashRing(150)
@@ -71,10 +71,10 @@ func TestMigrationExecutorScanAndMigrate(t *testing.T) {
 func TestMigrationExecutorVerification(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
-	store.AddShard(ctx, "shard-0", "/tmp/test-shard-verify-0")
-	store.AddShard(ctx, "shard-1", "/tmp/test-shard-verify-1")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/test-shard-verify-0", *cfg)
+	store.AddLocalShard(ctx, "shard-1", "/tmp/test-shard-verify-1", *cfg)
 
 	ring := NewHashRing(150)
 	ring.AddNode("shard-0")
@@ -101,9 +101,9 @@ func TestMigrationExecutorVerification(t *testing.T) {
 func TestMigrationExecutorCleanup(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
-	store.AddShard(ctx, "shard-0", "/tmp/test-shard-cleanup-0")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/test-shard-cleanup-0", *cfg)
 
 	ring := NewHashRing(150)
 	ring.AddNode("shard-0")
@@ -132,7 +132,7 @@ func TestMigrationExecutorCleanup(t *testing.T) {
 // TestMigrationExecutorMetrics verifies metrics calculation.
 func TestMigrationExecutorMetrics(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	ring := NewHashRing(150)
 	rebalanceCfg := &RebalanceConfig{}
 
@@ -164,10 +164,10 @@ func TestMigrationExecutorMetrics(t *testing.T) {
 func TestMigrationExecutorWithDryRun(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
-	store.AddShard(ctx, "shard-0", "/tmp/test-dryrun-0")
-	store.AddShard(ctx, "shard-1", "/tmp/test-dryrun-1")
+	store.AddLocalShard(ctx, "shard-0", "/tmp/test-dryrun-0", *cfg)
+	store.AddLocalShard(ctx, "shard-1", "/tmp/test-dryrun-1", *cfg)
 
 	ring := NewHashRing(150)
 	ring.AddNode("shard-0")
@@ -194,7 +194,7 @@ func TestMigrationExecutorWithDryRun(t *testing.T) {
 // TestMigrationExecutorBatching verifies batch processing.
 func TestMigrationExecutorBatching(t *testing.T) {
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 	ring := NewHashRing(150)
 
 	// Test with different batch sizes
@@ -214,12 +214,12 @@ func TestMigrationExecutorBatching(t *testing.T) {
 func TestMigrationExecutorConcurrency(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.DefaultConfig()
-	store := NewLocalShardStore(*cfg)
+	store := NewDistributedShardStore(*cfg)
 
 	// Add multiple shards
 	for i := 0; i < 4; i++ {
 		shardID := "shard-" + string(rune('0'+i))
-		store.AddShard(ctx, shardID, "/tmp/test-concurrent-"+shardID)
+		store.AddLocalShard(ctx, shardID, "/tmp/test-concurrent-"+shardID, *cfg)
 	}
 
 	ring := NewHashRing(150)

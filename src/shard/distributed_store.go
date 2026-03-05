@@ -3,7 +3,9 @@ package shard
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/config"
 	"github.com/haorendashu/nostr_event_store/src/types"
@@ -11,19 +13,28 @@ import (
 
 // DistributedShardStore manages mixed local/remote shards using consistent hashing.
 // It consumes config.DistributedShardConfig for remote endpoints and routes by author pubkey.
+// It also provides query coordination with smart routing, parallel execution, and result aggregation.
 type DistributedShardStore struct {
 	mu       sync.RWMutex
 	shards   map[string]Shard
 	hashRing *HashRing
 	config   config.Config
+
+	// Query configuration
+	queryTimeout   time.Duration
+	maxConcurrency int
+	enableDedupe   bool
 }
 
 // NewDistributedShardStore creates a distributed shard store.
 func NewDistributedShardStore(cfg config.Config) *DistributedShardStore {
 	return &DistributedShardStore{
-		shards:   make(map[string]Shard),
-		hashRing: NewHashRing(150),
-		config:   cfg,
+		shards:         make(map[string]Shard),
+		hashRing:       NewHashRing(150),
+		config:         cfg,
+		queryTimeout:   30 * time.Second,
+		maxConcurrency: 32,
+		enableDedupe:   true,
 	}
 }
 
@@ -349,5 +360,285 @@ func (store *DistributedShardStore) Stats(ctx context.Context) (map[string]inter
 	stats["unhealthy_shards"] = len(shards) - healthyShards
 	stats["shards"] = shardStats
 
+	// Query configuration stats
+	stats["query_timeout"] = store.queryTimeout.String()
+	stats["max_concurrency"] = store.maxConcurrency
+	stats["dedupe_enabled"] = store.enableDedupe
+
 	return stats, nil
+}
+
+// ===== Query Configuration Methods =====
+
+// SetQueryTimeout sets the default timeout for query execution.
+func (store *DistributedShardStore) SetQueryTimeout(timeout time.Duration) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.queryTimeout = timeout
+}
+
+// SetMaxConcurrency sets the maximum number of concurrent shard queries.
+func (store *DistributedShardStore) SetMaxConcurrency(max int) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.maxConcurrency = max
+}
+
+// EnableDeduplication enables or disables result deduplication.
+func (store *DistributedShardStore) EnableDeduplication(enable bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.enableDedupe = enable
+}
+
+// ===== Query Structures =====
+
+// QueryResult represents the result of a query execution.
+type QueryResult struct {
+	Events       []*types.Event
+	TotalShards  int
+	FailedShards int
+	Duration     time.Duration
+	Deduplicated int // Number of duplicate events removed
+}
+
+// QueryStreamResult represents a single result from a streaming query.
+type QueryStreamResult struct {
+	Event *types.Event
+	Err   error
+}
+
+// ===== Query Methods =====
+
+// Query executes a query across shards with smart routing.
+// If authors are specified, only queries shards containing those authors.
+// Results are sorted by created_at descending (newest first), following Nostr convention.
+func (store *DistributedShardStore) Query(ctx context.Context, filter *types.QueryFilter) (*QueryResult, error) {
+	startTime := time.Now()
+
+	// Get query config with lock
+	store.mu.RLock()
+	queryTimeout := store.queryTimeout
+	maxConcurrency := store.maxConcurrency
+	enableDedupe := store.enableDedupe
+	store.mu.RUnlock()
+
+	// Create context with timeout
+	queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	var shardsToQuery []Shard
+
+	// Smart routing: If querying specific authors, only query their shards
+	if len(filter.Authors) > 0 {
+		shardSet := make(map[string]Shard)
+		for _, author := range filter.Authors {
+			shard, err := store.GetShardByPubkey(author)
+			if err != nil {
+				continue // Skip authors whose shards don't exist
+			}
+			shardSet[shard.GetID()] = shard
+		}
+		// Convert map to slice
+		for _, shard := range shardSet {
+			shardsToQuery = append(shardsToQuery, shard)
+		}
+	} else {
+		// No authors specified, query all shards
+		shardsToQuery = store.GetAllShards()
+	}
+
+	if len(shardsToQuery) == 0 {
+		return nil, fmt.Errorf("no shards available")
+	}
+
+	// Query shards in parallel
+	type shardResult struct {
+		events []*types.Event
+		err    error
+	}
+
+	resultChan := make(chan shardResult, len(shardsToQuery))
+	var wg sync.WaitGroup
+
+	// Limit concurrency with semaphore
+	semaphore := make(chan struct{}, maxConcurrency)
+
+	for _, shard := range shardsToQuery {
+		wg.Add(1)
+		go func(s Shard) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-queryCtx.Done():
+				resultChan <- shardResult{err: queryCtx.Err()}
+				return
+			}
+
+			// Execute query on shard and collect streamed results
+			stream, err := s.Query(queryCtx, filter)
+			if err != nil {
+				resultChan <- shardResult{err: err}
+				return
+			}
+
+			var events []*types.Event
+			for {
+				event, err := stream.Next(queryCtx)
+				if err != nil {
+					// Check if EOF
+					if err.Error() == "EOF" {
+						break
+					}
+					resultChan <- shardResult{err: err}
+					return
+				}
+				events = append(events, event)
+			}
+
+			if err := stream.Close(); err != nil {
+				resultChan <- shardResult{err: err}
+				return
+			}
+
+			resultChan <- shardResult{events: events, err: nil}
+		}(shard)
+	}
+
+	// Wait for all queries to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var allEvents []*types.Event
+	failedShards := 0
+
+	for result := range resultChan {
+		if result.err != nil {
+			failedShards++
+			// Continue collecting from other shards even if some fail
+			continue
+		}
+		allEvents = append(allEvents, result.events...)
+	}
+
+	// If all shards failed, return error
+	if failedShards == len(shardsToQuery) {
+		return nil, fmt.Errorf("all shards failed to execute query")
+	}
+
+	// Deduplicate by event ID
+	dedupCount := 0
+	if enableDedupe {
+		allEvents, dedupCount = deduplicateEvents(allEvents)
+	}
+
+	// Sort by created_at descending (newest first)
+	sort.Slice(allEvents, func(i, j int) bool {
+		// First by created_at descending
+		if allEvents[i].CreatedAt != allEvents[j].CreatedAt {
+			return allEvents[i].CreatedAt > allEvents[j].CreatedAt
+		}
+		// Then by ID ascending (lexicographic) as tiebreaker
+		return compareEventID(allEvents[i].ID, allEvents[j].ID) < 0
+	})
+
+	// Apply limit if specified
+	if filter.Limit > 0 && len(allEvents) > filter.Limit {
+		allEvents = allEvents[:filter.Limit]
+	}
+
+	return &QueryResult{
+		Events:       allEvents,
+		TotalShards:  len(shardsToQuery),
+		FailedShards: failedShards,
+		Duration:     time.Since(startTime),
+		Deduplicated: dedupCount,
+	}, nil
+}
+
+// QueryStream executes a query and streams results as they arrive from shards.
+// This is useful for large result sets where you want to process results incrementally.
+// The returned channel will be closed when all shards have been queried.
+func (store *DistributedShardStore) QueryStream(ctx context.Context, filter *types.QueryFilter) <-chan QueryStreamResult {
+	resultChan := make(chan QueryStreamResult, 100) // Buffer for smoother streaming
+
+	go func() {
+		defer close(resultChan)
+
+		// Execute full query
+		result, err := store.Query(ctx, filter)
+		if err != nil {
+			resultChan <- QueryStreamResult{Err: err}
+			return
+		}
+
+		// Stream results
+		for _, event := range result.Events {
+			select {
+			case resultChan <- QueryStreamResult{Event: event}:
+			case <-ctx.Done():
+				resultChan <- QueryStreamResult{Err: ctx.Err()}
+				return
+			}
+		}
+	}()
+
+	return resultChan
+}
+
+// QueryCount returns the approximate count of events matching the filter across all shards.
+// Note: This may include duplicates if the same event exists in multiple shards (unlikely in normal operation).
+func (store *DistributedShardStore) QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error) {
+	// For count queries, we don't need to fetch full events
+	// Just execute the query and count results
+	result, err := store.Query(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	return len(result.Events), nil
+}
+
+// ===== Helper Functions =====
+
+// deduplicateEvents removes duplicate events by ID, keeping the first occurrence.
+// Returns deduplicated slice and count of removed duplicates.
+func deduplicateEvents(events []*types.Event) ([]*types.Event, int) {
+	if len(events) == 0 {
+		return events, 0
+	}
+
+	seen := make(map[[32]byte]bool, len(events))
+	result := make([]*types.Event, 0, len(events))
+	dupCount := 0
+
+	for _, event := range events {
+		if !seen[event.ID] {
+			seen[event.ID] = true
+			result = append(result, event)
+		} else {
+			dupCount++
+		}
+	}
+
+	return result, dupCount
+}
+
+// compareEventID compares two event IDs lexicographically.
+// Returns: -1 if a < b, 0 if a == b, 1 if a > b
+func compareEventID(a, b [32]byte) int {
+	for i := 0; i < 32; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
 }

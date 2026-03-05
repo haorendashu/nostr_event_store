@@ -40,7 +40,41 @@ type RemoteShard struct {
 	totalLatency time.Duration
 }
 
+// metricsWrappedStream wraps a QueryStream to track metrics during streaming.
+type metricsWrappedStream struct {
+	stream     client.QueryStream
+	shard      *RemoteShard
+	startTime  time.Time
+	eventCount int64
+	hasError   bool
+}
+
+// Next retrieves the next event from the stream and tracks metrics.
+func (m *metricsWrappedStream) Next(ctx context.Context) (*types.Event, error) {
+	event, err := m.stream.Next(ctx)
+	if err == nil && event != nil {
+		m.eventCount++
+	} else if err != nil && err.Error() != "EOF" {
+		m.hasError = true
+	}
+	return event, err
+}
+
+// Close closes the stream and records the final metrics.
+func (m *metricsWrappedStream) Close() error {
+	defer func() {
+		latency := time.Since(m.startTime)
+		m.shard.recordLatency(latency)
+		m.shard.recordQuery()
+		if m.hasError {
+			m.shard.recordError()
+		}
+	}()
+	return m.stream.Close()
+}
+
 // NewRemoteShard creates a new remote shard instance.
+
 func NewRemoteShard(id string, addr string, apiKey string, cfg *config.RemoteConfig) (*RemoteShard, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("remote shard address cannot be empty")
@@ -258,8 +292,8 @@ func (s *RemoteShard) DeleteBatch(ctx context.Context, eventIDs [][32]byte) (int
 	return len(eventIDs), nil
 }
 
-// Query executes a query via gRPC.
-func (s *RemoteShard) Query(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
+// Query executes a query via gRPC and returns a stream of results.
+func (s *RemoteShard) Query(ctx context.Context, filter *types.QueryFilter) (client.QueryStream, error) {
 	s.mu.RLock()
 	if !s.isConnected || s.client == nil {
 		s.mu.RUnlock()
@@ -268,19 +302,18 @@ func (s *RemoteShard) Query(ctx context.Context, filter *types.QueryFilter) ([]*
 	cli := s.client
 	s.mu.RUnlock()
 
-	start := time.Now()
-	defer func() {
-		s.recordLatency(time.Since(start))
-	}()
-
-	events, err := cli.QueryAll(ctx, filter)
+	stream, err := cli.Query(ctx, filter)
 	if err != nil {
 		s.recordError()
-		return nil, fmt.Errorf("QueryAll failed: %w", err)
+		return nil, fmt.Errorf("Query failed: %w", err)
 	}
 
-	s.recordQuery()
-	return events, nil
+	// Wrap stream with metrics tracking
+	return &metricsWrappedStream{
+		stream:    stream,
+		shard:     s,
+		startTime: time.Now(),
+	}, nil
 }
 
 // QueryCount returns the count of matching events via gRPC.
