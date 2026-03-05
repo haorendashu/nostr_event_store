@@ -26,13 +26,14 @@ func initStore(dir string) (*NostrEventStorage, error) {
 	cfg.WALConfig.WALDir = filepath.Join(dir, "wal")
 	cfg.IndexConfig.IndexDir = filepath.Join(dir, "indexes")
 
-	// cfg.IndexConfig.PartitionGranularity = "monthly"
-	// cfg.IndexConfig.EnableTimePartitioning = true
-	// cfg.IndexConfig.EnablePartitionCacheCoordinator = false
+	cfg.IndexConfig.PartitionGranularity = "monthly"
+	cfg.IndexConfig.EnableTimePartitioning = true
+	cfg.IndexConfig.EnablePartitionCacheCoordinator = false
 
-	// cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 700
-	// cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 800
-	// cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 3500
+	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 700
+	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 800
+	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 3500
+	cfg.IndexConfig.CacheConfig.KindTimeIndexCacheMB = 300
 
 	return &NostrEventStorage{
 		dir: dir,
@@ -86,7 +87,11 @@ func (s *NostrEventStorage) QueryEvents(context context.Context, filter nostr.Fi
 
 	if filter.Limit > 1000 {
 		filter.Limit = 1000
+	} else if filter.Limit <= 0 {
+		filter.Limit = 100
 	}
+
+	// fmt.Printf("query filter %s\n", filter.String())
 
 	if len(filter.IDs) > 0 {
 		storeEvents := make([]*types.Event, 0)
@@ -116,16 +121,46 @@ func (s *NostrEventStorage) QueryEvents(context context.Context, filter nostr.Fi
 		return nil, fmt.Errorf("failed to convert filter: %w", err)
 	}
 
-	storeEvents, err := s.store.QueryAll(context, storeFilter)
+	// events, err := s.store.QueryAll(context, storeFilter)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to query events: %w", err)
+	// }
+
+	// return genEventChan(events), nil
+
+	iter, err := s.store.Query(context, storeFilter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query events: %w", err)
 	}
 
-	// if len(storeEvents) == 0 {
-	// 	fmt.Printf("events not found and storeFilter %v \n", filter)
-	// }
+	eventChan := make(chan *nostr.Event)
+	go func() {
+		defer iter.Close()
+		defer close(eventChan)
 
-	return genEventChan(storeEvents), nil
+		// iter over store events and convert to nostr events
+		for iter.Valid() {
+			if err := context.Err(); err != nil {
+				fmt.Printf("QueryEvents context error: %v\n", err)
+				return
+			}
+
+			event := iter.Event()
+			eventStore, err := convertToNostrEvent(event)
+			if err != nil {
+				fmt.Printf("failed to convert event to nostr event: %v\n", err)
+				continue
+			}
+			eventChan <- eventStore
+
+			if err := iter.Next(context); err != nil {
+				fmt.Printf("iterator error: %v\n", err)
+				return
+			}
+		}
+	}()
+
+	return eventChan, nil
 }
 
 func genEventChan(storeEvents []*types.Event) chan *nostr.Event {
