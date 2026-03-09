@@ -21,108 +21,108 @@ import (
 // Config represents the complete store configuration.
 type Config struct {
 	// Debug enables debug logging and assertions.
-	Debug bool `json:"debug,omitempty"`
+	Debug bool `json:"debug,omitempty" yaml:"debug,omitempty"`
 
 	// StorageConfig specifies page size and segment settings.
-	StorageConfig StorageConfig `json:"storage,omitempty"`
+	StorageConfig StorageConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
 
 	// IndexConfig specifies which search types are enabled and cache allocation.
-	IndexConfig IndexConfig `json:"index,omitempty"`
+	IndexConfig IndexConfig `json:"index,omitempty" yaml:"index,omitempty"`
 
 	// WALConfig specifies write-ahead log settings.
-	WALConfig WALConfig `json:"wal,omitempty"`
+	WALConfig WALConfig `json:"wal,omitempty" yaml:"wal,omitempty"`
 
 	// CompactionConfig specifies background compaction parameters.
-	CompactionConfig CompactionConfig `json:"compaction,omitempty"`
+	CompactionConfig CompactionConfig `json:"compaction,omitempty" yaml:"compaction,omitempty"`
 
 	// ShardingConfig specifies distributed sharding parameters (Phase 3).
 	// When enabled, events are distributed across multiple local shards using consistent hashing.
-	ShardingConfig ShardingConfig `json:"sharding,omitempty"`
+	ShardingConfig ShardingConfig `json:"sharding,omitempty" yaml:"sharding,omitempty"`
 
 	// QueryConfig specifies query filter defaulting behavior.
-	QueryConfig QueryConfig `json:"query,omitempty"`
+	QueryConfig QueryConfig `json:"query,omitempty" yaml:"query,omitempty"`
 
 	// RemoteConfig specifies remote gRPC server and client settings.
 	// Enables distributed deployment with EventStore instances accessible over network.
-	RemoteConfig RemoteConfig `json:"remote,omitempty"`
+	RemoteConfig RemoteConfig `json:"remote,omitempty" yaml:"remote,omitempty"`
 
 	// DistributedShardConfig specifies distributed shard endpoints.
 	// When enabled, shards can be located on different remote EventStore instances.
-	DistributedShardConfig DistributedShardConfig `json:"distributed_sharding,omitempty"`
+	DistributedShardConfig DistributedShardConfig `json:"distributed_sharding,omitempty" yaml:"distributed_sharding,omitempty"`
 }
 
 // QueryConfig defines default query filter values injected by the query compiler.
 type QueryConfig struct {
 	// DefaultLimit is applied when filter limit is omitted (0).
 	// Default: 100
-	DefaultLimit int `json:"default_limit,omitempty"`
+	DefaultLimit int `json:"default_limit,omitempty" yaml:"default_limit,omitempty"`
 
 	// DefaultKinds are applied when kinds are omitted for search/tag queries.
 	// Default: [0,1,3,6,16,20,30023,9041,1111]
-	DefaultKinds []uint16 `json:"default_kinds,omitempty"`
+	DefaultKinds []uint16 `json:"default_kinds,omitempty" yaml:"default_kinds,omitempty"`
 
 	// ExecutionTimeoutSeconds is the maximum time allowed for a single query execution.
 	// Prevents infinite loops or extremely slow queries from blocking indefinitely.
 	// Set to 0 to disable timeout (not recommended for production).
 	// Default: 30
-	ExecutionTimeoutSeconds int `json:"execution_timeout_seconds,omitempty"`
+	ExecutionTimeoutSeconds int `json:"execution_timeout_seconds,omitempty" yaml:"execution_timeout_seconds,omitempty"`
 }
 
 // StorageConfig defines storage layer parameters.
 type StorageConfig struct {
 	// DataDir is the directory where event data will be stored.
 	// Default: "./data"
-	DataDir string `json:"data_dir,omitempty"`
+	DataDir string `json:"data_dir,omitempty" yaml:"data_dir,omitempty"`
 
 	// PageSize is the storage page size in bytes (4096, 8192, or 16384).
 	// Default: 4096
-	PageSize uint32 `json:"page_size,omitempty"`
+	PageSize uint32 `json:"page_size,omitempty" yaml:"page_size,omitempty"`
 
 	// MaxSegmentSize is the maximum size of a data segment before rotation.
 	// Default: 1 GB (1073741824)
-	MaxSegmentSize uint64 `json:"max_segment_size,omitempty"`
+	MaxSegmentSize uint64 `json:"max_segment_size,omitempty" yaml:"max_segment_size,omitempty"`
 
 	// EventBufferSize is the size of the in-memory event buffer before flush.
 	// Default: 16 MB (16777216)
-	EventBufferSize uint32 `json:"event_buffer_size,omitempty"`
+	EventBufferSize uint32 `json:"event_buffer_size,omitempty" yaml:"event_buffer_size,omitempty"`
 
 	// WriteBatchSize is the maximum number of events to process in a single sub-batch.
 	// Smaller values reduce memory usage, larger values improve throughput.
 	// Default: 500
-	WriteBatchSize int `json:"write_batch_size,omitempty"`
+	WriteBatchSize int `json:"write_batch_size,omitempty" yaml:"write_batch_size,omitempty"`
 }
 
 // IndexConfig defines indexing parameters including search type configuration.
 type IndexConfig struct {
 	// IndexDir is the directory where index files are stored.
 	// Default: "./data/indexes"
-	IndexDir string `json:"index_dir,omitempty"`
+	IndexDir string `json:"index_dir,omitempty" yaml:"index_dir,omitempty"`
 
 	// SearchTypeMapConfig defines which tags are indexed (for configurable search index).
-	SearchTypeMapConfig SearchTypeMapConfig `json:"search_type_map,omitempty"`
+	SearchTypeMapConfig SearchTypeMapConfig `json:"search_type_map,omitempty" yaml:"search_type_map,omitempty"`
 
 	// InitializationMode specifies the default search types to enable.
 	// Options: "performance" (e/p/t only), "standard" (e/p/t/a/r/subject + REPL),
 	//          "full" (all common tags), "custom" (see EnabledSearchTypes)
 	// Default: "standard"
-	InitializationMode string `json:"initialization_mode,omitempty"`
+	InitializationMode string `json:"initialization_mode,omitempty" yaml:"initialization_mode,omitempty"`
 
 	// CacheConfig specifies per-index cache allocation.
-	CacheConfig CacheConfig `json:"cache,omitempty"`
+	CacheConfig CacheConfig `json:"cache,omitempty" yaml:"cache,omitempty"`
 
 	// FlushIntervalMs is the batch flush interval for dirty index pages.
 	// Default: 100 ms
-	FlushIntervalMs int `json:"flush_interval_ms,omitempty"`
+	FlushIntervalMs int `json:"flush_interval_ms,omitempty" yaml:"flush_interval_ms,omitempty"`
 
 	// DirtyThreshold is the number of dirty index pages that triggers a batch flush.
 	// Default: 128
-	DirtyThreshold int `json:"dirty_threshold,omitempty"`
+	DirtyThreshold int `json:"dirty_threshold,omitempty" yaml:"dirty_threshold,omitempty"`
 
 	// EnableTimePartitioning enables time-based index partitioning for scalability.
 	// When enabled, indexes are split into multiple files by time period (monthly/weekly/yearly).
 	// This is Phase 2 optimization for handling 10M-20M events.
 	// Default: false (use single index file for backward compatibility)
-	EnableTimePartitioning bool `json:"enable_time_partitioning,omitempty"`
+	EnableTimePartitioning bool `json:"enable_time_partitioning,omitempty" yaml:"enable_time_partitioning,omitempty"`
 
 	// PartitionGranularity determines how to split time partitions.
 	// Options: "monthly" (default), "weekly", "yearly"
@@ -130,36 +130,36 @@ type IndexConfig struct {
 	// - weekly: For very high volume (50M+ events), creates one partition per week
 	// - yearly: For low volume archives, creates one partition per year
 	// Default: "monthly"
-	PartitionGranularity string `json:"partition_granularity,omitempty"`
+	PartitionGranularity string `json:"partition_granularity,omitempty" yaml:"partition_granularity,omitempty"`
 
 	// EnablePartitionCacheCoordinator enables dynamic cache allocation across partitions.
 	// When true, uses PartitionCacheCoordinator to intelligently allocate cache based on access patterns (tiered: active 60%, recent 30%, historical 10%).
 	// When false, all partitions share the same BTreeCache directly without smart allocation.
 	// Setting this to false is recommended for memory rebuilding scenarios to maximize cache utilization.
 	// Default: true
-	EnablePartitionCacheCoordinator bool `json:"enable_partition_cache_coordinator,omitempty"`
+	EnablePartitionCacheCoordinator bool `json:"enable_partition_cache_coordinator,omitempty" yaml:"enable_partition_cache_coordinator,omitempty"`
 
 	// PartitionCacheStrategy defines how cache is allocated to different partitions.
 	// Options: "tiered" (default)
 	// - tiered: Active=60%, Recent=30%, Historical=10%
 	// Default: "tiered"
-	PartitionCacheStrategy string `json:"partition_cache_strategy,omitempty"`
+	PartitionCacheStrategy string `json:"partition_cache_strategy,omitempty" yaml:"partition_cache_strategy,omitempty"`
 
 	// PartitionCacheActivePct is the percentage of cache allocated to active partitions.
 	// Default: 60
-	PartitionCacheActivePct int `json:"partition_cache_active_pct,omitempty"`
+	PartitionCacheActivePct int `json:"partition_cache_active_pct,omitempty" yaml:"partition_cache_active_pct,omitempty"`
 
 	// PartitionCacheRecentPct is the percentage of cache allocated to recent partitions.
 	// Default: 30
-	PartitionCacheRecentPct int `json:"partition_cache_recent_pct,omitempty"`
+	PartitionCacheRecentPct int `json:"partition_cache_recent_pct,omitempty" yaml:"partition_cache_recent_pct,omitempty"`
 
 	// PartitionActiveCount defines how many partitions are considered "active".
 	// Default: 2
-	PartitionActiveCount int `json:"partition_active_count,omitempty"`
+	PartitionActiveCount int `json:"partition_active_count,omitempty" yaml:"partition_active_count,omitempty"`
 
 	// PartitionRecentCount defines how many partitions are considered "recent".
 	// Default: 4
-	PartitionRecentCount int `json:"partition_recent_count,omitempty"`
+	PartitionRecentCount int `json:"partition_recent_count,omitempty" yaml:"partition_recent_count,omitempty"`
 }
 
 // SearchTypeMapConfig defines the mapping from tag names to search type codes (from manifest.json).
@@ -171,127 +171,127 @@ type SearchTypeMapConfig struct {
 	// Users can add new tag names, change codes, or remove tags.
 	// Reserved codes 1, 254, 255 (for TIME, REPL, PREPL) may not be used for custom tags.
 	// Loaded from manifest.json at initialization; changes require index rebuild.
-	TagNameToSearchTypeCode map[string]index.SearchType `json:"tag_name_to_search_type_code,omitempty"`
+	TagNameToSearchTypeCode map[string]index.SearchType `json:"tag_name_to_search_type_code,omitempty" yaml:"tag_name_to_search_type_code,omitempty"`
 
 	// EnabledTags is the list of tag names actually indexed (subset of TagNameToSearchTypeCode keys).
 	// Users can disable individual tags without removing them from the mapping.
 	// Examples: ["e", "p", "t"] for performance mode, ["e", "p", "t", "a", "r", "subject"] for standard
-	EnabledTags []string `json:"enabled_tags,omitempty"`
+	EnabledTags []string `json:"enabled_tags,omitempty" yaml:"enabled_tags,omitempty"`
 
 	// LastRebuildEpoch is the UNIX timestamp of the last search index rebuild.
 	// Used to detect whether configuration changes require a rebuild.
-	LastRebuildEpoch int64 `json:"last_rebuild_epoch,omitempty"`
+	LastRebuildEpoch int64 `json:"last_rebuild_epoch,omitempty" yaml:"last_rebuild_epoch,omitempty"`
 
 	// RebuildInProgress is true if a search index rebuild is in progress.
 	// If true when the process restarts, recovery must complete or retry the rebuild.
-	RebuildInProgress bool `json:"rebuild_in_progress,omitempty"`
+	RebuildInProgress bool `json:"rebuild_in_progress,omitempty" yaml:"rebuild_in_progress,omitempty"`
 }
 
 // CacheConfig defines per-index cache allocation (in MB).
 type CacheConfig struct {
 	// PrimaryIndexCacheMB is the cache size for the primary (ID) index.
 	// Default: 50 MB
-	PrimaryIndexCacheMB int `json:"primary_index_cache_mb,omitempty"`
+	PrimaryIndexCacheMB int `json:"primary_index_cache_mb,omitempty" yaml:"primary_index_cache_mb,omitempty"`
 
 	// AuthorTimeIndexCacheMB is the cache size for the author+time index.
 	// Default: 50 MB
-	AuthorTimeIndexCacheMB int `json:"author_time_index_cache_mb,omitempty"`
+	AuthorTimeIndexCacheMB int `json:"author_time_index_cache_mb,omitempty" yaml:"author_time_index_cache_mb,omitempty"`
 
 	// SearchIndexCacheMB is the cache size for the unified search index.
 	// Default: 100 MB
-	SearchIndexCacheMB int `json:"search_index_cache_mb,omitempty"`
+	SearchIndexCacheMB int `json:"search_index_cache_mb,omitempty" yaml:"search_index_cache_mb,omitempty"`
 	// KindTimeIndexCacheMB is the cache size for the kind+time index.
 	// Default: 50 MB
-	KindTimeIndexCacheMB int `json:"kind_time_index_cache_mb,omitempty"`
+	KindTimeIndexCacheMB int `json:"kind_time_index_cache_mb,omitempty" yaml:"kind_time_index_cache_mb,omitempty"`
 
 	// EvictionPolicy is the cache eviction algorithm ("lru", "lfu").
 	// Default: "lru"
-	EvictionPolicy string `json:"eviction_policy,omitempty"`
+	EvictionPolicy string `json:"eviction_policy,omitempty" yaml:"eviction_policy,omitempty"`
 
 	// CacheConcurrency is the number of lock shards for concurrent cache access.
 	// Default: 16
-	CacheConcurrency int `json:"cache_concurrency,omitempty"`
+	CacheConcurrency int `json:"cache_concurrency,omitempty" yaml:"cache_concurrency,omitempty"`
 
 	// DynamicAllocation enables automatic cache allocation based on index sizes and access patterns.
 	// When enabled, TotalCacheMB is used instead of individual cache sizes.
 	// Default: false
-	DynamicAllocation bool `json:"dynamic_allocation,omitempty"`
+	DynamicAllocation bool `json:"dynamic_allocation,omitempty" yaml:"dynamic_allocation,omitempty"`
 
 	// TotalCacheMB is the total cache pool size when DynamicAllocation is enabled.
 	// The allocator distributes this among indexes based on their size and access frequency.
 	// Default: 200 MB (ignored if DynamicAllocation is false)
-	TotalCacheMB int `json:"total_cache_mb,omitempty"`
+	TotalCacheMB int `json:"total_cache_mb,omitempty" yaml:"total_cache_mb,omitempty"`
 
 	// MinCachePerIndexMB is the minimum cache guarantee for each index in dynamic mode.
 	// Ensures each index gets at least this amount even if rarely accessed.
 	// Default: 20 MB (ignored if DynamicAllocation is false)
-	MinCachePerIndexMB int `json:"min_cache_per_index_mb,omitempty"`
+	MinCachePerIndexMB int `json:"min_cache_per_index_mb,omitempty" yaml:"min_cache_per_index_mb,omitempty"`
 
 	// ReallocationIntervalMinutes is how often to recalculate cache allocation in dynamic mode.
 	// Default: 10 minutes (ignored if DynamicAllocation is false)
-	ReallocationIntervalMinutes int `json:"reallocation_interval_minutes,omitempty"`
+	ReallocationIntervalMinutes int `json:"reallocation_interval_minutes,omitempty" yaml:"reallocation_interval_minutes,omitempty"`
 }
 
 // WALConfig defines write-ahead log parameters.
 type WALConfig struct {
 	// Disabled disables WAL entirely (no writes, no recovery).
 	// Default: false
-	Disabled bool `json:"disabled,omitempty"`
+	Disabled bool `json:"disabled,omitempty" yaml:"disabled,omitempty"`
 
 	// WALDir is the directory where WAL files are stored.
 	// Default: "./data/wal"
-	WALDir string `json:"wal_dir,omitempty"`
+	WALDir string `json:"wal_dir,omitempty" yaml:"wal_dir,omitempty"`
 
 	// SyncMode is the durability mode ("always", "batch", "never").
 	// - "always": fsync after every entry (safest, slowest)
 	// - "batch": fsync batches (default, balanced)
 	// - "never": rely on OS cache (fastest, least safe)
 	// Default: "batch"
-	SyncMode string `json:"sync_mode,omitempty"`
+	SyncMode string `json:"sync_mode,omitempty" yaml:"sync_mode,omitempty"`
 
 	// BatchIntervalMs is the flush interval for batch mode in milliseconds.
 	// Default: 100 ms
-	BatchIntervalMs int `json:"batch_interval_ms,omitempty"`
+	BatchIntervalMs int `json:"batch_interval_ms,omitempty" yaml:"batch_interval_ms,omitempty"`
 
 	// BatchSizeBytes is the buffer size before forcing a flush.
 	// Default: 10 MB (10485760)
-	BatchSizeBytes uint32 `json:"batch_size_bytes,omitempty"`
+	BatchSizeBytes uint32 `json:"batch_size_bytes,omitempty" yaml:"batch_size_bytes,omitempty"`
 
 	// MaxSegmentSize is the maximum size of a WAL segment before rotation.
 	// Default: 1 GB (1073741824)
-	MaxSegmentSize uint64 `json:"max_segment_size,omitempty"`
+	MaxSegmentSize uint64 `json:"max_segment_size,omitempty" yaml:"max_segment_size,omitempty"`
 
 	// CheckpointIntervalMs is the periodic interval for WAL checkpoints.
 	// Default: 30000 ms (30 seconds)
-	CheckpointIntervalMs int `json:"checkpoint_interval_ms,omitempty"`
+	CheckpointIntervalMs int `json:"checkpoint_interval_ms,omitempty" yaml:"checkpoint_interval_ms,omitempty"`
 
 	// CheckpointEventCount is the number of events between WAL checkpoints.
 	// Default: 5000 events
-	CheckpointEventCount int `json:"checkpoint_event_count,omitempty"`
+	CheckpointEventCount int `json:"checkpoint_event_count,omitempty" yaml:"checkpoint_event_count,omitempty"`
 }
 
 // CompactionConfig defines background compaction parameters.
 type CompactionConfig struct {
 	// Enabled enables automatic background compaction.
 	// Default: true
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// FragmentationThreshold is the fragmentation ratio (0-1) that triggers compaction.
 	// When (deleted + replaced events) / total > threshold, compaction starts.
 	// Default: 0.2 (20%)
-	FragmentationThreshold float64 `json:"fragmentation_threshold,omitempty"`
+	FragmentationThreshold float64 `json:"fragmentation_threshold,omitempty" yaml:"fragmentation_threshold,omitempty"`
 
 	// CompactionIntervalMs is the check interval for compaction triggers in milliseconds.
 	// Default: 60000 ms (60 seconds)
-	CompactionIntervalMs int `json:"compaction_interval_ms,omitempty"`
+	CompactionIntervalMs int `json:"compaction_interval_ms,omitempty" yaml:"compaction_interval_ms,omitempty"`
 
 	// MaxConcurrentCompactions is the maximum number of segments being compacted in parallel.
 	// Default: 2
-	MaxConcurrentCompactions int `json:"max_concurrent_compactions,omitempty"`
+	MaxConcurrentCompactions int `json:"max_concurrent_compactions,omitempty" yaml:"max_concurrent_compactions,omitempty"`
 
 	// PreserveOldSegments keeps old segments after compaction for safetey/auditing.
 	// Default: false
-	PreserveOldSegments bool `json:"preserve_old_segments,omitempty"`
+	PreserveOldSegments bool `json:"preserve_old_segments,omitempty" yaml:"preserve_old_segments,omitempty"`
 }
 
 // ShardingConfig defines distributed sharding parameters (Phase 3).
@@ -300,47 +300,47 @@ type ShardingConfig struct {
 	// Enabled enables local sharding.
 	// When false, uses single eventstore with no sharding overhead.
 	// Default: false
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// ShardCount is the number of local shards to create.
 	// Each shard runs an independent eventstore instance.
 	// More shards = better parallelism, but more overhead.
 	// Recommended: 2-8 shards based on CPU cores and workload.
 	// Default: 4
-	ShardCount int `json:"shard_count,omitempty"`
+	ShardCount int `json:"shard_count,omitempty" yaml:"shard_count,omitempty"`
 
 	// VirtualNodes is the number of virtual nodes per shard in the consistent hash ring.
 	// More virtual nodes = better distribution, but slower hash ring lookups.
 	// Recommended: 100-200 for good balance.
 	// Default: 150
-	VirtualNodes int `json:"virtual_nodes,omitempty"`
+	VirtualNodes int `json:"virtual_nodes,omitempty" yaml:"virtual_nodes,omitempty"`
 
 	// HashFunction is the hash function for consistent hashing.
 	// Options: "fnv1a" (default, fast), "xxhash" (faster, non-crypto), "sha256" (crypto-secure)
 	// Default: "fnv1a"
-	HashFunction string `json:"hash_function,omitempty"`
+	HashFunction string `json:"hash_function,omitempty" yaml:"hash_function,omitempty"`
 
 	// DataDir is the base directory for shard data.
 	// Each shard creates a subdirectory: DataDir/shard-{id}/
 	// Default: "./data/shards"
-	DataDir string `json:"data_dir,omitempty"`
+	DataDir string `json:"data_dir,omitempty" yaml:"data_dir,omitempty"`
 
 	// MaxConcurrentQueries is the maximum number of shards queried in parallel.
 	// Higher values = faster queries, but more CPU/memory usage.
 	// Set to 0 for unlimited parallelism.
 	// Recommended: 2-32 based on CPU cores.
 	// Default: 32
-	MaxConcurrentQueries int `json:"max_concurrent_queries,omitempty"`
+	MaxConcurrentQueries int `json:"max_concurrent_queries,omitempty" yaml:"max_concurrent_queries,omitempty"`
 
 	// QueryTimeoutSeconds is the timeout for shard queries.
 	// Queries exceeding this duration are canceled.
 	// Default: 30 seconds
-	QueryTimeoutSeconds int `json:"query_timeout_seconds,omitempty"`
+	QueryTimeoutSeconds int `json:"query_timeout_seconds,omitempty" yaml:"query_timeout_seconds,omitempty"`
 
 	// EnableDeduplication enables cross-shard result deduplication.
 	// When true, removes duplicate events across shards (by event ID).
 	// Default: true
-	EnableDeduplication bool `json:"enable_deduplication,omitempty"`
+	EnableDeduplication bool `json:"enable_deduplication,omitempty" yaml:"enable_deduplication,omitempty"`
 }
 
 // RemoteConfig defines remote gRPC server and client settings.
@@ -350,36 +350,36 @@ type RemoteConfig struct {
 	// Options: "local" (embedded only, no network), "remote" (start gRPC server),
 	//          "hybrid" (both local and remote access)
 	// Default: "local"
-	Mode string `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
 
 	// GRPCListenAddr is the address for the gRPC server to listen on.
 	// Format: "host:port" or ":port" for all interfaces.
 	// Default: ":50051"
-	GRPCListenAddr string `json:"grpc_listen_addr,omitempty"`
+	GRPCListenAddr string `json:"grpc_listen_addr,omitempty" yaml:"grpc_listen_addr,omitempty"`
 
 	// APIKey is the authentication key for API requests.
 	// If empty, authentication is disabled (use only in trusted networks).
 	// Default: "" (no authentication)
-	APIKey string `json:"api_key,omitempty"`
+	APIKey string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
 
 	// MaxConnections is the maximum number of concurrent gRPC connections.
 	// Default: 100
-	MaxConnections int `json:"max_connections,omitempty"`
+	MaxConnections int `json:"max_connections,omitempty" yaml:"max_connections,omitempty"`
 
 	// RequestTimeout is the timeout for RPC requests in seconds.
 	// Default: 10 seconds
-	RequestTimeout int `json:"request_timeout,omitempty"`
+	RequestTimeout int `json:"request_timeout,omitempty" yaml:"request_timeout,omitempty"`
 
 	// EnableTLS enables TLS encryption for gRPC connections.
 	// Requires TLSCertFile and TLSKeyFile to be set.
 	// Default: false
-	EnableTLS bool `json:"enable_tls,omitempty"`
+	EnableTLS bool `json:"enable_tls,omitempty" yaml:"enable_tls,omitempty"`
 
 	// TLSCertFile is the path to the TLS certificate file.
-	TLSCertFile string `json:"tls_cert_file,omitempty"`
+	TLSCertFile string `json:"tls_cert_file,omitempty" yaml:"tls_cert_file,omitempty"`
 
 	// TLSKeyFile is the path to the TLS key file.
-	TLSKeyFile string `json:"tls_key_file,omitempty"`
+	TLSKeyFile string `json:"tls_key_file,omitempty" yaml:"tls_key_file,omitempty"`
 }
 
 // DistributedShardConfig defines distributed shard endpoints.
@@ -388,52 +388,52 @@ type DistributedShardConfig struct {
 	// Enabled enables distributed sharding.
 	// When false, uses local sharding only (ShardingConfig).
 	// Default: false
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 
 	// Shards is the list of shard endpoints.
 	// Each shard corresponds to a remote EventStore instance.
-	Shards []ShardEndpoint `json:"shards,omitempty"`
+	Shards []ShardEndpoint `json:"shards,omitempty" yaml:"shards,omitempty"`
 
 	// HealthCheckInterval is the interval for health checking remote shards in seconds.
 	// Default: 5 seconds
-	HealthCheckInterval int `json:"health_check_interval,omitempty"`
+	HealthCheckInterval int `json:"health_check_interval,omitempty" yaml:"health_check_interval,omitempty"`
 
 	// MaxRetry is the maximum number of retries for failed shard operations.
 	// Default: 3
-	MaxRetry int `json:"max_retry,omitempty"`
+	MaxRetry int `json:"max_retry,omitempty" yaml:"max_retry,omitempty"`
 
 	// RetryBackoffMs is the initial backoff duration for retries in milliseconds.
 	// Uses exponential backoff: backoff * 2^retry
 	// Default: 100 ms
-	RetryBackoffMs int `json:"retry_backoff_ms,omitempty"`
+	RetryBackoffMs int `json:"retry_backoff_ms,omitempty" yaml:"retry_backoff_ms,omitempty"`
 
 	// ConnectionTimeout is the timeout for establishing connections in seconds.
 	// Default: 5 seconds
-	ConnectionTimeout int `json:"connection_timeout,omitempty"`
+	ConnectionTimeout int `json:"connection_timeout,omitempty" yaml:"connection_timeout,omitempty"`
 
 	// EnableFailover enables automatic failover to healthy shards.
 	// When true, queries skip unhealthy shards and distribute to healthy ones.
 	// Default: true
-	EnableFailover bool `json:"enable_failover,omitempty"`
+	EnableFailover bool `json:"enable_failover,omitempty" yaml:"enable_failover,omitempty"`
 }
 
 // ShardEndpoint represents a remote shard endpoint.
 type ShardEndpoint struct {
 	// ID is the unique identifier for this shard.
-	ID string `json:"id"`
+	ID string `json:"id" yaml:"id"`
 
 	// Addr is the gRPC server address for this shard.
 	// Format: "host:port"
-	Addr string `json:"addr"`
+	Addr string `json:"addr" yaml:"addr"`
 
 	// APIKey is the authentication key for this shard.
 	// If empty, no authentication is used.
-	APIKey string `json:"api_key,omitempty"`
+	APIKey string `json:"api_key,omitempty" yaml:"api_key,omitempty"`
 
 	// Weight is the relative weight for consistent hashing.
 	// Higher weight = more data assigned to this shard.
 	// Default: 1
-	Weight int `json:"weight,omitempty"`
+	Weight int `json:"weight,omitempty" yaml:"weight,omitempty"`
 }
 
 // Manager manages configuration loading, validation, and hot updating.
