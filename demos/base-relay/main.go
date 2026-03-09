@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/fiatjaf/eventstore"
 	"github.com/fiatjaf/relayer/v2"
+	"github.com/haorendashu/nostr_event_store/src/config"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip11"
@@ -69,22 +71,37 @@ func (r *Relay) GetNIP11InformationDocument() nip11.RelayInformationDocument {
 
 func main() {
 	flags := &CommandLineFlags{}
-	flag.StringVar(&flags.DataDir, "dataDir", "eventData", "Data directory for event store")
+	flag.StringVar(&flags.ConfigPath, "config", "./config.yaml", "Path to configuration file (YAML format)")
 	flag.IntVar(&flags.Port, "port", 7447, "Port for the relay server")
 	flag.Parse()
 
+	ctx := context.Background()
+
+	// Load configuration from file
+	cfg, err := loadConfig(ctx, flags.ConfigPath)
+	if err != nil {
+		log.Fatalf("failed to load configuration: %v", err)
+	}
+
+	// Ensure data directories exist
+	if err := ensureDataDirs(cfg); err != nil {
+		log.Fatalf("failed to ensure directory structure: %v", err)
+	}
+
+	// Initialize relay and storage
 	r := Relay{}
 	if err := envconfig.Process("", &r); err != nil {
 		log.Fatalf("failed to read from env: %v", err)
 		return
 	}
 
-	eventStore, err := initStore(flags.DataDir)
+	eventStore, err := initStore(cfg)
 	if err != nil {
-		log.Fatalf("failed to create eventStore %v\n", err)
+		log.Fatalf("failed to create eventStore: %v\n", err)
 	}
 	r.storage = eventStore
 
+	// Create and start relay server
 	server, err := relayer.NewServer(&r)
 	if err != nil {
 		log.Fatalf("failed to create server: %v", err)
@@ -92,7 +109,57 @@ func main() {
 	defer func() {
 		r.storage.Close()
 	}()
+
+	log.Printf("Starting relay on %s:%d\n", "0.0.0.0", flags.Port)
 	if err := server.Start("0.0.0.0", flags.Port); err != nil {
 		log.Fatalf("server terminated: %v", err)
 	}
+}
+
+// loadConfig loads configuration from a YAML file
+// If the file does not exist, it returns a default configuration
+func loadConfig(ctx context.Context, configPath string) (*config.Config, error) {
+	// Check if config file exists
+	if _, err := os.Stat(configPath); err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("Configuration file not found at %s, using default configuration", configPath)
+			return config.DefaultConfig(), nil
+		}
+		return nil, fmt.Errorf("failed to stat config file: %w", err)
+	}
+
+	// Load configuration from file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	// Parse YAML
+	cfg, err := config.LoadYAML(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse YAML config: %w", err)
+	}
+
+	log.Printf("Configuration loaded from %s", configPath)
+	return cfg, nil
+}
+
+// ensureDataDirs creates necessary directories for the event store
+func ensureDataDirs(cfg *config.Config) error {
+	dirs := []string{
+		cfg.StorageConfig.DataDir,
+		cfg.IndexConfig.IndexDir,
+		cfg.WALConfig.WALDir,
+	}
+
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		}
+	}
+
+	return nil
 }

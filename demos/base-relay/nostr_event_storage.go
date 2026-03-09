@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/haorendashu/nostr_event_store/src/config"
 	"github.com/haorendashu/nostr_event_store/src/eventstore"
@@ -14,35 +12,13 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-func initStore(dir string) (*NostrEventStorage, error) {
-	// Ensure directory exists
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
-	}
-
-	cfg := config.DefaultConfig()
-	cfg.WALConfig.Disabled = true
-	cfg.StorageConfig.DataDir = filepath.Join(dir, "data")
-	cfg.WALConfig.WALDir = filepath.Join(dir, "wal")
-	cfg.IndexConfig.IndexDir = filepath.Join(dir, "indexes")
-
-	cfg.IndexConfig.PartitionGranularity = "monthly"
-	cfg.IndexConfig.EnableTimePartitioning = true
-	cfg.IndexConfig.EnablePartitionCacheCoordinator = false
-
-	cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 700
-	cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 800
-	cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 3500
-	cfg.IndexConfig.CacheConfig.KindTimeIndexCacheMB = 300
-
+func initStore(cfg *config.Config) (*NostrEventStorage, error) {
 	return &NostrEventStorage{
-		dir: dir,
 		cfg: cfg,
 	}, nil
 }
 
 type NostrEventStorage struct {
-	dir   string
 	cfg   *config.Config
 	store eventstore.EventStore
 }
@@ -53,11 +29,21 @@ func (s *NostrEventStorage) Init() error {
 	})
 
 	ctx := context.Background()
-	if err := store.Open(ctx, s.dir, true); err != nil {
+	// Open with base directory - eventstore will use config for subdirectories
+	baseDir := s.cfg.StorageConfig.DataDir
+	fmt.Printf("NostrEventStorage.Init: Opening store with baseDir=%s\n", baseDir)
+	fmt.Printf("  IndexDir from config: %s\n", s.cfg.IndexConfig.IndexDir)
+	fmt.Printf("  WALDir from config: %s\n", s.cfg.WALConfig.WALDir)
+
+	if err := store.Open(ctx, baseDir, true); err != nil {
 		return fmt.Errorf("failed to open event store: %w", err)
 	}
 
 	s.store = store
+	fmt.Printf("Store initialized successfully\n")
+	fmt.Printf("  Base Directory: %s\n", baseDir)
+	fmt.Printf("  Index Directory: %s\n", s.cfg.IndexConfig.IndexDir)
+	fmt.Printf("  WAL Disabled: %v\n", s.cfg.WALConfig.Disabled)
 	fmt.Printf("Store stats: %+v\n", store.Stats())
 
 	return nil

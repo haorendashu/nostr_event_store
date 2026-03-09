@@ -11,9 +11,8 @@ This demo showcases how to build a Nostr Relay using the relayer/v2 framework wi
 5. [Core Relay Interface](#core-relay-interface)
 6. [Storage Operations](#storage-operations)
 7. [Configuration](#configuration)
-8. [Event Processing](#event-processing)
-9. [Common Pitfalls](#common-pitfalls)
-10. [Related Files](#related-files)
+8. [Common Pitfalls](#common-pitfalls)
+9. [Related Files](#related-files)
 
 ## What This Demo Covers
 
@@ -88,18 +87,30 @@ This demo showcases how to build a Nostr Relay using the relayer/v2 framework wi
 
 ## Quick Start
 
-### Build & Run
+### Build & Run (with Default Config)
 
 ```bash
 cd demos/base-relay
 go build
-./base-relay.exe -dataDir ./relay_data -port 7447  # Windows
-./base-relay -dataDir ./relay_data -port 7447       # Linux/Mac
+./base-relay.exe                      # Windows - uses ./config.yaml
+./base-relay                          # Linux/Mac - uses ./config.yaml
+```
+
+### Run with Custom Config
+
+```bash
+# Use custom configuration file
+./base-relay.exe --config ./config.example.yaml  # Windows
+./base-relay --config /path/to/custom.yaml        # Linux/Mac
 ```
 
 ### Expected Output
 
 ```
+Store initialized successfully
+  Data Directory: ./eventData/data
+  Index Directory: ./eventData/indexes
+  WAL Disabled: true
 Store stats: {EventCount:0 AuthorCount:0 IndexSize:0}
 2026-03-02T12:00:00Z INFO relay listening on 0.0.0.0:7447
 ```
@@ -206,13 +217,13 @@ func main() {
 
 ### Relay Methods
 
-| Method | Purpose | Returns |
-|--------|---------|---------|
-| `Name()` | Relay identifier | string |
-| `Storage(ctx)` | Get storage backend | eventstore.Store |
-| `Init()` | Initialize relay | error |
-| `AcceptEvent(ctx, evt)` | Validate incoming event | (bool, string) |
-| `GetNIP11InformationDocument()` | NIP-11 metadata | RelayInformationDocument |
+| Method                          | Purpose                 | Returns                  |
+| ------------------------------- | ----------------------- | ------------------------ |
+| `Name()`                        | Relay identifier        | string                   |
+| `Storage(ctx)`                  | Get storage backend     | eventstore.Store         |
+| `Init()`                        | Initialize relay        | error                    |
+| `AcceptEvent(ctx, evt)`         | Validate incoming event | (bool, string)           |
+| `GetNIP11InformationDocument()` | NIP-11 metadata         | RelayInformationDocument |
 
 ### NIP-11 Example
 
@@ -307,47 +318,136 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 
 ## Configuration
 
-### Command-Line Flags
+### Configuration File-Based (YAML)
+
+All relay settings are configured through YAML files. The demo supports two modes:
+
+#### Quick Start with `config.yaml`
+
+The default configuration file is provided for immediate use:
 
 ```bash
-./base-relay -dataDir <path> -port <number>
+./base-relay  # Automatically loads ./config.yaml
 ```
 
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `-dataDir` | `eventData` | Directory for EventStore data, WAL, indexes |
-| `-port` | `7447` | Port for relay WebSocket server |
+Edit `config.yaml` to customize:
+- Data directories
+- Cache sizes (memory allocation)
+- WAL settings (durability)
+- Query limits
+- Sharding options
+- And more...
 
-### EventStore Configuration
+#### Full Configuration Reference with `config.example.yaml`
 
-Customize in `initStore()` function:
+For comprehensive options and detailed explanations of every setting:
 
-```go
-cfg := config.DefaultConfig()
-cfg.WALConfig.Disabled = true  // Optional: disable WAL for testing
-
-// Storage paths
-cfg.StorageConfig.DataDir = filepath.Join(dataDir, "data")
-cfg.WALConfig.WALDir = filepath.Join(dataDir, "wal")
-cfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
-
-// Optional: Enable time partitioning for 10M+ events
-// cfg.IndexConfig.EnableTimePartitioning = true
-// cfg.IndexConfig.PartitionGranularity = "monthly"
-
-// Optional: Configure caching (MB)
-// cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 700
-// cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 800
-// cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 3500
+```bash
+./base-relay --config ./config.example.yaml
 ```
 
-### Performance Tuning
+The `config.example.yaml` file includes:
+- All available configuration options
+- Detailed descriptions of each setting
+- Default values and recommended ranges
+- Common deployment scenarios
+- Comments on performance implications
 
-For high-throughput relay (1000+ events/second):
+### Key Configuration Sections
 
-```go
-// Increase cache
-cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 1000
+#### 1. Storage (`storage.data_dir`, `storage.page_size`)
+Controls where events are persisted and how pages are sized
+
+```yaml
+storage:
+  data_dir: "./eventData/data"     # Where to store events
+  page_size: 4096                  # 4KB, 8KB, or 16KB
+  max_segment_size: 1073741824     # 1 GB
+```
+
+#### 2. Indexing (`index.*)
+Controls B+Tree indexes and caching for fast queries
+
+```yaml
+index:
+  index_dir: "./eventData/indexes"
+  cache:
+    primary_index_cache_mb: 50     # ID lookups
+    search_index_cache_mb: 100     # Tag queries (usually largest)
+    author_time_index_cache_mb: 50 # Author queries
+    kind_time_index_cache_mb: 50   # Kind queries
+```
+
+#### 3. WAL (`wal.disabled`, `wal.sync_mode`)
+Controls write-ahead log for crash safety
+
+```yaml
+wal:
+  disabled: true           # Set to false for production
+  sync_mode: "batch"       # Options: "always", "batch", "never"
+```
+
+#### 4. Remote Server (`remote.listen_addr`, `remote.mode`)
+Controls gRPC server for network access
+
+```yaml
+remote:
+  mode: "local"            # "local", "remote", or "hybrid"
+  listen_addr: "0.0.0.0:7447"  # Server address and port
+```
+
+### Performance Configuration Examples
+
+#### Scenario 1: Testing/Demo (Default `config.yaml`)
+- WAL disabled for speed
+- Cache: 250 MB total
+- No time partitioning
+- No sharding
+
+```yaml
+wal:
+  disabled: true
+index:
+  cache:
+    primary_index_cache_mb: 50
+    search_index_cache_mb: 100
+```
+
+#### Scenario 2: Small Production (< 100K events)
+- WAL enabled in batch mode
+- Cache: 500 MB
+- Single shard
+
+```yaml
+wal:
+  disabled: false
+  sync_mode: "batch"
+index:
+  cache:
+    primary_index_cache_mb: 100
+    search_index_cache_mb: 300
+    author_time_index_cache_mb: 100
+```
+
+#### Scenario 3: Large Production (10M+ events)
+- WAL enabled in always mode
+- Cache: 5-10 GB with dynamic allocation
+- Time partitioning enabled
+- Local sharding (4-8 shards)
+
+```yaml
+wal:
+  disabled: false
+  sync_mode: "always"
+index:
+  enable_time_partitioning: true
+  partition_granularity: "monthly"
+  cache:
+    dynamic_allocation: true
+    total_cache_mb: 5000         # Will be distributed intelligently
+sharding:
+  enabled: true
+  shard_count: 8
 cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 1500
 cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 5000
 
@@ -357,54 +457,6 @@ cfg.IndexConfig.PartitionGranularity = "weekly"
 
 // Increase WAL batch size
 cfg.WALConfig.SyncMode = "batch"
-```
-
-## Event Processing
-
-### Filter Conversion
-
-```go
-// Nostr filter → EventStore filter
-storeFilter := &types.QueryFilter{
-	IDs:     convertIDs(filter.IDs),           // Event IDs
-	Authors: convertAuthors(filter.Authors),   // Author pubkeys
-	Kinds:   convertKinds(filter.Kinds),       // Event kinds
-	Since:   filter.Since,                     // Created at >= Since
-	Until:   filter.Until,                     // Created at < Until
-	Tags:    filter.Tags,                      // e-tags, p-tags, etc.
-	Limit:   filter.Limit,                     // Result limit
-}
-```
-
-### Replaceable Event Kinds
-
-```
-Kind 0: User metadata (profile)
-Kind 3: Contact list (author replaceable)
-Kinds 10000-19999: App-specific regular events (author replaceable)
-Kinds 30000-39999: App-specific parameterized replaceable events
-
-Logic: For same author+kind (or author+kind+d-tag for parameterized),
-       keep event with highest created_at, delete others
-```
-
-### Special Kind Handling
-
-```go
-// Kind 3: Contact list (author-specific, replace old)
-if event.Kind == 3 {
-	// Delete all previous kind 3 events from same author
-}
-
-// Kind 5: Event deletion (marks events as deleted)
-if event.Kind == 5 {
-	// For each mentioned event ID, delete it
-}
-
-// Kind 0: User metadata (author-specific, replace old)
-if event.Kind == 0 {
-	// Delete all previous kind 0 events from same author
-}
 ```
 
 ## Common Pitfalls

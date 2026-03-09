@@ -1,0 +1,60 @@
+# Nostr Event Store - Base Relay Configuration
+# 
+# Quick start configuration optimized for local demo/testing
+# For comprehensive options, see config.example.yaml
+#
+# NOTE: All paths are relative to the current working directory
+# The eventstore.Open() baseDir parameter should match storage.data_dir parent
+
+debug: false
+
+# Storage configuration
+storage:
+  # Base directory - eventstore.Open() uses this as baseDir
+  # Internally creates: baseDir/data/ for events, baseDir/wal/ for logs
+  data_dir: "./eventData"
+  page_size: 4096
+  max_segment_size: 1073741824
+  event_buffer_size: 16777216
+  write_batch_size: 500
+
+# Index configuration
+index:
+  # Index directory - should be under or alongside the base directory
+  index_dir: "./eventData/indexes"
+  initialization_mode: "standard"
+  flush_interval_ms: 100
+  enable_time_partitioning: true
+  partition_granularity: "monthly"
+  enable_partition_cache_coordinator: true
+  
+  cache:
+    primary_index_cache_mb: 50
+    author_time_index_cache_mb: 50
+    search_index_cache_mb: 100
+    kind_time_index_cache_mb: 50
+    eviction_policy: "lru"
+    cache_concurrency: 16
+    dynamic_allocation: false
+
+# WAL configuration (disabled for demo speed)
+wal:
+  disabled: true
+  wal_dir: "./eventData/wal"
+  sync_mode: "batch"
+  batch_interval_ms: 100
+  batch_size_bytes: 10485760
+
+# Compaction configuration
+compaction:
+  enabled: true
+  fragmentation_threshold: 0.2
+  compaction_interval_ms: 60000
+  max_concurrent_compactions: 2
+  preserve_old_segments: false
+
+# Query configuration
+query:
+  default_limit: 100
+  default_kinds: [0, 1, 3, 6, 16, 20]
+  execution_timeout_seconds: 30

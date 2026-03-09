@@ -11,9 +11,8 @@
 5. [核心 Relay 接口](#核心-relay-接口)
 6. [存储操作](#存储操作)
 7. [配置](#配置)
-8. [事件处理](#事件处理)
-9. [常见陷阱](#常见陷阱)
-10. [相关文件](#相关文件)
+8. [常见陷阱](#常见陷阱)
+9. [相关文件](#相关文件)
 
 ## Demo 涵盖内容
 
@@ -93,13 +92,25 @@
 ```bash
 cd demos/base-relay
 go build
-./base-relay.exe -dataDir ./relay_data -port 7447  # Windows
-./base-relay -dataDir ./relay_data -port 7447       # Linux/Mac
+./base-relay.exe                      # Windows - 使用 ./config.yaml
+./base-relay                          # Linux/Mac - 使用 ./config.yaml
+```
+
+### 使用自定义配置运行
+
+```bash
+# 使用自定义配置文件
+./base-relay.exe --config ./config.example.yaml  # Windows
+./base-relay --config /path/to/custom.yaml        # Linux/Mac
 ```
 
 ### 预期输出
 
 ```
+Store initialized successfully
+  Data Directory: ./eventData/data
+  Index Directory: ./eventData/indexes
+  WAL Disabled: true
 Store stats: {EventCount:0 AuthorCount:0 IndexSize:0}
 2026-03-02T12:00:00Z INFO relay listening on 0.0.0.0:7447
 ```
@@ -206,12 +217,12 @@ func main() {
 
 ### Relay 方法
 
-| 方法 | 说明 | 返回值 |
-|------|------|--------|
-| `Name()` | Relay 标识符 | string |
-| `Storage(ctx)` | 获取存储后端 | eventstore.Store |
-| `Init()` | 初始化 Relay | error |
-| `AcceptEvent(ctx, evt)` | 验证入站事件 | (bool, string) |
+| 方法                            | 说明          | 返回值                   |
+| ------------------------------- | ------------- | ------------------------ |
+| `Name()`                        | Relay 标识符  | string                   |
+| `Storage(ctx)`                  | 获取存储后端  | eventstore.Store         |
+| `Init()`                        | 初始化 Relay  | error                    |
+| `AcceptEvent(ctx, evt)`         | 验证入站事件  | (bool, string)           |
 | `GetNIP11InformationDocument()` | NIP-11 元数据 | RelayInformationDocument |
 
 ### NIP-11 示例
@@ -307,104 +318,114 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 
 ## 配置
 
-### 命令行标志
+### 基于配置文件（YAML）
+
+所有 Relay 设置通过 YAML 配置文件进行配置。该示例支持两种模式：
+
+#### 使用 `config.yaml` 快速开始
+
+默认配置文件已提供，可直接使用：
 
 ```bash
-./base-relay -dataDir <path> -port <number>
+./base-relay  # 自动加载 ./config.yaml
 ```
 
-| 标志 | 默认值 | 说明 |
-|------|--------|------|
-| `-dataDir` | `eventData` | EventStore 数据、WAL、索引目录 |
-| `-port` | `7447` | Relay WebSocket 服务器端口 |
+编辑 `config.yaml` 以自定义：
+- 数据目录
+- 缓存大小（内存分配）
+- WAL 设置（持久性）
+- 查询限制
+- 等等...
 
-### EventStore 配置
+#### 使用 `config.example.yaml` 获取完整配置参考
 
-在 `initStore()` 函数中自定义：
+获取所有设置的综合选项和详细说明：
 
-```go
-cfg := config.DefaultConfig()
-cfg.WALConfig.Disabled = true  // 可选：测试时禁用 WAL
-
-// 存储路径
-cfg.StorageConfig.DataDir = filepath.Join(dataDir, "data")
-cfg.WALConfig.WALDir = filepath.Join(dataDir, "wal")
-cfg.IndexConfig.IndexDir = filepath.Join(dataDir, "indexes")
-
-// 可选：为 10M+ 事件启用分区
-// cfg.IndexConfig.EnableTimePartitioning = true
-// cfg.IndexConfig.PartitionGranularity = "monthly"
-
-// 可选：配置缓存（MB）
-// cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 700
-// cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 800
-// cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 3500
+```bash
+./base-relay --config ./config.example.yaml
 ```
 
-### 性能调优
+`config.example.yaml` 文件包含：
+- 所有可用的配置选项
+- 每个设置的详细描述
+- 默认值和推荐范围
+- 常见部署场景
+- 性能影响的注释
 
-用于高吞吐 Relay（1000+ 事件/秒）：
+### 关键配置部分
 
-```go
-// 增加缓存
-cfg.IndexConfig.CacheConfig.PrimaryIndexCacheMB = 1000
-cfg.IndexConfig.CacheConfig.AuthorTimeIndexCacheMB = 1500
-cfg.IndexConfig.CacheConfig.SearchIndexCacheMB = 5000
+#### 1. 存储（`storage.data_dir`, `storage.page_size`）
+控制事件持久化位置和页面大小
 
-// 启用分区
-cfg.IndexConfig.EnableTimePartitioning = true
-cfg.IndexConfig.PartitionGranularity = "weekly"
-
-// 增加 WAL 批大小
-cfg.WALConfig.SyncMode = "batch"
+```yaml
+storage:
+  data_dir: "./eventData/data"     # 存储事件的位置
+  page_size: 4096                  # 4KB、8KB 或 16KB
+  max_segment_size: 1073741824     # 1 GB
 ```
 
-## 事件处理
+#### 2. 索引（`index.*`）
+控制 B+Tree 索引和缓存以实现快速查询
 
-### 过滤器转换
-
-```go
-// Nostr 过滤器 → EventStore 过滤器
-storeFilter := &types.QueryFilter{
-	IDs:     convertIDs(filter.IDs),           // 事件 ID
-	Authors: convertAuthors(filter.Authors),   // 作者公钥
-	Kinds:   convertKinds(filter.Kinds),       // 事件类型
-	Since:   filter.Since,                     // created_at >= Since
-	Until:   filter.Until,                     // created_at < Until
-	Tags:    filter.Tags,                      // e-tags、p-tags 等
-	Limit:   filter.Limit,                     // 结果限制
-}
+```yaml
+index:
+  index_dir: "./eventData/indexes"
+  cache:
+    primary_index_cache_mb: 50     # ID 查找
+    search_index_cache_mb: 100     # 标签查询（通常最大）
+    author_time_index_cache_mb: 50 # 作者查询
+    kind_time_index_cache_mb: 50   # 类型查询
 ```
 
-### 可替换事件类型
+#### 3. WAL（`wal.disabled`, `wal.sync_mode`）
+控制写前日志以实现崩溃安全
 
-```
-Kind 0: 用户元数据（个人资料）
-Kind 3: 联系人列表（作者可替换）
-Kind 10000-19999: 应用特定常规事件（作者可替换）
-Kind 30000-39999: 应用特定参数化可替换事件
-
-逻辑：同一作者+kind（或作者+kind+d-tag 用于参数化）的事件中，
-      保留 created_at 最高的事件，删除其他
+```yaml
+wal:
+  disabled: true           # 生产环境设置为 false
+  sync_mode: "batch"       # 选项："always"、"batch"、"never"
 ```
 
-### 特殊 Kind 处理
+#### 4. 远程服务器（`remote.listen_addr`, `remote.mode`）
+控制 gRPC 服务器以进行网络访问
 
-```go
-// Kind 3: 联系人列表（作者特定，替换旧版本）
-if event.Kind == 3 {
-	// 删除同作者的所有之前的 kind 3 事件
-}
+```yaml
+remote:
+  mode: "local"            # "local"、"remote" 或 "hybrid"
+  listen_addr: "0.0.0.0:7447"  # 服务器地址和端口
+```
 
-// Kind 5: 事件删除（标记事件为已删除）
-if event.Kind == 5 {
-	// 对于每个提及的事件 ID，将其删除
-}
+### 性能配置示例
 
-// Kind 0: 用户元数据（作者特定，替换旧版本）
-if event.Kind == 0 {
-	// 删除同作者的所有之前的 kind 0 事件
-}
+#### 场景 1：测试/演示（默认 `config.yaml`）
+- WAL 禁用以提高速度
+- 缓存：总共 250 MB
+- 无时间分区
+- 无分片
+
+```yaml
+wal:
+  disabled: true
+index:
+  cache:
+    primary_index_cache_mb: 50
+    search_index_cache_mb: 100
+```
+
+#### 场景 2：小型生产环境（< 100K 事件）
+- 启用批处理模式的 WAL
+- 缓存：500 MB
+- 单分片
+
+```yaml
+wal:
+  disabled: false
+  sync_mode: "batch"
+index:
+  cache:
+    primary_index_cache_mb: 100
+    search_index_cache_mb: 300
+    author_time_index_cache_mb: 100
 ```
 
 ## 常见陷阱
