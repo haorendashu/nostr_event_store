@@ -108,7 +108,9 @@ type QueryMetadata struct {
 	Since        uint32
 	Until        uint32
 	Kinds        []uint16
-	TagKeys      []string // Tag keys being queried (e.g., ["e", "p", "t"])
+	TagKeys      []string            // Tag keys being queried (e.g., ["e", "p", "t"])
+	Authors      []string            // Specific author pubkeys being queried (hex format)
+	Tags         map[string][]string // Tag filters: tag name -> tag values
 }
 
 // WithQueryMetadata attaches query metadata to context
@@ -119,9 +121,17 @@ func WithQueryMetadata(ctx context.Context, filter *types.QueryFilter) context.C
 
 	tagKeys := make([]string, 0, len(filter.Tags))
 	tagsCount := 0
+	tags := make(map[string][]string)
 	for key, values := range filter.Tags {
 		tagKeys = append(tagKeys, key)
 		tagsCount += len(values)
+		tags[key] = values
+	}
+
+	// Convert Authors from [][32]byte to []string (hex format)
+	authors := make([]string, len(filter.Authors))
+	for i, author := range filter.Authors {
+		authors[i] = hex.EncodeToString(author[:])
 	}
 
 	meta := &QueryMetadata{
@@ -134,6 +144,8 @@ func WithQueryMetadata(ctx context.Context, filter *types.QueryFilter) context.C
 		Until:        filter.Until,
 		Kinds:        filter.Kinds,
 		TagKeys:      tagKeys,
+		Authors:      authors,
+		Tags:         tags,
 	}
 
 	return context.WithValue(ctx, queryMetadataContextKey, meta)
@@ -153,9 +165,6 @@ var (
 	searchIndexRangeLogValuePrefix string
 	searchIndexRangeLogLimit       int64
 	searchIndexRangeLogCount       int64
-	kindTimeQueryLogEnabled        bool
-	kindTimeQueryLogLimit          int64
-	kindTimeQueryLogCount          int64
 )
 
 func init() {
@@ -167,14 +176,6 @@ func init() {
 	if limitStr := os.Getenv("SEARCH_INDEX_LOG_LIMIT"); limitStr != "" {
 		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
 			searchIndexRangeLogLimit = limit
-		}
-	}
-	if os.Getenv("KINDTIME_QUERY_LOG") == "1" {
-		kindTimeQueryLogEnabled = true
-	}
-	if limitStr := os.Getenv("KINDTIME_QUERY_LOG_LIMIT"); limitStr != "" {
-		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
-			kindTimeQueryLogLimit = limit
 		}
 	}
 }
@@ -200,18 +201,6 @@ func shouldLogSearchIndexRange(tagName, tagValue string) bool {
 	}
 	if searchIndexRangeLogLimit > 0 {
 		if atomic.AddInt64(&searchIndexRangeLogCount, 1) > searchIndexRangeLogLimit {
-			return false
-		}
-	}
-	return true
-}
-
-func shouldLogKindTimeQuery() bool {
-	if !kindTimeQueryLogEnabled {
-		return false
-	}
-	if kindTimeQueryLogLimit > 0 {
-		if atomic.AddInt64(&kindTimeQueryLogCount, 1) > kindTimeQueryLogLimit {
 			return false
 		}
 	}
@@ -389,8 +378,30 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 					duration := time.Since(meta.StartTime)
 					fmt.Printf("  📋 Query Info:\n")
 					fmt.Printf("     - Duration: %v\n", duration)
-					fmt.Printf("     - Filter: Authors=%d, Kinds=%v, TagKeys=%v, Tags=%d, Limit=%d\n",
-						meta.AuthorsCount, meta.Kinds, meta.TagKeys, meta.TagsCount, meta.Limit)
+					fmt.Printf("     - Limit: %d\n", meta.Limit)
+
+					if meta.AuthorsCount > 0 {
+						fmt.Printf("     - Authors (%d):\n", meta.AuthorsCount)
+						for i, author := range meta.Authors {
+							if i >= 5 {
+								fmt.Printf("       - ... and %d more\n", meta.AuthorsCount-5)
+								break
+							}
+							fmt.Printf("       - %s\n", author)
+						}
+					}
+
+					if meta.KindsCount > 0 {
+						fmt.Printf("     - Kinds (%d): %v\n", meta.KindsCount, meta.Kinds)
+					}
+
+					if meta.TagsCount > 0 {
+						fmt.Printf("     - Tags (%d):\n", meta.TagsCount)
+						for key, values := range meta.Tags {
+							fmt.Printf("       - %s: %v\n", key, values)
+						}
+					}
+
 					if meta.Since > 0 || meta.Until > 0 {
 						fmt.Printf("     - Time range: Since=%d, Until=%d\n", meta.Since, meta.Until)
 					}
@@ -798,7 +809,6 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	if !ok {
 		return nil, fmt.Errorf("invalid plan type")
 	}
-	logKindTime := impl.strategy == "kind_time" && shouldLogKindTimeQuery()
 
 	var results []*types.Event
 	indexesUsed := []string{}
@@ -839,10 +849,6 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	// Use location iterator for sorted, deduplicated results
 	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" || impl.strategy == "intersection" {
 		indexesUsed = append(indexesUsed, impl.strategy)
-		if logKindTime {
-			log.Printf("[kindtime] execute start: kinds=%d since=%d until=%d limit=%d fully_indexed=%v",
-				len(impl.filter.Kinds), impl.filter.Since, impl.filter.Until, impl.filter.Limit, impl.fullyIndexed)
-		}
 
 		// Get streaming location iterator
 		locationIter, err := e.getLocationIterator(ctx, impl)
@@ -894,10 +900,6 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 		}
 
 		duration := time.Since(start).Milliseconds()
-		if logKindTime {
-			log.Printf("[kindtime] execute done: results=%d duration_ms=%d ctx_err=%v",
-				len(results), duration, ctx.Err())
-		}
 		return &resultIteratorImpl{
 			events:      results,
 			index:       0,
@@ -968,14 +970,6 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 			return nil, fmt.Errorf("kind_time index not available")
 		}
 		ranges := e.buildKindTimeRanges(plan)
-		if kindTimeQueryLogEnabled {
-			log.Printf("[kindtime] ranges built: kinds=%d ranges=%d since=%d until=%d",
-				len(plan.filter.Kinds), len(ranges), plan.filter.Since, plan.filter.Until)
-			for i := 0; i < len(ranges) && i < 3; i++ {
-				log.Printf("[kindtime] range[%d] start=%s end=%s",
-					i, shortHex(ranges[i].start, 32), shortHex(ranges[i].end, 32))
-			}
-		}
 		return newMergeLocationIterator(ctx, kindTimeIdx, ranges)
 
 	case "intersection":
