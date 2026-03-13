@@ -544,6 +544,28 @@ func TestCompilerNormalizeDefaults(t *testing.T) {
 			t.Fatalf("normalized kinds len = %d, want 3", len(impl.filter.Kinds))
 		}
 	})
+
+	t.Run("Empty tag values are ignored", func(t *testing.T) {
+		plan, err := compiler.Compile(&types.QueryFilter{
+			Kinds: []uint16{20, 21},
+			Since: 100,
+			Limit: 100,
+			Tags: map[string][]string{
+				"t": {},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Compile() error = %v", err)
+		}
+
+		impl := plan.(*planImpl)
+		if impl.strategy != "kind_time" {
+			t.Fatalf("strategy = %s, want kind_time", impl.strategy)
+		}
+		if len(impl.filter.Tags) != 0 {
+			t.Fatalf("normalized tags len = %d, want 0", len(impl.filter.Tags))
+		}
+	})
 }
 
 // Test: Executor with mock data

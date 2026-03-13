@@ -145,6 +145,7 @@ func (c *compilerImpl) normalizeFilter(filter *types.QueryFilter) *types.QueryFi
 	}
 
 	normalized := cloneFilter(filter)
+	normalized.Tags = normalizeTagFilters(normalized.Tags)
 
 	if normalized.Limit == 0 {
 		normalized.Limit = c.defaults.defaultLimit
@@ -159,6 +160,41 @@ func (c *compilerImpl) normalizeFilter(filter *types.QueryFilter) *types.QueryFi
 
 func shouldApplyDefaultKinds(filter *types.QueryFilter) bool {
 	return len(filter.Tags) > 0 || len(filter.Authors) > 0
+}
+
+func normalizeTagFilters(tags map[string][]string) map[string][]string {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	normalized := make(map[string][]string, len(tags))
+	for tagName, tagValues := range tags {
+		if tagName == "" {
+			// Keep invalid tag names so ValidateFilter can reject them.
+			normalized[tagName] = append([]string(nil), tagValues...)
+			continue
+		}
+
+		nonEmptyValues := make([]string, 0, len(tagValues))
+		for _, tagValue := range tagValues {
+			if tagValue == "" {
+				continue
+			}
+			nonEmptyValues = append(nonEmptyValues, tagValue)
+		}
+
+		if len(nonEmptyValues) == 0 {
+			continue
+		}
+
+		normalized[tagName] = nonEmptyValues
+	}
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	return normalized
 }
 
 func defaultSearchKinds() []uint16 {
