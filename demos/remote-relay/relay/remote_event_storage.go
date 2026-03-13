@@ -202,9 +202,8 @@ func (s *NostrEventStorage) DeleteEvent(ctx context.Context, event *nostr.Event)
 }
 
 func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// using background context for save operation to ensure it goes through even if original context is canceled
+	context := context.Background()
 
 	storeEvent, err := convertEvent(event)
 	if err != nil {
@@ -219,10 +218,10 @@ func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) e
 				Authors: [][32]byte{pubkey},
 				Limit:   10000,
 			}
-			storeEvents, err := s.client.QueryAll(ctx, storeFilter)
+			storeEvents, err := s.client.QueryAll(context, storeFilter)
 			if err == nil {
 				for _, oldEvent := range storeEvents {
-					if deleteErr := s.client.DeleteEvent(ctx, oldEvent.ID); deleteErr != nil {
+					if deleteErr := s.client.DeleteEvent(context, oldEvent.ID); deleteErr != nil {
 						return fmt.Errorf("failed to delete old kind-3 event: %w", deleteErr)
 					}
 				}
@@ -230,7 +229,7 @@ func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) e
 		}
 	}
 
-	_, err = s.client.WriteEvent(ctx, storeEvent)
+	_, err = s.client.WriteEvent(context, storeEvent)
 	if err != nil {
 		return fmt.Errorf("failed to write event via remote store: %w", err)
 	}
