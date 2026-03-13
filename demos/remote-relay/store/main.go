@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -50,23 +51,39 @@ func main() {
 	if err := store.Open(ctx, baseDir, true); err != nil {
 		log.Fatalf("failed to open EventStore: %v", err)
 	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := store.Close(closeCtx); err != nil {
-			log.Printf("failed to close EventStore: %v", err)
-		}
-	}()
 
 	fmt.Printf("[STORE] remote EventStore started\n")
 	fmt.Printf("[STORE] gRPC listening on %s\n", cfg.RemoteConfig.GRPCListenAddr)
 	fmt.Printf("[STORE] data dir: %s\n", cfg.StorageConfig.DataDir)
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	firstSig := <-sigCh
+	fmt.Printf("[STORE] shutdown signal received: %v\n", firstSig)
 
-	fmt.Println("[STORE] shutdown signal received")
+	shutdownDone := make(chan error, 1)
+	go func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		shutdownDone <- store.Close(closeCtx)
+	}()
+
+	select {
+	case secondSig := <-sigCh:
+		fmt.Printf("[STORE] second signal received: %v, forcing exit\n", secondSig)
+		os.Exit(1)
+	case err := <-shutdownDone:
+		if err != nil {
+			log.Printf("failed to close EventStore: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println("[STORE] shutdown completed")
+	case <-time.After(12 * time.Second):
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		log.Printf("[STORE] shutdown timeout, forcing exit\n=== goroutine dump ===\n%s", string(buf[:n]))
+		os.Exit(1)
+	}
 }
 
 func loadConfig(configPath string) (*config.Config, error) {
