@@ -1,4 +1,4 @@
-module nostr-remote-relay-store
+module remote-store
 
 go 1.26.0
 

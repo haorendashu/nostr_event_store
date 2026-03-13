@@ -1,4 +1,4 @@
-module nostr-remote-relay-relay
+module remote-relay
 
 go 1.26.0
 
