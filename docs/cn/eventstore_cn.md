@@ -37,14 +37,14 @@
 
 ### 关键特性
 
-| 属性 | 值 | 价值 |
-|---|---|---|
-| 对外抽象 | `EventStore` 接口 | 应用侧依赖稳定 API |
-| 写入耐久性 | WAL-first（`Insert`/`UpdateFlags`） | 索引落盘前崩溃仍可恢复 |
-| 索引组合 | Primary + AuthorTime + KindTime + Search | 覆盖点查、时序、标签检索 |
-| 删除模型 | 逻辑删除（`FlagDeleted`）+ 索引清理 | 删除快，空间由压缩回收 |
-| 恢复策略 | dirty marker + checkpoint 回放 + segment 重建兜底 | 启动路径鲁棒 |
-| 批处理优化 | `WriteEvents` 子批次流水 | 吞吐更高、内存可控 |
+| 属性       | 值                                                | 价值                     |
+| ---------- | ------------------------------------------------- | ------------------------ |
+| 对外抽象   | `EventStore` 接口                                 | 应用侧依赖稳定 API       |
+| 写入耐久性 | WAL-first（`Insert`/`UpdateFlags`）               | 索引落盘前崩溃仍可恢复   |
+| 索引组合   | Primary + AuthorTime + KindTime + Search          | 覆盖点查、时序、标签检索 |
+| 删除模型   | 逻辑删除（`FlagDeleted`）+ 索引清理               | 删除快，空间由压缩回收   |
+| 恢复策略   | dirty marker + checkpoint 回放 + segment 重建兜底 | 启动路径鲁棒             |
+| 批处理优化 | `WriteEvents` 子批次流水                          | 吞吐更高、内存可控       |
 
 ### 包依赖关系
 
@@ -156,11 +156,11 @@ eventstore（本包）
 
 `OpTypeUpdateFlags` 负载格式：
 
-| 字节范围 | 含义 |
-|---|---|
-| 0..3 | `SegmentID`（big-endian uint32） |
-| 4..7 | `Offset`（big-endian uint32） |
-| 8 | flags（通常是 `FlagDeleted`） |
+| 字节范围 | 含义                             |
+| -------- | -------------------------------- |
+| 0..3     | `SegmentID`（big-endian uint32） |
+| 4..7     | `Offset`（big-endian uint32）    |
+| 8        | flags（通常是 `FlagDeleted`）    |
 
 代码： [DeleteEvent](../../src/eventstore/eventstore_impl.go), [DeleteEvents](../../src/eventstore/eventstore_impl.go)
 
@@ -316,7 +316,7 @@ eventstore（本包）
 客户端 WriteEvent
   ↓
 Primary 去重
-  ├─ 已存在 → 返回重复错误
+  ├─ 已存在 → 返回已有 RecordLocation（幂等成功）
   └─ 不存在
        ↓
 序列化
@@ -378,13 +378,13 @@ Open()
 
 ### 典型耗时（SSD 场景估计，非 SLA）
 
-| 操作 | 典型延迟区间 | 主要影响因素 |
-|---|---|---|
-| `WriteEvent` | 0.2–2 ms | WAL 同步策略、索引缓存命中 |
+| 操作                    | 典型延迟区间            | 主要影响因素                   |
+| ----------------------- | ----------------------- | ------------------------------ |
+| `WriteEvent`            | 0.2–2 ms                | WAL 同步策略、索引缓存命中     |
 | `WriteEvents`（500 批） | 0.1–0.8 ms/事件（摊销） | 批大小、序列化、segment 局部性 |
-| `GetEvent` | 0.05–0.5 ms | Primary 深度、页缓存 |
-| `DeleteEvent` | 0.2–1.5 ms | WAL + 多索引删除 |
-| 索引重建 | 与数据规模线性相关 | 扫描带宽、索引写入速率 |
+| `GetEvent`              | 0.05–0.5 ms             | Primary 深度、页缓存           |
+| `DeleteEvent`           | 0.2–1.5 ms              | WAL + 多索引删除               |
+| 索引重建                | 与数据规模线性相关      | 扫描带宽、索引写入速率         |
 
 ---
 
@@ -392,31 +392,31 @@ Open()
 
 ### 决策 1：Insert 时 WAL 保存完整序列化事件
 
-| 优势 | 成本 |
-|---|---|
-| 回放时可直接恢复索引语义，不依赖外部请求重放 | WAL 体积变大 |
-| 回放逻辑更直接 | 每次写入字节数增加 |
+| 优势                                         | 成本               |
+| -------------------------------------------- | ------------------ |
+| 回放时可直接恢复索引语义，不依赖外部请求重放 | WAL 体积变大       |
+| 回放逻辑更直接                               | 每次写入字节数增加 |
 
 ### 决策 2：逻辑删除 + 压缩回收
 
-| 优势 | 成本 |
-|---|---|
+| 优势                 | 成本                 |
+| -------------------- | -------------------- |
 | 删除路径快、写放大低 | 压缩前会累积无效空间 |
-| 崩溃恢复语义清晰 | 需要 compaction 运维 |
+| 崩溃恢复语义清晰     | 需要 compaction 运维 |
 
 ### 决策 3：二级索引更新采用 best-effort
 
-| 优势 | 成本 |
-|---|---|
+| 优势                               | 成本                   |
+| ---------------------------------- | ---------------------- |
 | 在高负载和短暂故障下保持写入可用性 | 可能出现短期查询不一致 |
-| 不因局部索引故障阻断主链路 | 需要重建工具和监控 |
+| 不因局部索引故障阻断主链路         | 需要重建工具和监控     |
 
 ### 决策 4：并行扫描重建索引
 
-| 优势 | 成本 |
-|---|---|
-| 大数据量恢复更快 | 临时 CPU/I/O 压力更高 |
-| 批量插入索引效率高 | 协调逻辑更复杂 |
+| 优势               | 成本                  |
+| ------------------ | --------------------- |
+| 大数据量恢复更快   | 临时 CPU/I/O 压力更高 |
+| 批量插入索引效率高 | 协调逻辑更复杂        |
 
 ---
 
@@ -424,14 +424,14 @@ Open()
 
 ### 复杂度总结
 
-| API | 平均复杂度 | 说明 |
-|---|---|---|
-| `WriteEvent` | $O(\log N + T)$ | Primary 检查 + 多索引写入，$T$ 为标签数 |
-| `WriteEvents` | $O(B\log N + \sum T)$ | 批处理降低常数开销 |
-| `GetEvent` | $O(\log N)$ | Primary 定位 + 定点读取 |
-| `DeleteEvent` | $O(\log N + T)$ | 索引定位/删除 + 标签索引删除 |
-| `Query` / `Count` | 取决于查询计划 | 由 query 引擎决定 |
-| `RebuildIndexes` | $O(R)$ | 对有效记录线性扫描 |
+| API               | 平均复杂度            | 说明                                    |
+| ----------------- | --------------------- | --------------------------------------- |
+| `WriteEvent`      | $O(\log N + T)$       | Primary 检查 + 多索引写入，$T$ 为标签数 |
+| `WriteEvents`     | $O(B\log N + \sum T)$ | 批处理降低常数开销                      |
+| `GetEvent`        | $O(\log N)$           | Primary 定位 + 定点读取                 |
+| `DeleteEvent`     | $O(\log N + T)$       | 索引定位/删除 + 标签索引删除            |
+| `Query` / `Count` | 取决于查询计划        | 由 query 引擎决定                       |
+| `RebuildIndexes`  | $O(R)$                | 对有效记录线性扫描                      |
 
 ### 内存与吞吐
 
@@ -457,12 +457,12 @@ Open()
 
 ### 常见问题
 
-| 现象 | 可能原因 | 建议处理 |
-|---|---|---|
-| `store not opened` | 生命周期调用顺序错误 | 检查 `Open`/`Close` 调用边界 |
-| 重复写入报错 | 相同 ID 重复插入 | 入口做去重或按幂等冲突处理 |
-| 删除后某类查询仍命中 | 早期二级索引清理失败 | 执行 `RebuildIndexes` 并检查 warning |
-| 崩溃后启动慢 | 触发 WAL 回放或 segment 重建 | 查看恢复日志，关注索引目录状态 |
+| 现象                      | 可能原因                     | 建议处理                             |
+| ------------------------- | ---------------------------- | ------------------------------------ |
+| `store not opened`        | 生命周期调用顺序错误         | 检查 `Open`/`Close` 调用边界         |
+| 重复写入返回已有 location | 相同 ID 重复插入             | 预期幂等行为，调用方按成功处理       |
+| 删除后某类查询仍命中      | 早期二级索引清理失败         | 执行 `RebuildIndexes` 并检查 warning |
+| 崩溃后启动慢              | 触发 WAL 回放或 segment 重建 | 查看恢复日志，关注索引目录状态       |
 
 ### 调试步骤
 
@@ -501,31 +501,31 @@ eventstore.ConfigureSearchIndexLog(true, "t", "test", 1000)
 
 ### 构造函数
 
-| API | 用途 |
-|---|---|
-| `New(opts *Options)` | 创建实例，缺省参数自动补全 |
-| `OpenDefault(ctx, dir, cfg)` | 创建并打开，一步完成 |
-| `OpenReadOnly(ctx, dir)` | 只读打开（跳过恢复） |
+| API                          | 用途                       |
+| ---------------------------- | -------------------------- |
+| `New(opts *Options)`         | 创建实例，缺省参数自动补全 |
+| `OpenDefault(ctx, dir, cfg)` | 创建并打开，一步完成       |
+| `OpenReadOnly(ctx, dir)`     | 只读打开（跳过恢复）       |
 
 ### 生命周期与维护
 
-| API | 用途 |
-|---|---|
-| `Open` / `Close` | 生命周期管理 |
-| `Flush` | 强制 WAL/Storage/Index 刷盘 |
-| `RunCompactionOnce` | 手动执行一次压缩 |
-| `RebuildIndexes` | 从 segment 全量重建索引 |
-| `IsHealthy` | 快速健康检查 |
+| API                       | 用途                               |
+| ------------------------- | ---------------------------------- |
+| `Open` / `Close`          | 生命周期管理                       |
+| `Flush`                   | 强制 WAL/Storage/Index 刷盘        |
+| `RunCompactionOnce`       | 手动执行一次压缩                   |
+| `RebuildIndexes`          | 从 segment 全量重建索引            |
+| `IsHealthy`               | 快速健康检查                       |
 | `ConfigureSearchIndexLog` | 开启定向 Search 索引日志，便于排查 |
 
 ### 数据操作
 
-| API | 用途 |
-|---|---|
-| `WriteEvent` / `WriteEvents` | 单条/批量写入 |
-| `GetEvent` | 按事件 ID 查询 |
-| `DeleteEvent` / `DeleteEvents` | 逻辑删除并清理索引 |
-| `Query` / `QueryAll` / `QueryCount` | 查询与计数 |
+| API                                 | 用途               |
+| ----------------------------------- | ------------------ |
+| `WriteEvent` / `WriteEvents`        | 单条/批量写入      |
+| `GetEvent`                          | 按事件 ID 查询     |
+| `DeleteEvent` / `DeleteEvents`      | 逻辑删除并清理索引 |
+| `Query` / `QueryAll` / `QueryCount` | 查询与计数         |
 
 ### 示例
 
@@ -554,7 +554,6 @@ _ = err
 
 - `store already opened`
 - `store not opened`
-- `event already exists: <id>`
 - `event not found: <id>`
 - `event has been deleted`
 - `store is recovering indexes, please wait`

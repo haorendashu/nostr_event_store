@@ -676,18 +676,27 @@ func TestEventStoreErrorHandling(t *testing.T) {
 		Content:   "Test",
 	}
 
-	if _, err := store.WriteEvent(ctx, event); err != nil {
+	firstLoc, err := store.WriteEvent(ctx, event)
+	if err != nil {
 		t.Fatalf("First WriteEvent() failed: %v", err)
 	}
 
-	// Second write should fail (duplicate)
-	if _, err := store.WriteEvent(ctx, event); err == nil {
-		t.Error("Duplicate WriteEvent() should fail")
+	// Second write should succeed (idempotent duplicate)
+	secondLoc, err := store.WriteEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("Duplicate WriteEvent() should succeed: %v", err)
+	}
+	if secondLoc != firstLoc {
+		t.Errorf("Duplicate WriteEvent() should return same location, got first=%+v second=%+v", firstLoc, secondLoc)
 	}
 
 	// Test non-existent event
-	if _, err := store.GetEvent(ctx, [32]byte{99}); err == nil {
-		t.Error("GetEvent() for non-existent event should fail")
+	missingEvent, err := store.GetEvent(ctx, [32]byte{99})
+	if err != nil {
+		t.Fatalf("GetEvent() for non-existent event should not return error: %v", err)
+	}
+	if missingEvent != nil {
+		t.Error("GetEvent() for non-existent event should return nil event")
 	}
 }
 

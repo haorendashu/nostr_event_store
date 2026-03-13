@@ -374,8 +374,8 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 	// Check for duplicates using primary index
 	primaryIdx := e.indexMgr.PrimaryIndex()
 	eventKeyBytes := e.keyBuilder.BuildPrimaryKey(event.ID)
-	if _, exists, err := primaryIdx.Get(ctx, eventKeyBytes); err == nil && exists {
-		return types.RecordLocation{}, fmt.Errorf("event already exists: %x", event.ID)
+	if existingLoc, exists, err := primaryIdx.Get(ctx, eventKeyBytes); err == nil && exists {
+		return existingLoc, nil
 	}
 
 	// Step 1: Serialize the event (need full data for WAL)

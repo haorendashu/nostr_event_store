@@ -37,14 +37,14 @@ Primary source files:
 
 ### Key Characteristics
 
-| Attribute | Value | Why it matters |
-|---|---|---|
-| Entry abstraction | `EventStore` interface | Stable API for apps, tests, and higher layers |
-| Write durability | WAL-first (`Insert`/`UpdateFlags`) | Survives process crashes before index sync |
-| Index set | Primary + AuthorTime + KindTime + Search | Balances point lookup, feed scans, and tag search |
-| Deletion model | Logical delete (`FlagDeleted`) + index cleanup | Fast deletes, later reclaim via compaction |
-| Recovery strategy | Dirty-marker + checkpoint replay + segment rebuild fallback | Robust startup even with invalid index files |
-| Batch optimization | Sub-batch pipeline (`WriteEvents`) | Better throughput and bounded memory |
+| Attribute          | Value                                                       | Why it matters                                    |
+| ------------------ | ----------------------------------------------------------- | ------------------------------------------------- |
+| Entry abstraction  | `EventStore` interface                                      | Stable API for apps, tests, and higher layers     |
+| Write durability   | WAL-first (`Insert`/`UpdateFlags`)                          | Survives process crashes before index sync        |
+| Index set          | Primary + AuthorTime + KindTime + Search                    | Balances point lookup, feed scans, and tag search |
+| Deletion model     | Logical delete (`FlagDeleted`) + index cleanup              | Fast deletes, later reclaim via compaction        |
+| Recovery strategy  | Dirty-marker + checkpoint replay + segment rebuild fallback | Robust startup even with invalid index files      |
+| Batch optimization | Sub-batch pipeline (`WriteEvents`)                          | Better throughput and bounded memory              |
 
 ### Package Relationships
 
@@ -156,11 +156,11 @@ Code: [HealthStatus](../src/eventstore/store.go)
 
 For delete operations (`OpTypeUpdateFlags`), metadata payload is:
 
-| Byte Range | Meaning |
-|---|---|
-| 0..3 | `SegmentID` (big-endian uint32) |
-| 4..7 | `Offset` (big-endian uint32) |
-| 8 | Flags byte (`FlagDeleted`) |
+| Byte Range | Meaning                         |
+| ---------- | ------------------------------- |
+| 0..3       | `SegmentID` (big-endian uint32) |
+| 4..7       | `Offset` (big-endian uint32)    |
+| 8          | Flags byte (`FlagDeleted`)      |
 
 Code: [DeleteEvent](../src/eventstore/eventstore_impl.go), [DeleteEvents](../src/eventstore/eventstore_impl.go)
 
@@ -316,7 +316,7 @@ Code: [createCheckpoint](../src/eventstore/eventstore_impl.go), [RunCompactionOn
 Client WriteEvent
   ↓
 Primary index duplicate check
-  ├─ exists → return duplicate error
+  ├─ exists → return existing RecordLocation (idempotent success)
   └─ not exists
        ↓
 Serialize event
@@ -378,13 +378,13 @@ Check index validity + dirty marker
 
 ### Timing Notes (typical SSD, not SLA)
 
-| Operation | Typical latency range | Dominant factors |
-|---|---|---|
-| `WriteEvent` | 0.2–2 ms | WAL sync mode, index cache hit ratio |
+| Operation                 | Typical latency range      | Dominant factors                            |
+| ------------------------- | -------------------------- | ------------------------------------------- |
+| `WriteEvent`              | 0.2–2 ms                   | WAL sync mode, index cache hit ratio        |
 | `WriteEvents` (500 batch) | 0.1–0.8 ms/event amortized | batch size, serialization, segment locality |
-| `GetEvent` | 0.05–0.5 ms | primary index depth + storage page cache |
-| `DeleteEvent` | 0.2–1.5 ms | WAL write + multi-index deletes |
-| index rebuild | dataset-dependent | scan bandwidth + index insert throughput |
+| `GetEvent`                | 0.05–0.5 ms                | primary index depth + storage page cache    |
+| `DeleteEvent`             | 0.2–1.5 ms                 | WAL write + multi-index deletes             |
+| index rebuild             | dataset-dependent          | scan bandwidth + index insert throughput    |
 
 ---
 
@@ -392,31 +392,31 @@ Check index validity + dirty marker
 
 ### Decision 1: WAL carries full serialized event on insert
 
-| Benefit | Cost |
-|---|---|
-| Recovery can reconstruct index intent without rerequesting client data | Larger WAL footprint |
-| Simpler replay logic | More write bytes per insert |
+| Benefit                                                                | Cost                        |
+| ---------------------------------------------------------------------- | --------------------------- |
+| Recovery can reconstruct index intent without rerequesting client data | Larger WAL footprint        |
+| Simpler replay logic                                                   | More write bytes per insert |
 
 ### Decision 2: Logical deletion + compaction
 
-| Benefit | Cost |
-|---|---|
+| Benefit                                        | Cost                                     |
+| ---------------------------------------------- | ---------------------------------------- |
 | Fast delete path, no immediate segment rewrite | Dead space accumulation until compaction |
-| Crash-safe with minimal mutation surface | Requires background/explicit compaction |
+| Crash-safe with minimal mutation surface       | Requires background/explicit compaction  |
 
 ### Decision 3: Best-effort secondary index updates on write/delete
 
-| Benefit | Cost |
-|---|---|
-| Ingestion not blocked by transient secondary-index failures | Potential temporary query inconsistency |
-| Better availability under load | Requires rebuild tools and observability |
+| Benefit                                                     | Cost                                     |
+| ----------------------------------------------------------- | ---------------------------------------- |
+| Ingestion not blocked by transient secondary-index failures | Potential temporary query inconsistency  |
+| Better availability under load                              | Requires rebuild tools and observability |
 
 ### Decision 4: Parallel segment scan for rebuild
 
-| Benefit | Cost |
-|---|---|
-| Faster recovery for large datasets | Higher transient CPU and I/O pressure |
-| Uses batch index insertion efficiently | More complex coordination code |
+| Benefit                                | Cost                                  |
+| -------------------------------------- | ------------------------------------- |
+| Faster recovery for large datasets     | Higher transient CPU and I/O pressure |
+| Uses batch index insertion efficiently | More complex coordination code        |
 
 ---
 
@@ -424,14 +424,14 @@ Check index validity + dirty marker
 
 ### Complexity Summary
 
-| API | Average Complexity | Notes |
-|---|---|---|
-| `WriteEvent` | $O(\log N + T)$ | primary check + multiple index writes; $T$ = tag count |
-| `WriteEvents` | $O(B\log N + \sum T)$ | batched operations reduce constants |
-| `GetEvent` | $O(\log N)$ | primary lookup + direct location read |
-| `DeleteEvent` | $O(\log N + T)$ | index lookup/delete plus tag search-key deletion |
-| `Query` / `Count` | index-dependent | delegated to query engine |
-| `RebuildIndexes` | $O(R)$ | linear scan over surviving records |
+| API               | Average Complexity    | Notes                                                  |
+| ----------------- | --------------------- | ------------------------------------------------------ |
+| `WriteEvent`      | $O(\log N + T)$       | primary check + multiple index writes; $T$ = tag count |
+| `WriteEvents`     | $O(B\log N + \sum T)$ | batched operations reduce constants                    |
+| `GetEvent`        | $O(\log N)$           | primary lookup + direct location read                  |
+| `DeleteEvent`     | $O(\log N + T)$       | index lookup/delete plus tag search-key deletion       |
+| `Query` / `Count` | index-dependent       | delegated to query engine                              |
+| `RebuildIndexes`  | $O(R)$                | linear scan over surviving records                     |
 
 ### Memory and Throughput Considerations
 
@@ -457,12 +457,12 @@ Check index validity + dirty marker
 
 ### Common Issues
 
-| Symptom | Likely Cause | Action |
-|---|---|---|
-| `store not opened` errors | API used before `Open`/after `Close` | Validate lifecycle in caller |
-| duplicate write errors | same event ID reinserted | deduplicate at ingress or treat as idempotent conflict |
-| deleted event still visible in specific query mode | secondary index cleanup failed earlier | run `RebuildIndexes` and inspect warnings |
-| slow startup after crash | dirty marker + replay/rebuild path | inspect logs; keep WAL and index directories healthy |
+| Symptom                                            | Likely Cause                           | Action                                                    |
+| -------------------------------------------------- | -------------------------------------- | --------------------------------------------------------- |
+| `store not opened` errors                          | API used before `Open`/after `Close`   | Validate lifecycle in caller                              |
+| duplicate writes return existing location          | same event ID reinserted               | expected idempotent behavior; caller can treat as success |
+| deleted event still visible in specific query mode | secondary index cleanup failed earlier | run `RebuildIndexes` and inspect warnings                 |
+| slow startup after crash                           | dirty marker + replay/rebuild path     | inspect logs; keep WAL and index directories healthy      |
 
 ### Debug Steps
 
@@ -501,31 +501,31 @@ eventstore.ConfigureSearchIndexLog(true, "t", "test", 1000)
 
 ### Constructors
 
-| API | Purpose |
-|---|---|
-| `New(opts *Options)` | Build store instance with defaults if needed |
-| `OpenDefault(ctx, dir, cfg)` | Construct + open in one call |
-| `OpenReadOnly(ctx, dir)` | Open with recovery skipped (inspection mode) |
+| API                          | Purpose                                      |
+| ---------------------------- | -------------------------------------------- |
+| `New(opts *Options)`         | Build store instance with defaults if needed |
+| `OpenDefault(ctx, dir, cfg)` | Construct + open in one call                 |
+| `OpenReadOnly(ctx, dir)`     | Open with recovery skipped (inspection mode) |
 
 ### Lifecycle and Maintenance
 
-| API | Purpose |
-|---|---|
-| `Open`, `Close` | Store lifecycle |
-| `Flush` | Force durability across WAL/storage/index |
-| `RunCompactionOnce` | Manual one-shot compaction |
-| `RebuildIndexes` | Full index rebuild from segments |
-| `IsHealthy` | Quick operational check |
+| API                       | Purpose                                                |
+| ------------------------- | ------------------------------------------------------ |
+| `Open`, `Close`           | Store lifecycle                                        |
+| `Flush`                   | Force durability across WAL/storage/index              |
+| `RunCompactionOnce`       | Manual one-shot compaction                             |
+| `RebuildIndexes`          | Full index rebuild from segments                       |
+| `IsHealthy`               | Quick operational check                                |
 | `ConfigureSearchIndexLog` | Enable targeted search-index key logging for debugging |
 
 ### Data APIs
 
-| API | Purpose |
-|---|---|
-| `WriteEvent`, `WriteEvents` | Insert one or many events |
-| `GetEvent` | Fetch by event ID |
-| `DeleteEvent`, `DeleteEvents` | Logical deletion + index cleanup |
-| `Query`, `QueryAll`, `QueryCount` | Filtered retrieval/count |
+| API                               | Purpose                          |
+| --------------------------------- | -------------------------------- |
+| `WriteEvent`, `WriteEvents`       | Insert one or many events        |
+| `GetEvent`                        | Fetch by event ID                |
+| `DeleteEvent`, `DeleteEvents`     | Logical deletion + index cleanup |
+| `Query`, `QueryAll`, `QueryCount` | Filtered retrieval/count         |
 
 ### Example Usage
 
@@ -554,7 +554,6 @@ _ = err
 
 - `store already opened`
 - `store not opened`
-- `event already exists: <id>`
 - `event not found: <id>`
 - `event has been deleted`
 - `store is recovering indexes, please wait`
