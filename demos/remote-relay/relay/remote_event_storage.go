@@ -191,14 +191,14 @@ func genEventChan(storeEvents []*types.Event) chan *nostr.Event {
 }
 
 func (s *NostrEventStorage) DeleteEvent(ctx context.Context, event *nostr.Event) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// using background context for save operation to ensure it goes through even if original context is canceled
+	context := context.Background()
+
 	id, err := hexToBytes(event.ID)
 	if err != nil {
 		return fmt.Errorf("failed to convert event ID to bytes: %w", err)
 	}
-	return s.client.DeleteEvent(ctx, id)
+	return s.client.DeleteEvent(context, id)
 }
 
 func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) error {
@@ -236,10 +236,68 @@ func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) e
 	return nil
 }
 
-func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event) error {
-	if ctx == nil {
-		ctx = context.Background()
+// SaveEvents saves multiple events in a batch
+func (s *NostrEventStorage) SaveEvents(ctx context.Context, events []*nostr.Event) error {
+	if len(events) == 0 {
+		return nil
 	}
+
+	context := context.Background()
+
+	// Handle kind 3 events first - delete old events if exists
+	for _, event := range events {
+		if event.Kind == 3 {
+			pubkey, err := hexToBytes(event.PubKey)
+			if err != nil {
+				fmt.Printf("failed to convert pubkey to bytes: %v\n", err)
+			} else {
+				// delete old event if exists
+				storeFilter := &types.QueryFilter{
+					Kinds:   []uint16{uint16(event.Kind)},
+					Authors: [][32]byte{pubkey},
+					Limit:   10000,
+				}
+				storeEvents, err := s.client.QueryAll(context, storeFilter)
+				if err != nil {
+					fmt.Printf("failed to query events: %v\n", err)
+				} else {
+					for _, storeEvent := range storeEvents {
+						if storeEvent.CreatedAt >= uint32(event.CreatedAt) {
+							continue
+						}
+
+						err := s.client.DeleteEvent(context, storeEvent.ID)
+						if err != nil {
+							fmt.Printf("failed to delete event: %v\n", err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Convert all events to store events
+	storeEvents := make([]*types.Event, 0, len(events))
+	for _, event := range events {
+		storeEvent, err := convertEvent(event)
+		if err != nil {
+			fmt.Printf("failed to convert event: %v\n", err)
+			continue
+		}
+		storeEvents = append(storeEvents, storeEvent)
+	}
+
+	// Batch write all events
+	if len(storeEvents) > 0 {
+		s.client.WriteEvents(context, storeEvents)
+	}
+
+	return nil
+}
+
+func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event) error {
+	// using background context for save operation to ensure it goes through even if original context is canceled
+	context := context.Background()
 
 	dTag := event.Tags.GetD()
 	if dTag == "" {
@@ -251,7 +309,7 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 		Tags:  map[string][]string{"d": {dTag}},
 		Limit: 10000,
 	}
-	storeEvents, err := s.client.QueryAll(ctx, storeFilter)
+	storeEvents, err := s.client.QueryAll(context, storeFilter)
 	if err != nil {
 		return fmt.Errorf("failed to query events: %w", err)
 	}
@@ -260,12 +318,12 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 			continue
 		}
 
-		if err := s.client.DeleteEvent(ctx, storeEvent.ID); err != nil {
+		if err := s.client.DeleteEvent(context, storeEvent.ID); err != nil {
 			return fmt.Errorf("failed to delete event: %w", err)
 		}
 	}
 
-	return s.SaveEvent(ctx, event)
+	return s.SaveEvent(context, event)
 }
 
 func (s *NostrEventStorage) CountEvents(ctx context.Context, filter nostr.Filter) (int64, error) {
