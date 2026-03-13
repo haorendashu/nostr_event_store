@@ -89,11 +89,11 @@ func (m *mockIndexForMerge) rangeIter(minKey, maxKey []byte, desc bool) index.It
 	return &mockIteratorForMerge{data: filtered, index: 0}
 }
 
-func (m *mockIndexForMerge) Delete(ctx context.Context, key []byte) error {
+func (m *mockIndexForMerge) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	return nil
 }
 
-func (m *mockIndexForMerge) DeleteBatch(ctx context.Context, keys [][]byte) error {
+func (m *mockIndexForMerge) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
 	return nil
 }
 

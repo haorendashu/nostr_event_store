@@ -835,28 +835,30 @@ func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) erro
 		return fmt.Errorf("update event flags: %w", err)
 	}
 
-	// Step 3: Remove from primary index
-	if err := primaryIdx.Delete(ctx, eventKeyBytes); err != nil {
+	// Step 3: Remove from primary index (unique key – no location check needed)
+	if err := primaryIdx.Delete(ctx, eventKeyBytes, nil); err != nil {
 		return fmt.Errorf("primary index delete: %w", err)
 	}
 
-	// Step 4: Remove from author-time index
+	// Step 4: Remove from author-time index.
+	// Pass &loc so that only the entry pointing to this exact event is removed;
+	// other events that happen to share the same author+kind+timestamp key are preserved.
 	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
 	authorTimeKey := e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
-	if err := authorTimeIdx.Delete(ctx, authorTimeKey); err != nil {
+	if err := authorTimeIdx.Delete(ctx, authorTimeKey, &loc); err != nil {
 		e.logger.Printf("Warning: failed to remove from author-time index: %v", err)
 		// Continue anyway; don't fail the entire delete operation
 	}
 
-	// Step 5: Remove from kind-time index
+	// Step 5: Remove from kind-time index with location matching.
 	kindTimeIdx := e.indexMgr.KindTimeIndex()
 	kindTimeKey := e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
-	if err := kindTimeIdx.Delete(ctx, kindTimeKey); err != nil {
+	if err := kindTimeIdx.Delete(ctx, kindTimeKey, &loc); err != nil {
 		e.logger.Printf("Warning: failed to remove from kind-time index: %v", err)
 		// Continue anyway; don't fail the entire delete operation
 	}
 
-	// Step 6: Remove from search indexes (for all tags)
+	// Step 6: Remove from search indexes (for all tags) with location matching.
 	searchIdx := e.indexMgr.SearchIndex()
 	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
 
@@ -873,7 +875,7 @@ func (e *eventStoreImpl) DeleteEvent(ctx context.Context, eventID [32]byte) erro
 		}
 
 		searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
-		if err := searchIdx.Delete(ctx, searchKey); err != nil {
+		if err := searchIdx.Delete(ctx, searchKey, &loc); err != nil {
 			e.logger.Printf("Warning: failed to remove from search index (tag=%s): %v", tagName, err)
 			// Continue anyway
 		}
@@ -977,38 +979,40 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 		}
 	}
 
-	// Step 3: Batch delete from primary index
-	if err := primaryIdx.DeleteBatch(ctx, validKeys); err != nil {
+	// Step 3: Batch delete from primary index (primary key is unique – no location filter needed)
+	if err := primaryIdx.DeleteBatch(ctx, validKeys, nil); err != nil {
 		e.logger.Printf("Warning: batch primary index delete failed: %v", err)
 	}
 
-	// Step 4: Delete from author-time index
+	// Step 4: Delete from author-time index with location matching to avoid removing
+	// an entry that belongs to a different event sharing the same secondary key.
 	authorTimeKeys := make([][]byte, len(events))
 	for i, event := range events {
 		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	}
-	// Note: No batch delete for author-time, delete individually
-	for _, key := range authorTimeKeys {
-		if err := authorTimeIdx.Delete(ctx, key); err != nil {
+	for i, key := range authorTimeKeys {
+		if err := authorTimeIdx.Delete(ctx, key, &validLocs[i]); err != nil {
 			e.logger.Printf("Warning: failed to delete from author-time index: %v", err)
 		}
 	}
 
-	// Step 5: Delete from kind-time index
+	// Step 5: Delete from kind-time index with location matching.
 	kindTimeIdx := e.indexMgr.KindTimeIndex()
 	kindTimeKeys := make([][]byte, len(events))
 	for i, event := range events {
 		kindTimeKeys[i] = e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
 	}
-	for _, key := range kindTimeKeys {
-		if err := kindTimeIdx.Delete(ctx, key); err != nil {
+	for i, key := range kindTimeKeys {
+		if err := kindTimeIdx.Delete(ctx, key, &validLocs[i]); err != nil {
 			e.logger.Printf("Warning: failed to delete from kind-time index: %v", err)
 		}
 	}
 
-	// Step 6: Delete from search indexes
+	// Step 6: Delete from search indexes with location matching.
+	// Track both the search key and the storage location for each tag entry.
 	searchKeysToDelete := make([][]byte, 0)
-	for _, event := range events {
+	searchLocsToDelete := make([]types.RecordLocation, 0)
+	for i, event := range events {
 		for _, tag := range event.Tags {
 			if len(tag) < 2 {
 				continue
@@ -1023,11 +1027,12 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 
 			searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
 			searchKeysToDelete = append(searchKeysToDelete, searchKey)
+			searchLocsToDelete = append(searchLocsToDelete, validLocs[i])
 		}
 	}
 
-	for _, key := range searchKeysToDelete {
-		if err := searchIdx.Delete(ctx, key); err != nil {
+	for i, key := range searchKeysToDelete {
+		if err := searchIdx.Delete(ctx, key, &searchLocsToDelete[i]); err != nil {
 			e.logger.Printf("Warning: failed to delete from search index: %v", err)
 		}
 	}

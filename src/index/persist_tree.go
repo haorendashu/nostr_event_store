@@ -257,7 +257,7 @@ func (t *btree) insert(ctx context.Context, key []byte, value types.RecordLocati
 	return nil
 }
 
-func (t *btree) delete(ctx context.Context, key []byte) error {
+func (t *btree) delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -292,6 +292,23 @@ func (t *btree) delete(ctx context.Context, key []byte) error {
 	})
 	if idx >= len(node.keys) || compareKeys(node.keys[idx], key) != 0 {
 		return nil
+	}
+
+	// If a specific location is required, scan forward through all duplicate keys
+	// to find the entry whose stored location matches. If no match is found we
+	// leave the index untouched to avoid deleting a different event's entry.
+	if loc != nil {
+		found := false
+		for i := idx; i < len(node.keys) && compareKeys(node.keys[i], key) == 0; i++ {
+			if i < len(node.values) && node.values[i] == *loc {
+				idx = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil // location doesn't match any duplicate; no-op
+		}
 	}
 
 	// DEFENSIVE: Verify consistency before deletion

@@ -30,7 +30,8 @@ func (p *PrimaryIndex) GetLocation(ctx context.Context, id [32]byte) (types.Reco
 }
 
 // DeleteEvent removes an event ID from the primary index.
+// For the primary index the key is always unique, so no location check is needed.
 func (p *PrimaryIndex) DeleteEvent(ctx context.Context, id [32]byte) error {
 	key := p.kb.BuildPrimaryKey(id)
-	return p.idx.Delete(ctx, key)
+	return p.idx.Delete(ctx, key, nil)
 }

@@ -94,11 +94,11 @@ func (mi *mockIndex) RangeDesc(ctx context.Context, begin, end []byte) (index.It
 	return &mockIterator{}, nil
 }
 
-func (mi *mockIndex) Delete(ctx context.Context, key []byte) error {
+func (mi *mockIndex) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	return nil
 }
 
-func (mi *mockIndex) DeleteBatch(ctx context.Context, keys [][]byte) error {
+func (mi *mockIndex) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
 	return nil
 }
 

@@ -448,11 +448,11 @@ func (m *mockIndexWithDataForIntersection) RangeDesc(ctx context.Context, begin,
 	return &mockDataIteratorForIntersection{data: m.data, index: 0}, nil
 }
 
-func (m *mockIndexWithDataForIntersection) Delete(ctx context.Context, key []byte) error {
+func (m *mockIndexWithDataForIntersection) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	return nil
 }
 
-func (m *mockIndexWithDataForIntersection) DeleteBatch(ctx context.Context, keys [][]byte) error {
+func (m *mockIndexWithDataForIntersection) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
 	return nil
 }
 

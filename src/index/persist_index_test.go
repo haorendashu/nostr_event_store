@@ -89,7 +89,7 @@ func TestPersistentIndexBasicOps(t *testing.T) {
 			t.Fatalf("Failed to insert: %v", err)
 		}
 
-		err = idx.Delete(ctx, key)
+		err = idx.Delete(ctx, key, nil)
 		if err != nil {
 			t.Fatalf("Failed to delete: %v", err)
 		}
@@ -420,7 +420,7 @@ func TestDeleteMergeRegression(t *testing.T) {
 		// Delete first 30 keys (should trigger rebalancing)
 		for i := 0; i < 30; i++ {
 			key := []byte{byte(i)}
-			err := idx.Delete(ctx, key)
+			err := idx.Delete(ctx, key, nil)
 			if err != nil {
 				t.Fatalf("Failed to delete key %d: %v", i, err)
 			}
@@ -472,7 +472,7 @@ func TestDeleteMergeRegression(t *testing.T) {
 		// Delete every other key
 		for i := 0; i < 200; i += 2 {
 			key := []byte{byte(i / 256), byte(i % 256)}
-			err := idx.Delete(ctx, key)
+			err := idx.Delete(ctx, key, nil)
 			if err != nil {
 				t.Fatalf("Failed to delete key %d: %v", i, err)
 			}
@@ -524,7 +524,7 @@ func TestDeleteMergeRegression(t *testing.T) {
 		// Delete all keys
 		for i := 0; i < 50; i++ {
 			key := append([]byte("key"), byte(i))
-			err := idx.Delete(ctx, key)
+			err := idx.Delete(ctx, key, nil)
 			if err != nil {
 				t.Fatalf("Failed to delete key %d: %v", i, err)
 			}
@@ -575,7 +575,7 @@ func TestDeleteMergeRegression(t *testing.T) {
 		// Delete odd keys
 		for i := 1; i < 100; i += 2 {
 			key := []byte{byte(i)}
-			err := idx.Delete(ctx, key)
+			err := idx.Delete(ctx, key, nil)
 			if err != nil {
 				t.Fatalf("Failed to delete odd key %d: %v", i, err)
 			}

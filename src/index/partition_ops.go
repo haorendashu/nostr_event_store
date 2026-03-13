@@ -385,9 +385,10 @@ func (pi *PartitionedIndex) RangeDesc(ctx context.Context, minKey []byte, maxKey
 }
 
 // Delete removes an entry by key.
-func (pi *PartitionedIndex) Delete(ctx context.Context, key []byte) error {
+// If loc is non-nil, the entry is only removed when its stored location equals *loc.
+func (pi *PartitionedIndex) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	if !pi.enablePartitioning {
-		return pi.legacyIndex.Delete(ctx, key)
+		return pi.legacyIndex.Delete(ctx, key, loc)
 	}
 
 	// Try to extract timestamp to find the specific partition.
@@ -395,7 +396,7 @@ func (pi *PartitionedIndex) Delete(ctx context.Context, key []byte) error {
 	if err == nil {
 		partition, err := pi.getPartitionForTimestamp(timestamp)
 		if err == nil {
-			return partition.Index.Delete(ctx, key)
+			return partition.Index.Delete(ctx, key, loc)
 		}
 	}
 
@@ -406,7 +407,7 @@ func (pi *PartitionedIndex) Delete(ctx context.Context, key []byte) error {
 	pi.mu.RUnlock()
 
 	for _, p := range partitions {
-		if err := p.Index.Delete(ctx, key); err != nil {
+		if err := p.Index.Delete(ctx, key, loc); err != nil {
 			return err
 		}
 	}
@@ -415,15 +416,24 @@ func (pi *PartitionedIndex) Delete(ctx context.Context, key []byte) error {
 }
 
 // DeleteBatch removes multiple entries efficiently.
-func (pi *PartitionedIndex) DeleteBatch(ctx context.Context, keys [][]byte) error {
+// locs is a parallel slice of optional location constraints (same length as keys, or nil).
+func (pi *PartitionedIndex) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
 	if !pi.enablePartitioning {
-		return pi.legacyIndex.DeleteBatch(ctx, keys)
+		return pi.legacyIndex.DeleteBatch(ctx, keys, locs)
 	}
 
-	// Group keys by partition.
-	partitionKeys := make(map[*TimePartition][][]byte)
+	// Group keys (and their associated locs) by partition.
+	type keyLoc struct {
+		key []byte
+		loc *types.RecordLocation
+	}
+	partitionEntries := make(map[*TimePartition][]keyLoc)
 
-	for _, key := range keys {
+	for i, key := range keys {
+		var loc *types.RecordLocation
+		if locs != nil && i < len(locs) {
+			loc = locs[i]
+		}
 		timestamp, err := extractTimestampFromKey(key, pi.indexType)
 		if err != nil {
 			// If timestamp extraction fails, delete from all partitions.
@@ -433,7 +443,7 @@ func (pi *PartitionedIndex) DeleteBatch(ctx context.Context, keys [][]byte) erro
 			pi.mu.RUnlock()
 
 			for _, p := range partitions {
-				if err := p.Index.Delete(ctx, key); err != nil {
+				if err := p.Index.Delete(ctx, key, loc); err != nil {
 					return err
 				}
 			}
@@ -445,12 +455,18 @@ func (pi *PartitionedIndex) DeleteBatch(ctx context.Context, keys [][]byte) erro
 			continue
 		}
 
-		partitionKeys[partition] = append(partitionKeys[partition], key)
+		partitionEntries[partition] = append(partitionEntries[partition], keyLoc{key, loc})
 	}
 
 	// Delete from each partition.
-	for partition, keys := range partitionKeys {
-		if err := partition.Index.DeleteBatch(ctx, keys); err != nil {
+	for partition, entries := range partitionEntries {
+		pKeys := make([][]byte, len(entries))
+		pLocs := make([]*types.RecordLocation, len(entries))
+		for i, e := range entries {
+			pKeys[i] = e.key
+			pLocs[i] = e.loc
+		}
+		if err := partition.Index.DeleteBatch(ctx, pKeys, pLocs); err != nil {
 			return err
 		}
 	}

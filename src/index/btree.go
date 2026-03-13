@@ -126,7 +126,8 @@ func (i *BTreeIndex) RangeDesc(ctx context.Context, minKey []byte, maxKey []byte
 }
 
 // Delete removes an entry by exact key match.
-func (i *BTreeIndex) Delete(ctx context.Context, key []byte) error {
+// If loc is non-nil, the entry is only removed when its stored location equals *loc.
+func (i *BTreeIndex) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -135,7 +136,41 @@ func (i *BTreeIndex) Delete(ctx context.Context, key []byte) error {
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if loc != nil {
+		if existing, ok := i.data[string(key)]; !ok || existing != *loc {
+			return nil
+		}
+	}
 	delete(i.data, string(key))
+	return nil
+}
+
+// DeleteBatch removes multiple entries efficiently.
+// locs is a parallel slice of optional location constraints (same length as keys, or nil).
+func (i *BTreeIndex) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for j, key := range keys {
+		var loc *types.RecordLocation
+		if locs != nil && j < len(locs) {
+			loc = locs[j]
+		}
+		if loc != nil {
+			if existing, ok := i.data[string(key)]; !ok || existing != *loc {
+				continue
+			}
+		}
+		delete(i.data, string(key))
+	}
 	return nil
 }
 

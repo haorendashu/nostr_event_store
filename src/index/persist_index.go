@@ -199,16 +199,18 @@ func (idx *PersistentBTreeIndex) RangeDesc(ctx context.Context, minKey []byte, m
 	return idx.tree.rangeIter(ctx, minKey, maxKey, true)
 }
 
-// Delete removes a key from the index
-func (idx *PersistentBTreeIndex) Delete(ctx context.Context, key []byte) error {
+// Delete removes a key from the index.
+// If loc is non-nil, the entry is only removed when its stored location equals *loc.
+func (idx *PersistentBTreeIndex) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
 	if idx.closed {
 		return errors.ErrIndexClosed
 	}
-	return idx.tree.delete(ctx, key)
+	return idx.tree.delete(ctx, key, loc)
 }
 
-// DeleteBatch removes multiple keys from the index efficiently
-func (idx *PersistentBTreeIndex) DeleteBatch(ctx context.Context, keys [][]byte) error {
+// DeleteBatch removes multiple keys from the index efficiently.
+// locs is a parallel slice of optional location constraints (same length as keys, or nil).
+func (idx *PersistentBTreeIndex) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
 	if idx.closed {
 		return errors.ErrIndexClosed
 	}
@@ -217,10 +219,12 @@ func (idx *PersistentBTreeIndex) DeleteBatch(ctx context.Context, keys [][]byte)
 		return nil
 	}
 
-	// Delete all entries individually
-	// TODO: Could be optimized with bulk deletion for sorted keys
 	for i := range keys {
-		if err := idx.tree.delete(ctx, keys[i]); err != nil {
+		var loc *types.RecordLocation
+		if locs != nil && i < len(locs) {
+			loc = locs[i]
+		}
+		if err := idx.tree.delete(ctx, keys[i], loc); err != nil {
 			return err
 		}
 	}
@@ -271,7 +275,7 @@ func (idx *PersistentBTreeIndex) DeleteRange(ctx context.Context, minKey []byte,
 
 	for iter.Valid() {
 		key := iter.Key()
-		if err := idx.tree.delete(ctx, key); err != nil {
+		if err := idx.tree.delete(ctx, key, nil); err != nil {
 			return err
 		}
 		if err := iter.Next(); err != nil {

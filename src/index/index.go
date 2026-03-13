@@ -89,16 +89,22 @@ type Index interface {
 	RangeDesc(ctx context.Context, minKey []byte, maxKey []byte) (Iterator, error)
 
 	// Delete removes an entry by exact key match.
-	// Does nothing if the key doesn't exist.
+	// If loc is non-nil, the entry is only removed when its stored location equals *loc.
+	// This prevents accidentally deleting a different event that shares the same secondary key.
+	// If loc is nil, the first matching key is removed (legacy behaviour).
+	// Does nothing if the key doesn't exist or the location doesn't match.
 	// ctx is used for cancellation and timeouts.
-	Delete(ctx context.Context, key []byte) error
+	Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error
 
 	// DeleteBatch removes multiple entries by exact key matches efficiently.
+	// locs is a parallel slice of optional location constraints (same length as keys, or nil).
+	// For each entry, if locs[i] is non-nil the entry is only removed when its stored
+	// location equals *locs[i]. Pass a nil slice to use key-only deletion for all entries.
 	// Does nothing for keys that don't exist.
-	// More efficient than calling Delete repeatedly as it minimizes lock overhead.
+	// More efficient than calling Delete repeatedly as it minimises lock overhead.
 	// Returns nil on success, or error if any delete fails.
 	// ctx is used for cancellation and timeouts.
-	DeleteBatch(ctx context.Context, keys [][]byte) error
+	DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error
 
 	// DeleteRange removes all entries with keys in [minKey, maxKey].
 	// Used for cleanup during compaction.
