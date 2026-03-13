@@ -3,7 +3,7 @@
 debug: false
 
 storage:
-  data_dir: "./event_data"
+  data_dir: "./eventData"
   page_size: 4096
   max_segment_size: 1073741824
   event_buffer_size: 16777216
