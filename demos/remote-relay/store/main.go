@@ -56,6 +56,20 @@ func main() {
 	fmt.Printf("[STORE] gRPC listening on %s\n", cfg.RemoteConfig.GRPCListenAddr)
 	fmt.Printf("[STORE] data dir: %s\n", cfg.StorageConfig.DataDir)
 
+	// After startup, stats will be printed every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				stats := store.Stats()
+				log.Printf("[STORE] stats: %+v", stats)
+			}
+		}
+	}()
+
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	firstSig := <-sigCh

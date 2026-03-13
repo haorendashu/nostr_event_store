@@ -12,7 +12,8 @@ storage:
 index:
   index_dir: "./eventData/indexes"
   initialization_mode: "standard"
-  flush_interval_ms: 100
+  flush_interval_ms: 500
+  dirty_threshold: 512
   enable_time_partitioning: true
   partition_granularity: "monthly"
   enable_partition_cache_coordinator: true
@@ -27,10 +28,10 @@ index:
     dynamic_allocation: false
 
 wal:
-  disabled: true
+  disabled: false
   wal_dir: "./eventData/wal"
   sync_mode: "batch"
-  batch_interval_ms: 100
+  batch_interval_ms: 80
   batch_size_bytes: 10485760
 
 compaction:
