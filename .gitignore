@@ -17,3 +17,6 @@ demos/remote-quick-start/data/
 demos/remote-quick-start/remote-quick-start.exe
 demos/shard-coordinator-demo/shard-coordinator-demo.exe
 demos/shard-coordinator-demo/data/
+demos/remote-relay/relay/nostr-remote-relay-relay.exe
+demos/remote-relay/store/nostr-remote-relay-store.exe
+demos/remote-relay/store/eventData/

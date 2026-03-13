@@ -1,0 +1,13 @@
+# Relay process config (WebSocket relay + remote-store client)
+
+debug: false
+
+remote:
+  # Remote EventStore address used by relay client
+  grpc_listen_addr: "localhost:50051"
+  api_key: "demo-quick-start-key-2026"
+  request_timeout: 10
+
+query:
+  default_limit: 100
+  execution_timeout_seconds: 30
