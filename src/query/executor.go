@@ -159,6 +159,68 @@ func GetQueryMetadata(ctx context.Context) *QueryMetadata {
 	return nil
 }
 
+// formatQueryMetadataForLog returns a full query-condition string for stalled/diagnostic log lines.
+// Format: " [authors=[...], kinds=[...], tags={k:[v1,v2],...}, since=T, until=T, limit=N, elapsed=Xms]"
+// Returns " [query metadata unavailable]" when the context has no metadata attached.
+func formatQueryMetadataForLog(meta *QueryMetadata) string {
+	if meta == nil {
+		return " [query metadata unavailable]"
+	}
+
+	var b strings.Builder
+	b.WriteString(" [authors=[")
+	for i, author := range meta.Authors {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(author)
+	}
+	b.WriteString("]")
+
+	if meta.KindsCount > 0 {
+		kindsStrs := make([]string, len(meta.Kinds))
+		for i, k := range meta.Kinds {
+			kindsStrs[i] = fmt.Sprintf("%d", k)
+		}
+		b.WriteString(fmt.Sprintf(", kinds=[%s]", strings.Join(kindsStrs, ",")))
+	} else {
+		b.WriteString(", kinds=[]")
+	}
+
+	b.WriteString(", tags={")
+	tagKeys := make([]string, 0, len(meta.Tags))
+	for k := range meta.Tags {
+		tagKeys = append(tagKeys, k)
+	}
+	sort.Strings(tagKeys)
+	for i, k := range tagKeys {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(k)
+		b.WriteString(":")
+		b.WriteString("[")
+		for j, v := range meta.Tags[k] {
+			if j > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(v)
+		}
+		b.WriteString("]")
+	}
+	b.WriteString("}")
+
+	b.WriteString(fmt.Sprintf(", since=%d", meta.Since))
+	b.WriteString(fmt.Sprintf(", until=%d", meta.Until))
+	b.WriteString(fmt.Sprintf(", limit=%d, elapsed=%v]", meta.Limit, time.Since(meta.StartTime).Round(time.Millisecond)))
+	return b.String()
+}
+
+// FormatQueryMetadataForLog returns a full query-condition string for external log sites.
+func FormatQueryMetadataForLog(meta *QueryMetadata) string {
+	return formatQueryMetadataForLog(meta)
+}
+
 var (
 	searchIndexRangeLogEnabled     bool
 	searchIndexRangeLogTag         string
@@ -463,7 +525,8 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 				rangeIndex: item.rangeIndex,
 			})
 		} else if err == nil && !advanced {
-			log.Printf("[query] dropping stalled iterator in mergeLocationIterator (range=%d)", item.rangeIndex)
+			log.Printf("[query] dropping stalled iterator in mergeLocationIterator (range=%d)%s",
+				item.rangeIndex, formatQueryMetadataForLog(GetQueryMetadata(ctx)))
 		}
 
 		// If this was a unique location, set it as current and return
@@ -1179,7 +1242,8 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 				rangeIndex: item.rangeIndex,
 			})
 		} else if err == nil && !advanced {
-			log.Printf("[query] dropping stalled iterator in queryIndexRangesMerge (range=%d)", item.rangeIndex)
+			log.Printf("[query] dropping stalled iterator in queryIndexRangesMerge (range=%d)%s",
+				item.rangeIndex, formatQueryMetadataForLog(GetQueryMetadata(ctx)))
 		}
 	}
 

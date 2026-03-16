@@ -293,21 +293,31 @@ func (t *btree) delete(ctx context.Context, key []byte, loc *types.RecordLocatio
 	if idx >= len(node.keys) || compareKeys(node.keys[idx], key) != 0 {
 		return nil
 	}
+	originalLeafOffset := node.offset
 
 	// If a specific location is required, scan forward through all duplicate keys
-	// to find the entry whose stored location matches. If no match is found we
-	// leave the index untouched to avoid deleting a different event's entry.
+	// to find the entry whose stored location matches. Duplicate-key runs can span
+	// multiple adjacent leaves, so we must traverse the leaf chain while key==target.
+	// If no match is found we leave the index untouched to avoid deleting another
+	// event's entry that shares the same key.
 	if loc != nil {
-		found := false
-		for i := idx; i < len(node.keys) && compareKeys(node.keys[i], key) == 0; i++ {
-			if i < len(node.values) && node.values[i] == *loc {
-				idx = i
-				found = true
-				break
-			}
+		matchedNode, matchedIdx, found, err := t.findLeafEntryByLocation(node, idx, key, *loc)
+		if err != nil {
+			return err
 		}
 		if !found {
 			return nil // location doesn't match any duplicate; no-op
+		}
+		node = matchedNode
+		idx = matchedIdx
+		if node.offset != originalLeafOffset {
+			resolvedPath, _, err := t.findPathToLeafOffset(t.root, node.offset, nil, 0)
+			if err != nil {
+				return err
+			}
+			if len(resolvedPath) > 0 {
+				path = resolvedPath
+			}
 		}
 	}
 
@@ -351,7 +361,9 @@ func (t *btree) delete(ctx context.Context, key []byte, loc *types.RecordLocatio
 		atomic.AddUint64(&t.entryCount, ^uint64(0)) // decrement
 	}
 
-	// Update parent separator if we removed the first key of this leaf
+	// Update parent separator if we removed the first key of this leaf.
+	// If the matching duplicate entry was found in a different leaf, locate that
+	// leaf's actual parent path before adjusting separators.
 	if idx == 0 && len(path) > 0 && len(node.keys) > 0 {
 		parentEntry := path[len(path)-1]
 		if parentEntry.index > 0 {
@@ -1351,6 +1363,118 @@ func searchKeyIndex(keys [][]byte, key []byte) int {
 type pathEntry struct {
 	node  *btreeNode
 	index int
+}
+
+func (t *btree) findLeafEntryByLocation(startNode *btreeNode, startIdx int, key []byte, loc types.RecordLocation) (*btreeNode, int, bool, error) {
+	if startNode == nil {
+		return nil, 0, false, nil
+	}
+
+	const maxLeafTraversal = 100000
+	visitedNext := make(map[uint64]int)
+	visitedPrev := make(map[uint64]int)
+
+	// Forward scan from the located index, then across next leaves while keys match.
+	node := startNode
+	idx := startIdx
+	for hops := 0; hops < maxLeafTraversal; hops++ {
+		for i := idx; i < len(node.keys) && compareKeys(node.keys[i], key) == 0; i++ {
+			if i < len(node.values) && node.values[i] == loc {
+				return node, i, true, nil
+			}
+		}
+
+		if node.next == 0 {
+			break
+		}
+
+		nextOffset := node.next
+		visitedNext[nextOffset]++
+		if visitedNext[nextOffset] > 2 {
+			return nil, 0, false, fmt.Errorf("btree leaf next-cycle detected while matching duplicate key at offset %d", nextOffset)
+		}
+
+		nextNode, err := t.loadNode(nextOffset)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if !nextNode.isLeaf() {
+			return nil, 0, false, fmt.Errorf("btree corruption: expected leaf node at offset %d", nextOffset)
+		}
+		if len(nextNode.keys) == 0 || compareKeys(nextNode.keys[0], key) != 0 {
+			break
+		}
+
+		node = nextNode
+		idx = 0
+	}
+
+	// Backward scan for duplicate runs that straddle previous leaves.
+	node = startNode
+	for hops := 0; hops < maxLeafTraversal; hops++ {
+		if node.prev == 0 {
+			break
+		}
+
+		prevOffset := node.prev
+		visitedPrev[prevOffset]++
+		if visitedPrev[prevOffset] > 2 {
+			return nil, 0, false, fmt.Errorf("btree leaf prev-cycle detected while matching duplicate key at offset %d", prevOffset)
+		}
+
+		prevNode, err := t.loadNode(prevOffset)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if !prevNode.isLeaf() {
+			return nil, 0, false, fmt.Errorf("btree corruption: expected leaf node at offset %d", prevOffset)
+		}
+		if len(prevNode.keys) == 0 || compareKeys(prevNode.keys[len(prevNode.keys)-1], key) != 0 {
+			break
+		}
+
+		for i := len(prevNode.keys) - 1; i >= 0 && compareKeys(prevNode.keys[i], key) == 0; i-- {
+			if i < len(prevNode.values) && prevNode.values[i] == loc {
+				return prevNode, i, true, nil
+			}
+		}
+
+		node = prevNode
+	}
+
+	return nil, 0, false, nil
+}
+
+func (t *btree) findPathToLeafOffset(nodeOffset uint64, targetLeafOffset uint64, path []pathEntry, depth int) ([]pathEntry, *btreeNode, error) {
+	const maxDepth = 128
+	if depth > maxDepth {
+		return nil, nil, fmt.Errorf("btree depth exceeded while searching for leaf offset %d", targetLeafOffset)
+	}
+
+	node, err := t.loadNode(nodeOffset)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if node.isLeaf() {
+		if node.offset == targetLeafOffset {
+			return path, node, nil
+		}
+		return nil, nil, nil
+	}
+
+	for childIdx, childOffset := range node.children {
+		nextPath := append(append([]pathEntry{}, path...), pathEntry{node: node, index: childIdx})
+		resolvedPath, leaf, err := t.findPathToLeafOffset(childOffset, targetLeafOffset, nextPath, depth+1)
+		if err != nil {
+			return nil, nil, err
+		}
+		if leaf != nil {
+			return resolvedPath, leaf, nil
+		}
+	}
+
+	return nil, nil, nil
 }
 
 func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (inserted bool, err error) {

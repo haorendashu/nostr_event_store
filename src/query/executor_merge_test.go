@@ -673,3 +673,105 @@ func compareKeys(a, b []byte) int {
 	}
 	return 0
 }
+
+// TestFormatQueryMetadataForLog verifies the compact log formatter used by stalled-iterator diagnostics.
+func TestFormatQueryMetadataForLog(t *testing.T) {
+	t.Run("nil_meta_returns_sentinel", func(t *testing.T) {
+		got := formatQueryMetadataForLog(nil)
+		if got != " [query metadata unavailable]" {
+			t.Errorf("expected sentinel, got %q", got)
+		}
+	})
+
+	t.Run("full_meta_contains_expected_fields", func(t *testing.T) {
+		filter := &types.QueryFilter{
+			Authors: [][32]byte{
+				{0xaa, 0xbb, 0xcc},
+				{0x11, 0x22, 0x33},
+			},
+			Kinds: []uint16{1, 3},
+			Tags:  map[string][]string{"e": {"ev1", "ev2"}, "p": {"pk1"}},
+			Since: 1000,
+			Until: 2000,
+			Limit: 50,
+		}
+		ctx := WithQueryMetadata(context.Background(), filter)
+		meta := GetQueryMetadata(ctx)
+		if meta == nil {
+			t.Fatal("GetQueryMetadata returned nil after WithQueryMetadata")
+		}
+
+		got := formatQueryMetadataForLog(meta)
+
+		checks := []string{
+			"authors=[",
+			"kinds=[1,3]",
+			"tags={e:[ev1,ev2],p:[pk1]}",
+			"since=1000",
+			"until=2000",
+			"limit=50",
+			"elapsed=",
+		}
+		for _, want := range checks {
+			if !containsStr(got, want) {
+				t.Errorf("log string missing %q: got %q", want, got)
+			}
+		}
+	})
+
+	t.Run("no_authors_no_kinds_no_tags", func(t *testing.T) {
+		filter := &types.QueryFilter{Limit: 100}
+		ctx := WithQueryMetadata(context.Background(), filter)
+		meta := GetQueryMetadata(ctx)
+		got := formatQueryMetadataForLog(meta)
+		if !containsStr(got, "authors=[]") {
+			t.Errorf("expected authors=[], got %q", got)
+		}
+		if !containsStr(got, "kinds=[]") {
+			t.Errorf("expected kinds=[], got %q", got)
+		}
+		if !containsStr(got, "tags={}") {
+			t.Errorf("expected tags={}, got %q", got)
+		}
+		if !containsStr(got, "since=0") {
+			t.Errorf("expected since=0, got %q", got)
+		}
+		if !containsStr(got, "until=0") {
+			t.Errorf("expected until=0, got %q", got)
+		}
+		if !containsStr(got, "limit=100") {
+			t.Errorf("expected limit=100, got %q", got)
+		}
+	})
+
+	t.Run("many_authors_not_truncated", func(t *testing.T) {
+		filter := &types.QueryFilter{Limit: 10}
+		for i := 0; i < 5; i++ {
+			var a [32]byte
+			a[0] = byte(i + 1)
+			filter.Authors = append(filter.Authors, a)
+		}
+		ctx := WithQueryMetadata(context.Background(), filter)
+		meta := GetQueryMetadata(ctx)
+		got := formatQueryMetadataForLog(meta)
+		if !containsStr(got, "authors=[") {
+			t.Errorf("expected full authors list marker, got %q", got)
+		}
+		if containsStr(got, "+2") {
+			t.Errorf("unexpected truncation suffix in full log output: %q", got)
+		}
+	})
+}
+
+// containsStr is a simple substring check helper.
+func containsStr(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
+}

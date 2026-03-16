@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+	"encoding/binary"
 	"path/filepath"
 	"testing"
 	"time"
@@ -171,5 +172,99 @@ func TestKindTimeIndexBatchDelete(t *testing.T) {
 
 	if len(results) != 0 {
 		t.Errorf("Expected 0 results after batch deletion, got %d", len(results))
+	}
+}
+
+// TestKindTimeIndexEntryCountConsistencyAfterDeletes verifies that the kind-time index
+// stays aligned with the primary index after deleting events in a high-collision workload.
+func TestKindTimeIndexEntryCountConsistencyAfterDeletes(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	cfg := config.DefaultConfig()
+	cfg.IndexConfig.IndexDir = filepath.Join(tmpDir, "indexes")
+	store := New(&Options{
+		Config:       cfg,
+		RecoveryMode: "skip",
+	})
+
+	err := store.Open(ctx, tmpDir, true)
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	defer store.Close(ctx)
+
+	const totalEvents = 400
+	const deleteEvery = 4
+	createdAt := uint32(time.Now().Unix())
+	kind := uint16(1)
+
+	eventIDs := make([][32]byte, 0, totalEvents)
+	for i := 0; i < totalEvents; i++ {
+		var id [32]byte
+		binary.BigEndian.PutUint64(id[0:8], uint64(i+1))
+		binary.BigEndian.PutUint64(id[8:16], uint64(totalEvents-i))
+		binary.BigEndian.PutUint64(id[16:24], uint64(i*17+3))
+		binary.BigEndian.PutUint64(id[24:32], uint64(i*31+7))
+
+		var pubkey [32]byte
+		binary.BigEndian.PutUint64(pubkey[0:8], uint64(i+1000))
+		binary.BigEndian.PutUint64(pubkey[8:16], uint64(i*13+11))
+
+		event := &types.Event{
+			ID:        id,
+			Pubkey:    pubkey,
+			CreatedAt: createdAt,
+			Kind:      kind,
+			Content:   "kindtime consistency test",
+		}
+
+		if _, err = store.WriteEvent(ctx, event); err != nil {
+			t.Fatalf("Failed to write event %d: %v", i, err)
+		}
+		eventIDs = append(eventIDs, id)
+	}
+
+	statsAfterInsert := store.Stats()
+	if statsAfterInsert.PrimaryIndexStats.EntryCount != totalEvents {
+		t.Fatalf("unexpected primary count after insert: got %d want %d", statsAfterInsert.PrimaryIndexStats.EntryCount, totalEvents)
+	}
+	if statsAfterInsert.KindTimeIndexStats.EntryCount != statsAfterInsert.PrimaryIndexStats.EntryCount {
+		t.Fatalf("kind-time count mismatch after insert: primary=%d kind_time=%d",
+			statsAfterInsert.PrimaryIndexStats.EntryCount, statsAfterInsert.KindTimeIndexStats.EntryCount)
+	}
+
+	deletedCount := 0
+	for i, id := range eventIDs {
+		if i%deleteEvery != 0 {
+			continue
+		}
+		if err = store.DeleteEvent(ctx, id); err != nil {
+			t.Fatalf("Failed to delete event %d: %v", i, err)
+		}
+		deletedCount++
+	}
+
+	expectedRemaining := uint64(totalEvents - deletedCount)
+	statsAfterDelete := store.Stats()
+
+	if statsAfterDelete.PrimaryIndexStats.EntryCount != expectedRemaining {
+		t.Fatalf("unexpected primary count after delete: got %d want %d",
+			statsAfterDelete.PrimaryIndexStats.EntryCount, expectedRemaining)
+	}
+	if statsAfterDelete.KindTimeIndexStats.EntryCount != expectedRemaining {
+		t.Fatalf("unexpected kind-time count after delete: got %d want %d",
+			statsAfterDelete.KindTimeIndexStats.EntryCount, expectedRemaining)
+	}
+
+	results, err := store.QueryAll(ctx, &types.QueryFilter{
+		Kinds: []uint16{kind},
+		Limit: totalEvents,
+	})
+	if err != nil {
+		t.Fatalf("Kind-only query failed after deletes: %v", err)
+	}
+	if len(results) != int(expectedRemaining) {
+		t.Fatalf("unexpected kind-only query result count: got %d want %d", len(results), expectedRemaining)
 	}
 }

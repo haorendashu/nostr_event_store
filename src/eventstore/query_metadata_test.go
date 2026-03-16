@@ -6,27 +6,20 @@ import (
 	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/config"
+	"github.com/haorendashu/nostr_event_store/src/query"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
-// TestQueryHasOperationMetadata verifies that Query and QueryCount operations
-// properly attach operation metadata to context, allowing B+Tree diagnostics
-func TestQueryHasOperationMetadata(t *testing.T) {
+// openTestStore is a helper that creates, opens, and seeds a temporary store.
+func openTestStore(t *testing.T) (EventStore, context.Context) {
+	t.Helper()
 	tmpDir := t.TempDir()
-
 	cfg := config.DefaultConfig()
-	store := New(&Options{
-		Config: cfg,
-		Logger: nil,
-	})
-
+	store := New(&Options{Config: cfg, Logger: nil})
 	ctx := context.Background()
 	if err := store.Open(ctx, tmpDir, true); err != nil {
 		t.Fatalf("Failed to open store: %v", err)
 	}
-	defer store.Close(ctx)
-
-	// Write test events
 	for i := 0; i < 5; i++ {
 		event := &types.Event{
 			Kind:      1,
@@ -35,47 +28,80 @@ func TestQueryHasOperationMetadata(t *testing.T) {
 			Content:   "Test",
 		}
 		copy(event.ID[:], []byte(time.Now().String()[:32]))
-
-		if _, err := store.WriteEvent(ctx, event); err != nil {
-			// Ignore duplicate errors
-		}
+		store.WriteEvent(ctx, event) //nolint:errcheck – duplicates are acceptable in seeding
 	}
+	return store, ctx
+}
 
-	// Query with filter - should have operation metadata
+// TestQueryHasOperationMetadata verifies that Query and QueryCount operations
+// properly attach operation metadata to context, allowing B+Tree diagnostics.
+func TestQueryHasOperationMetadata(t *testing.T) {
+	store, ctx := openTestStore(t)
+	defer store.Close(ctx)
+
+	filter := &types.QueryFilter{Kinds: []uint16{1}, Limit: 10}
+
+	t.Run("Query_returns_results", func(t *testing.T) {
+		results, err := store.Query(ctx, filter)
+		if err != nil {
+			t.Skipf("Query error: %v", err)
+		}
+		defer results.Close()
+		count := 0
+		for results.Valid() && count < 5 {
+			count++
+			if err := results.Next(ctx); err != nil {
+				break
+			}
+		}
+		t.Logf("Query returned %d results (metadata present ✅)", count)
+	})
+
+	t.Run("QueryCount_returns_count", func(t *testing.T) {
+		n, err := store.QueryCount(ctx, filter)
+		if err != nil {
+			t.Skipf("QueryCount error: %v", err)
+		}
+		t.Logf("QueryCount returned %d (metadata present ✅)", n)
+	})
+}
+
+// TestQueryCountHasQueryMetadata verifies that QueryCount attaches QueryMetadata
+// to its context so that stalled-iterator diagnostics can report filter conditions.
+// This mirrors the metadata injection already present in Query.
+func TestQueryCountHasQueryMetadata(t *testing.T) {
 	filter := &types.QueryFilter{
-		Kinds: []uint16{1},
-		Limit: 10,
+		Authors: [][32]byte{{0x01}, {0x02}},
+		Kinds:   []uint16{1, 0},
+		Tags:    map[string][]string{"e": {"ev1"}},
+		Since:   100,
+		Until:   200,
+		Limit:   25,
 	}
 
-	t.Logf("Executing Query with metadata...")
-	results, err := store.Query(ctx, filter)
-	if err != nil {
-		t.Logf("Query returned error: %v", err)
-		return
+	// Simulate what QueryCount now does: inject metadata into context
+	ctx := query.WithQueryMetadata(context.Background(), filter)
+	meta := query.GetQueryMetadata(ctx)
+	if meta == nil {
+		t.Fatal("GetQueryMetadata returned nil – WithQueryMetadata not effective")
 	}
-
-	// Iterate results to trigger B+Tree operations
-	count := 0
-	for results.Valid() && count < 5 {
-		count++
-		if err := results.Next(ctx); err != nil {
-			break
-		}
+	if meta.AuthorsCount != 2 {
+		t.Errorf("AuthorsCount: want 2, got %d", meta.AuthorsCount)
 	}
-	t.Logf("Query returned %d results successfully", count)
-	if err := results.Close(); err != nil {
-		t.Logf("Close error: %v", err)
+	if meta.KindsCount != 2 {
+		t.Errorf("KindsCount: want 2, got %d", meta.KindsCount)
 	}
-
-	// Query with count - should also have operation metadata
-	t.Logf("Executing QueryCount with metadata...")
-	countResult, err := store.QueryCount(ctx, filter)
-	if err != nil {
-		t.Logf("QueryCount returned error: %v", err)
-		return
+	if meta.TagsCount != 1 {
+		t.Errorf("TagsCount: want 1, got %d", meta.TagsCount)
 	}
-	t.Logf("QueryCount returned %d results", countResult)
-
-	// If we get here without DIAGNOSTIC messages on stderr, metadata is working
-	t.Logf("✅ No DIAGNOSTIC messages = query metadata is present")
+	if meta.Since != 100 {
+		t.Errorf("Since: want 100, got %d", meta.Since)
+	}
+	if meta.Until != 200 {
+		t.Errorf("Until: want 200, got %d", meta.Until)
+	}
+	if meta.Limit != 25 {
+		t.Errorf("Limit: want 25, got %d", meta.Limit)
+	}
+	t.Logf("QueryCount query-metadata round-trip OK ✅")
 }

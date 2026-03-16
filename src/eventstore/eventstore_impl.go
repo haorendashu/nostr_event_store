@@ -1066,8 +1066,7 @@ func (e *eventStoreImpl) Query(ctx context.Context, filter *types.QueryFilter) (
 	// Log query start for timeout diagnostics
 	queryStartTime := time.Now()
 	if e.opts.Config.Debug {
-		e.logger.Printf("[QUERY START] Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d, Since=%v, Until=%v",
-			len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit, filter.Since, filter.Until)
+		e.logger.Printf("[QUERY START]%s", query.FormatQueryMetadataForLog(query.GetQueryMetadata(ctx)))
 	}
 
 	// Apply query execution timeout to prevent infinite loops or extremely slow queries
@@ -1081,11 +1080,11 @@ func (e *eventStoreImpl) Query(ctx context.Context, filter *types.QueryFilter) (
 				// Query was canceled or timed out
 				duration := time.Since(queryStartTime)
 				if ctx.Err() == context.DeadlineExceeded {
-					e.logger.Printf("[QUERY TIMEOUT] Duration: %v, Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d, Timeout=%ds",
-						duration, len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit, cfg.QueryConfig.ExecutionTimeoutSeconds)
+					e.logger.Printf("[QUERY TIMEOUT] duration=%v timeout=%ds%s",
+						duration, cfg.QueryConfig.ExecutionTimeoutSeconds, query.FormatQueryMetadataForLog(query.GetQueryMetadata(ctx)))
 				} else {
-					e.logger.Printf("[QUERY CANCELED] Duration: %v, Filter: Authors=%d, Kinds=%d, Tags=%d, Limit=%d, Reason=%v",
-						duration, len(filter.Authors), len(filter.Kinds), countTags(filter), filter.Limit, ctx.Err())
+					e.logger.Printf("[QUERY CANCELED] duration=%v reason=%v%s",
+						duration, ctx.Err(), query.FormatQueryMetadataForLog(query.GetQueryMetadata(ctx)))
 				}
 			}
 			cancel()
@@ -1143,6 +1142,8 @@ func (e *eventStoreImpl) QueryCount(ctx context.Context, filter *types.QueryFilt
 		"num_authors": len(filter.Authors),
 		"num_kinds":   len(filter.Kinds),
 	})
+	// Attach query metadata so stalled-iterator diagnostics can report filter conditions
+	ctx = query.WithQueryMetadata(ctx, filter)
 
 	return e.queryEngine.Count(ctx, filter)
 }
