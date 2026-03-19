@@ -19,11 +19,12 @@ type indexHeader struct {
 }
 
 type indexFile struct {
-	file     *os.File
-	path     string
-	pageSize uint32
-	header   indexHeader
-	size     int64
+	file          *os.File
+	path          string
+	pageSize      uint32
+	header        indexHeader
+	size          int64
+	pendingWrites bool // true when data has been written but not yet fsynced
 }
 
 func openIndexFile(path string, indexType uint32, pageSize uint32, createIfMissing bool) (*indexFile, error) {
@@ -132,6 +133,7 @@ func (f *indexFile) writeHeader() error {
 	if f.size < int64(f.pageSize) {
 		f.size = int64(f.pageSize)
 	}
+	f.pendingWrites = true
 	return nil
 }
 
@@ -176,6 +178,7 @@ func (f *indexFile) writeNodePage(offset uint64, buf []byte) error {
 	if end > f.size {
 		f.size = end
 	}
+	f.pendingWrites = true
 	return nil
 }
 
@@ -183,6 +186,7 @@ func (f *indexFile) sync() error {
 	if err := f.file.Sync(); err != nil {
 		return fmt.Errorf("sync index file: %w", err)
 	}
+	f.pendingWrites = false
 	return nil
 }
 

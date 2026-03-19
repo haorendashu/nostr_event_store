@@ -2114,6 +2114,19 @@ func (e *eventStoreImpl) rebuildIndexesFromSegmentsParallel(ctx context.Context,
 		e.logger.Printf("Recovery rate: %.0f events/sec", float64(recovered)/elapsed.Seconds())
 	}
 
+	// Final flush: persist all remaining dirty index pages to disk.
+	// Without this, dirty pages accumulate in cache and cause sustained IO
+	// as the flush scheduler gradually writes them out over many tick intervals.
+	e.logger.Printf("Flushing all index pages to disk...")
+	flushCtx := query.WithOperationMetadata(ctx, query.OpTypeInternal, map[string]interface{}{
+		"operation": "post_rebuild_flush",
+	})
+	if err := e.indexMgr.Flush(flushCtx); err != nil {
+		e.logger.Printf("Warning: post-rebuild flush failed: %v", err)
+	} else {
+		e.logger.Printf("Post-rebuild flush completed")
+	}
+
 	return nil
 }
 

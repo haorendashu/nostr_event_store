@@ -97,11 +97,24 @@ func (t *btree) flush() error {
 	defer t.mu.Unlock()
 
 	// Persist entry count to file header before flushing
-	t.file.header.EntryCount = atomic.LoadUint64(&t.entryCount)
+	currentEntryCount := atomic.LoadUint64(&t.entryCount)
+	entryCountChanged := t.file.header.EntryCount != currentEntryCount
+	t.file.header.EntryCount = currentEntryCount
 
-	if _, err := t.cache.FlushDirty(); err != nil {
+	flushed, err := t.cache.FlushDirty()
+	if err != nil {
 		return err
 	}
+
+	// Skip header write and fsync if nothing has changed since last sync.
+	// This avoids unnecessary IO when the flush scheduler ticks with no pending mutations.
+	// pendingWrites covers: eviction writes, syncHeader from insert/delete root changes.
+	// entryCountChanged covers: new inserts or deletes since last flush.
+	// flushed > 0 covers: dirty cache pages that were written in FlushDirty above.
+	if flushed == 0 && !entryCountChanged && !t.file.pendingWrites {
+		return nil
+	}
+
 	if err := t.file.syncHeader(); err != nil {
 		return err
 	}
