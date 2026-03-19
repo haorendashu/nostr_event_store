@@ -272,6 +272,11 @@ func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event
 		kindTimeKeys[i] = m.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
 
 		// Search index keys for all configured tags
+		// Use a set to deduplicate tags within the same event.
+		// Without deduplication, duplicate tags like [["p","abc"],["p","abc"]]
+		// would create identical (key, location) entries in the B+Tree,
+		// causing iterator no-progress detection to trigger falsely.
+		seenTags := make(map[string]struct{})
 		for _, tag := range event.Tags {
 			if len(tag) < 2 {
 				continue
@@ -284,6 +289,13 @@ func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event
 			if !ok {
 				continue
 			}
+
+			// Deduplicate: same (tagName, tagValue) within one event
+			tagKey := tagName + "\x00" + tagValue
+			if _, exists := seenTags[tagKey]; exists {
+				continue // Skip duplicate tag
+			}
+			seenTags[tagKey] = struct{}{}
 
 			searchKey := m.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
 			searchKeys = append(searchKeys, searchKey)

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -818,6 +819,7 @@ func (t *btree) rangeIter(ctx context.Context, minKey []byte, maxKey []byte, des
 		visitedPrev: make(map[uint64]int),
 	}
 	iter.advance()
+	iter.updateSnapshot() // Capture initial node's slices for concurrent-safe access
 	return iter, nil
 }
 
@@ -887,13 +889,143 @@ type btreeIterator struct {
 	valid       bool
 	visitedNext map[uint64]int
 	visitedPrev map[uint64]int
+	noProgress  int
+	// Snapshot of current node's keys/values for concurrent-safe iteration.
+	// These slices are captured when entering a node, so even if insert()
+	// replaces node.keys/values with new slices, the iterator still reads
+	// from the old (stable) data.
+	snapshotKeys   [][]byte
+	snapshotValues []types.RecordLocation
+}
+
+// updateSnapshot captures the current node's keys/values slice headers.
+// This provides isolation from concurrent insert() operations that replace
+// the node's slices with new ones.
+func (it *btreeIterator) updateSnapshot() {
+	if it.current != nil {
+		it.snapshotKeys = it.current.keys
+		it.snapshotValues = it.current.values
+	} else {
+		it.snapshotKeys = nil
+		it.snapshotValues = nil
+	}
+}
+
+const maxNoProgressRecoverSteps = 16
+
+func sameIteratorPosition(prevKey, curKey []byte, prevLoc, curLoc types.RecordLocation) bool {
+	if len(prevKey) == 0 || len(curKey) == 0 {
+		return false
+	}
+	if compareKeys(prevKey, curKey) != 0 {
+		return false
+	}
+	return prevLoc.SegmentID == curLoc.SegmentID && prevLoc.Offset == curLoc.Offset
+}
+
+func summarizeIteratorKeyForLog(key []byte) string {
+	if len(key) == 0 {
+		return ""
+	}
+	hexKey := hex.EncodeToString(key)
+	if len(hexKey) > 64 {
+		return hexKey[:64] + "..."
+	}
+	return hexKey
+}
+
+// extractQueryInfoFromContext tries to extract query metadata from context for logging.
+// Returns a summary string. Uses reflection to avoid import cycle with query package.
+func extractQueryInfoFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	// Try to get QueryMetadata using string key (same as query package)
+	const queryMetadataContextKey = "nostr_query_metadata"
+	if meta := ctx.Value(queryMetadataContextKey); meta != nil {
+		// Use reflection to extract fields
+		val := reflect.ValueOf(meta)
+		if val.Kind() == reflect.Ptr {
+			val = val.Elem()
+		}
+		if val.Kind() == reflect.Struct {
+			var parts []string
+			// Extract Authors
+			if authorsField := val.FieldByName("Authors"); authorsField.IsValid() {
+				if authors, ok := authorsField.Interface().([]string); ok && len(authors) > 0 {
+					if len(authors) > 3 {
+						parts = append(parts, fmt.Sprintf("authors=[%s,...+%d]", strings.Join(authors[:3], ","), len(authors)-3))
+					} else {
+						parts = append(parts, fmt.Sprintf("authors=[%s]", strings.Join(authors, ",")))
+					}
+				}
+			}
+			// Extract Kinds
+			if kindsField := val.FieldByName("Kinds"); kindsField.IsValid() {
+				if kinds, ok := kindsField.Interface().([]uint16); ok && len(kinds) > 0 {
+					kindStrs := make([]string, len(kinds))
+					for i, k := range kinds {
+						kindStrs[i] = fmt.Sprintf("%d", k)
+					}
+					parts = append(parts, fmt.Sprintf("kinds=[%s]", strings.Join(kindStrs, ",")))
+				}
+			}
+			// Extract Tags
+			if tagsField := val.FieldByName("Tags"); tagsField.IsValid() {
+				if tags, ok := tagsField.Interface().(map[string][]string); ok && len(tags) > 0 {
+					tagParts := make([]string, 0, len(tags))
+					for k, v := range tags {
+						if len(v) > 2 {
+							tagParts = append(tagParts, fmt.Sprintf("%s:[%s,...+%d]", k, strings.Join(v[:2], ","), len(v)-2))
+						} else {
+							tagParts = append(tagParts, fmt.Sprintf("%s:[%s]", k, strings.Join(v, ",")))
+						}
+					}
+					parts = append(parts, fmt.Sprintf("tags={%s}", strings.Join(tagParts, ",")))
+				}
+			}
+			// Extract time range
+			if sinceField := val.FieldByName("Since"); sinceField.IsValid() {
+				if since, ok := sinceField.Interface().(uint32); ok && since > 0 {
+					parts = append(parts, fmt.Sprintf("since=%d", since))
+				}
+			}
+			if untilField := val.FieldByName("Until"); untilField.IsValid() {
+				if until, ok := untilField.Interface().(uint32); ok && until > 0 {
+					parts = append(parts, fmt.Sprintf("until=%d", until))
+				}
+			}
+			if len(parts) > 0 {
+				return " query=[" + strings.Join(parts, ", ") + "]"
+			}
+		}
+	}
+	return ""
+}
+
+func (it *btreeIterator) logNoProgress(curKey []byte, curLoc types.RecordLocation) {
+	nodeOffset := uint64(0)
+	if it.current != nil {
+		nodeOffset = it.current.offset
+	}
+	queryInfo := extractQueryInfoFromContext(it.ctx)
+	log.Printf("[index] iterator no-progress after Next (desc=%v count=%d node=%d idx=%d key=%s loc=%d:%d)%s",
+		it.desc,
+		it.noProgress,
+		nodeOffset,
+		it.index,
+		summarizeIteratorKeyForLog(curKey),
+		curLoc.SegmentID,
+		curLoc.Offset,
+		queryInfo,
+	)
 }
 
 func (it *btreeIterator) Valid() bool {
-	if !it.valid || it.current == nil || it.index < 0 || it.index >= len(it.current.keys) {
+	if !it.valid || it.current == nil || it.index < 0 || it.index >= len(it.snapshotKeys) {
 		return false
 	}
-	if it.current.isLeaf() && len(it.current.keys) != len(it.current.values) {
+	if it.current.isLeaf() && len(it.snapshotKeys) != len(it.snapshotValues) {
 		return false
 	}
 	return true
@@ -903,27 +1035,75 @@ func (it *btreeIterator) Key() []byte {
 	if !it.Valid() {
 		return nil
 	}
-	return it.current.keys[it.index]
+	return it.snapshotKeys[it.index]
 }
 
 func (it *btreeIterator) Value() types.RecordLocation {
 	if !it.Valid() {
 		return types.RecordLocation{}
 	}
-	return it.current.values[it.index]
+	return it.snapshotValues[it.index]
 }
 
 func (it *btreeIterator) Next() error {
 	if !it.Valid() {
+		it.noProgress = 0
+		return nil
+	}
+
+	prevKey := append([]byte(nil), it.Key()...)
+	prevLoc := it.Value()
+
+	for step := 0; step < maxNoProgressRecoverSteps; step++ {
+		if err := it.nextOnce(); err != nil {
+			return err
+		}
+
+		if !it.Valid() {
+			it.noProgress = 0
+			return nil
+		}
+
+		curKey := it.Key()
+		curLoc := it.Value()
+		if !sameIteratorPosition(prevKey, curKey, prevLoc, curLoc) {
+			it.noProgress = 0
+			return nil
+		}
+
+		it.noProgress++
+		if it.noProgress == 1 || it.noProgress%16 == 0 {
+			it.logNoProgress(curKey, curLoc)
+		}
+	}
+
+	curKey := it.Key()
+	curLoc := it.Value()
+	log.Printf("[index] forcing iterator invalid after repeated no-progress (desc=%v retries=%d key=%s loc=%d:%d)",
+		it.desc,
+		maxNoProgressRecoverSteps,
+		summarizeIteratorKeyForLog(curKey),
+		curLoc.SegmentID,
+		curLoc.Offset,
+	)
+	it.valid = false
+	it.noProgress = 0
+	return nil
+}
+
+func (it *btreeIterator) nextOnce() error {
+	if !it.Valid() {
+		it.noProgress = 0
 		return nil
 	}
 
 	if !it.desc {
 		it.index++
-		if it.index < len(it.current.keys) {
-			key := it.current.keys[it.index]
+		if it.index < len(it.snapshotKeys) {
+			key := it.snapshotKeys[it.index]
 			if it.maxKey != nil && compareKeys(key, it.maxKey) > 0 {
 				it.valid = false
+				it.noProgress = 0
 				return nil
 			}
 			it.valid = true
@@ -945,10 +1125,12 @@ func (it *btreeIterator) Next() error {
 			}
 			it.current = node
 			it.index = 0
-			if it.index < len(it.current.keys) {
-				key := it.current.keys[it.index]
+			it.updateSnapshot() // Capture new node's slices for concurrent-safe access
+			if it.index < len(it.snapshotKeys) {
+				key := it.snapshotKeys[it.index]
 				if it.maxKey != nil && compareKeys(key, it.maxKey) > 0 {
 					it.valid = false
+					it.noProgress = 0
 					return nil
 				}
 				it.valid = true
@@ -956,13 +1138,15 @@ func (it *btreeIterator) Next() error {
 			}
 		}
 		it.valid = false
+		it.noProgress = 0
 	} else {
 		// Reverse iteration: move backward through the tree
 		it.index--
 		if it.index >= 0 {
-			key := it.current.keys[it.index]
+			key := it.snapshotKeys[it.index]
 			if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
 				it.valid = false
+				it.noProgress = 0
 				return nil
 			}
 			it.valid = true
@@ -984,10 +1168,12 @@ func (it *btreeIterator) Next() error {
 			}
 			it.current = node
 			it.index = len(it.current.keys) - 1
+			it.updateSnapshot() // Capture new node's slices for concurrent-safe access
 			if it.index >= 0 {
-				key := it.current.keys[it.index]
+				key := it.snapshotKeys[it.index]
 				if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
 					it.valid = false
+					it.noProgress = 0
 					return nil
 				}
 				it.valid = true
@@ -995,6 +1181,7 @@ func (it *btreeIterator) Next() error {
 			}
 		}
 		it.valid = false
+		it.noProgress = 0
 	}
 	return nil
 }
@@ -1007,7 +1194,7 @@ func (it *btreeIterator) Prev() error {
 	if it.desc {
 		it.index--
 		if it.index >= 0 {
-			key := it.current.keys[it.index]
+			key := it.snapshotKeys[it.index]
 			if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
 				it.valid = false
 				return nil
@@ -1031,8 +1218,9 @@ func (it *btreeIterator) Prev() error {
 			}
 			it.current = node
 			it.index = len(it.current.keys) - 1
+			it.updateSnapshot() // Capture new node's slices for concurrent-safe access
 			if it.index >= 0 {
-				key := it.current.keys[it.index]
+				key := it.snapshotKeys[it.index]
 				if it.minKey != nil && compareKeys(key, it.minKey) < 0 {
 					it.valid = false
 					return nil

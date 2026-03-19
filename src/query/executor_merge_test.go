@@ -1,9 +1,12 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -774,4 +777,407 @@ func containsStr(s, sub string) bool {
 			}
 			return false
 		}())
+}
+
+type stalledIteratorForTest struct {
+	key      []byte
+	location types.RecordLocation
+	nextErr  error
+}
+
+func (s *stalledIteratorForTest) Valid() bool {
+	return true
+}
+
+func (s *stalledIteratorForTest) Key() []byte {
+	return s.key
+}
+
+func (s *stalledIteratorForTest) Value() types.RecordLocation {
+	return s.location
+}
+
+func (s *stalledIteratorForTest) Next() error {
+	return s.nextErr
+}
+
+func (s *stalledIteratorForTest) Prev() error {
+	return nil
+}
+
+func (s *stalledIteratorForTest) Close() error {
+	return nil
+}
+
+func TestAdvanceIteratorSafely_StalledNoProgress(t *testing.T) {
+	iter := &stalledIteratorForTest{
+		key:      []byte{0x01, 0x02, 0x03, 0x04},
+		location: types.RecordLocation{SegmentID: 7, Offset: 42},
+	}
+
+	stillValid, advanced, err, diag := advanceIteratorSafely(iter, 3)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if stillValid {
+		t.Fatalf("expected stillValid=false for stalled iterator")
+	}
+	if advanced {
+		t.Fatalf("expected advanced=false for stalled iterator")
+	}
+	if diag.Reason != "stalled-no-progress" {
+		t.Fatalf("expected reason=stalled-no-progress, got %q", diag.Reason)
+	}
+	if diag.Attempts != 3 {
+		t.Fatalf("expected attempts=3, got %d", diag.Attempts)
+	}
+	if diag.PrevSig == "" || diag.LastSig == "" {
+		t.Fatalf("expected non-empty signatures, got prev=%q last=%q", diag.PrevSig, diag.LastSig)
+	}
+}
+
+func TestAdvanceIteratorSafely_Advanced(t *testing.T) {
+	iter := &mockIteratorForMerge{
+		data: []mockIndexEntry{
+			{key: []byte{0x01, 0x00, 0x00, 0x01}, value: types.RecordLocation{SegmentID: 1, Offset: 10}},
+			{key: []byte{0x01, 0x00, 0x00, 0x02}, value: types.RecordLocation{SegmentID: 1, Offset: 11}},
+		},
+		index: 0,
+	}
+
+	stillValid, advanced, err, diag := advanceIteratorSafely(iter, 3)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !stillValid {
+		t.Fatalf("expected stillValid=true after advance")
+	}
+	if !advanced {
+		t.Fatalf("expected advanced=true")
+	}
+	if diag.Reason != "advanced" {
+		t.Fatalf("expected reason=advanced, got %q", diag.Reason)
+	}
+	if diag.Attempts != 1 {
+		t.Fatalf("expected attempts=1, got %d", diag.Attempts)
+	}
+}
+
+func TestAdvanceIteratorSafely_BecameInvalid(t *testing.T) {
+	iter := &mockIteratorForMerge{
+		data: []mockIndexEntry{
+			{key: []byte{0x01, 0x00, 0x00, 0x01}, value: types.RecordLocation{SegmentID: 2, Offset: 20}},
+		},
+		index: 0,
+	}
+
+	stillValid, advanced, err, diag := advanceIteratorSafely(iter, 3)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if stillValid {
+		t.Fatalf("expected stillValid=false when iterator becomes invalid")
+	}
+	if !advanced {
+		t.Fatalf("expected advanced=true when iterator reaches end")
+	}
+	if diag.Reason != "became-invalid" {
+		t.Fatalf("expected reason=became-invalid, got %q", diag.Reason)
+	}
+}
+
+type scriptedRangeIndexForStall struct {
+	iterators []index.Iterator
+	next      int
+}
+
+func (s *scriptedRangeIndexForStall) Insert(ctx context.Context, key []byte, value types.RecordLocation) error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) Get(ctx context.Context, key []byte) (types.RecordLocation, bool, error) {
+	return types.RecordLocation{}, false, nil
+}
+
+func (s *scriptedRangeIndexForStall) GetBatch(ctx context.Context, keys [][]byte) ([]types.RecordLocation, []bool, error) {
+	return nil, nil, nil
+}
+
+func (s *scriptedRangeIndexForStall) InsertBatch(ctx context.Context, keys [][]byte, values []types.RecordLocation) error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) Range(ctx context.Context, minKey, maxKey []byte) (index.Iterator, error) {
+	return &mockIteratorForMerge{}, nil
+}
+
+func (s *scriptedRangeIndexForStall) RangeDesc(ctx context.Context, minKey, maxKey []byte) (index.Iterator, error) {
+	if s.next >= len(s.iterators) {
+		return &mockIteratorForMerge{}, nil
+	}
+	iter := s.iterators[s.next]
+	s.next++
+	return iter, nil
+}
+
+func (s *scriptedRangeIndexForStall) Delete(ctx context.Context, key []byte, loc *types.RecordLocation) error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) DeleteBatch(ctx context.Context, keys [][]byte, locs []*types.RecordLocation) error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) DeleteRange(ctx context.Context, minKey, maxKey []byte) error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) Flush(ctx context.Context) error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) Close() error {
+	return nil
+}
+
+func (s *scriptedRangeIndexForStall) Stats() index.Stats {
+	return index.Stats{}
+}
+
+func TestMergeLocationIterator_DropsStalledIteratorAndContinues(t *testing.T) {
+	stalled := &stalledIteratorForTest{
+		key:      []byte{0x00, 0x00, 0x00, 0x64}, // timestamp 100
+		location: types.RecordLocation{SegmentID: 9, Offset: 900},
+	}
+	normal := &mockIteratorForMerge{
+		data: []mockIndexEntry{
+			{key: []byte{0x00, 0x00, 0x00, 0x5A}, value: types.RecordLocation{SegmentID: 1, Offset: 100}}, // ts 90
+		},
+		index: 0,
+	}
+
+	idx := &scriptedRangeIndexForStall{iterators: []index.Iterator{stalled, normal}}
+	ranges := []keyRange{
+		{start: []byte{0x00}, end: []byte{0xFF}},
+		{start: []byte{0x01}, end: []byte{0xFE}},
+	}
+
+	var logBuf bytes.Buffer
+	origLogWriter := log.Writer()
+	defer log.SetOutput(origLogWriter)
+	log.SetOutput(&logBuf)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	iter, err := newMergeLocationIterator(ctx, idx, ranges, "stall-repro")
+	if err != nil {
+		t.Fatalf("newMergeLocationIterator failed: %v", err)
+	}
+	defer iter.Close()
+
+	results, err := collectAllLocations(ctx, iter)
+	if err != nil {
+		t.Fatalf("collectAllLocations failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (stalled head + normal), got %d", len(results))
+	}
+
+	gotLog := logBuf.String()
+	if !containsStr(gotLog, "dropping stalled iterator in mergeLocationIterator") {
+		t.Fatalf("expected stalled-drop log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "source=stall-repro") {
+		t.Fatalf("expected source in stalled log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "reason=stalled-no-progress") {
+		t.Fatalf("expected stalled reason in log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "stalled iterator summary in mergeLocationIterator") {
+		t.Fatalf("expected stalled summary log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "phase=exhausted") {
+		t.Fatalf("expected exhausted phase in summary, got: %s", gotLog)
+	}
+}
+
+func TestSearchHighFanout_DropsStalledIterators(t *testing.T) {
+	mgr := newMockIndexManagerForMerge()
+	store := newMockStoreForMerge()
+	executor := NewExecutor(mgr, store).(*executorImpl)
+
+	tagValues := make([]string, 0, 48)
+	for i := 0; i < 48; i++ {
+		tagValues = append(tagValues, fmt.Sprintf("tag_%02d", i))
+	}
+
+	plan := &planImpl{
+		strategy: "search",
+		filter: &types.QueryFilter{
+			Kinds: []uint16{30023},
+			Tags: map[string][]string{
+				"t": tagValues,
+			},
+			Limit: 200,
+		},
+		fullyIndexed: true,
+	}
+
+	ranges := executor.buildSearchRanges(plan)
+	if len(ranges) != len(tagValues) {
+		t.Fatalf("expected %d ranges, got %d", len(tagValues), len(ranges))
+	}
+
+	iterators := make([]index.Iterator, 0, len(ranges))
+	stalledCount := 0
+	for i := 0; i < len(ranges); i++ {
+		ts := uint32(1000 - i)
+		key := []byte{byte(ts >> 24), byte(ts >> 16), byte(ts >> 8), byte(ts)}
+		loc := types.RecordLocation{SegmentID: 55, Offset: uint32(1000 + i)}
+
+		// Inject periodic stalled iterators to emulate repeated production conditions.
+		if i%17 == 0 {
+			iterators = append(iterators, &stalledIteratorForTest{key: key, location: loc})
+			stalledCount++
+			continue
+		}
+
+		iterators = append(iterators, &mockIteratorForMerge{
+			data: []mockIndexEntry{{key: key, value: loc}},
+		})
+	}
+
+	idx := &scriptedRangeIndexForStall{iterators: iterators}
+
+	var logBuf bytes.Buffer
+	origLogWriter := log.Writer()
+	defer log.SetOutput(origLogWriter)
+	log.SetOutput(&logBuf)
+
+	ctx, cancel := context.WithTimeout(WithQueryMetadata(context.Background(), plan.filter), time.Second)
+	defer cancel()
+
+	iter, err := newMergeLocationIterator(ctx, idx, ranges, "search")
+	if err != nil {
+		t.Fatalf("newMergeLocationIterator failed: %v", err)
+	}
+	defer iter.Close()
+
+	results, err := collectAllLocations(ctx, iter)
+	if err != nil {
+		t.Fatalf("collectAllLocations failed: %v", err)
+	}
+
+	if len(results) != len(ranges) {
+		t.Fatalf("expected %d results, got %d", len(ranges), len(results))
+	}
+
+	gotLog := logBuf.String()
+	if !containsStr(gotLog, "dropping stalled iterator in mergeLocationIterator") {
+		t.Fatalf("expected stalled-drop log in high fan-out case, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "source=search") {
+		t.Fatalf("expected source=search in log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "kinds=[30023]") {
+		t.Fatalf("expected kinds metadata in log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, "stalled iterator summary in mergeLocationIterator") {
+		t.Fatalf("expected stalled summary log in high fan-out case, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, fmt.Sprintf("total=%d", stalledCount)) {
+		t.Fatalf("expected total=%d in summary log, got: %s", stalledCount, gotLog)
+	}
+
+	expectedLogged := 0
+	for i := 1; i <= stalledCount; i++ {
+		if i <= stalledDropLogInitial || i%stalledDropLogEvery == 0 {
+			expectedLogged++
+		}
+	}
+	if !containsStr(gotLog, fmt.Sprintf("sampled=%d", expectedLogged)) {
+		t.Fatalf("expected sampled=%d in summary log, got: %s", expectedLogged, gotLog)
+	}
+	if !containsStr(gotLog, fmt.Sprintf("suppressed=%d", stalledCount-expectedLogged)) {
+		t.Fatalf("expected suppressed=%d in summary log, got: %s", stalledCount-expectedLogged, gotLog)
+	}
+
+	gotDrops := strings.Count(gotLog, "dropping stalled iterator in mergeLocationIterator")
+	if gotDrops != expectedLogged {
+		t.Fatalf("expected %d sampled stalled-drop logs, got %d", expectedLogged, gotDrops)
+	}
+}
+
+func TestQueryIndexRangesMerge_StalledLogSamplingAndSummary(t *testing.T) {
+	filter := &types.QueryFilter{
+		Kinds: []uint16{30023},
+		Tags: map[string][]string{
+			"t": {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "aa", "ab", "ac", "ad", "ae", "af", "ag", "ah", "ai", "aj", "ak", "al", "am", "an", "ao", "ap", "aq", "ar", "as", "at", "au", "av"},
+		},
+		Limit: 500,
+	}
+
+	ctx := WithQueryMetadata(context.Background(), filter)
+	ranges := make([]keyRange, 0, len(filter.Tags["t"]))
+	for i := 0; i < len(filter.Tags["t"]); i++ {
+		ranges = append(ranges, keyRange{start: []byte{byte(i)}, end: []byte{byte(255 - i)}})
+	}
+
+	iterators := make([]index.Iterator, 0, len(ranges))
+	stalledCount := 0
+	for i := 0; i < len(ranges); i++ {
+		ts := uint32(2000 - i)
+		key := []byte{byte(ts >> 24), byte(ts >> 16), byte(ts >> 8), byte(ts)}
+		loc := types.RecordLocation{SegmentID: 77, Offset: uint32(2000 + i)}
+		if i%17 == 0 {
+			iterators = append(iterators, &stalledIteratorForTest{key: key, location: loc})
+			stalledCount++
+			continue
+		}
+		iterators = append(iterators, &mockIteratorForMerge{data: []mockIndexEntry{{key: key, value: loc}}})
+	}
+
+	idx := &scriptedRangeIndexForStall{iterators: iterators}
+	executor := &executorImpl{}
+
+	var logBuf bytes.Buffer
+	origLogWriter := log.Writer()
+	defer log.SetOutput(origLogWriter)
+	log.SetOutput(&logBuf)
+
+	results, err := executor.queryIndexRangesMerge(ctx, idx, ranges, 500)
+	if err != nil {
+		t.Fatalf("queryIndexRangesMerge failed: %v", err)
+	}
+	if len(results) != len(ranges) {
+		t.Fatalf("expected %d results, got %d", len(ranges), len(results))
+	}
+
+	expectedLogged := 0
+	for i := 1; i <= stalledCount; i++ {
+		if i <= stalledDropLogInitial || i%stalledDropLogEvery == 0 {
+			expectedLogged++
+		}
+	}
+
+	gotLog := logBuf.String()
+	if !containsStr(gotLog, "stalled iterator summary in queryIndexRangesMerge") {
+		t.Fatalf("expected queryIndexRangesMerge summary log, got: %s", gotLog)
+	}
+	if !containsStr(gotLog, fmt.Sprintf("total=%d", stalledCount)) {
+		t.Fatalf("expected total=%d in summary log, got: %s", stalledCount, gotLog)
+	}
+	if !containsStr(gotLog, fmt.Sprintf("sampled=%d", expectedLogged)) {
+		t.Fatalf("expected sampled=%d in summary log, got: %s", expectedLogged, gotLog)
+	}
+	if !containsStr(gotLog, fmt.Sprintf("suppressed=%d", stalledCount-expectedLogged)) {
+		t.Fatalf("expected suppressed=%d in summary log, got: %s", stalledCount-expectedLogged, gotLog)
+	}
+
+	gotDrops := strings.Count(gotLog, "dropping stalled iterator in queryIndexRangesMerge")
+	if gotDrops != expectedLogged {
+		t.Fatalf("expected %d sampled queryIndexRangesMerge drop logs, got %d", expectedLogged, gotDrops)
+	}
 }

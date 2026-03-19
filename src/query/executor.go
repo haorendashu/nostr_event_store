@@ -33,31 +33,86 @@ func iteratorPositionSignature(iter index.Iterator) string {
 	return fmt.Sprintf("%s|%d:%d", hex.EncodeToString(iter.Key()), loc.SegmentID, loc.Offset)
 }
 
+type iteratorAdvanceDiagnostics struct {
+	Reason   string
+	Attempts int
+	PrevSig  string
+	LastSig  string
+}
+
+func truncateForLog(s string, maxLen int) string {
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
+}
+
+func summarizeRangeForLog(r keyRange) string {
+	return fmt.Sprintf("start=%s,end=%s",
+		truncateForLog(hex.EncodeToString(r.start), 24),
+		truncateForLog(hex.EncodeToString(r.end), 24))
+}
+
+func formatIteratorStallLogSuffix(
+	ctx context.Context,
+	source string,
+	rangeIndex int,
+	totalRanges int,
+	rangeSummary string,
+	d iteratorAdvanceDiagnostics,
+) string {
+	return fmt.Sprintf(" (source=%s range=%d/%d %s reason=%s attempts=%d prev=%s last=%s)%s",
+		source,
+		rangeIndex,
+		totalRanges,
+		rangeSummary,
+		d.Reason,
+		d.Attempts,
+		truncateForLog(d.PrevSig, 96),
+		truncateForLog(d.LastSig, 96),
+		formatQueryMetadataForLog(GetQueryMetadata(ctx)),
+	)
+}
+
 // advanceIteratorSafely advances an index iterator and verifies that it actually moved.
 // Some corrupted/cyclic iterator states can return Valid()==true indefinitely without progress,
 // which would otherwise cause query loops and timeout.
-func advanceIteratorSafely(iter index.Iterator, maxAttempts int) (stillValid bool, advanced bool, err error) {
+func advanceIteratorSafely(iter index.Iterator, maxAttempts int) (stillValid bool, advanced bool, err error, diag iteratorAdvanceDiagnostics) {
 	if iter == nil || !iter.Valid() {
-		return false, false, nil
+		return false, false, nil, iteratorAdvanceDiagnostics{Reason: "invalid-at-entry"}
 	}
 
 	prevSig := iteratorPositionSignature(iter)
+	diag = iteratorAdvanceDiagnostics{
+		Reason:  "stalled-no-progress",
+		PrevSig: prevSig,
+		LastSig: prevSig,
+	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		diag.Attempts = attempt + 1
 		if err := iter.Next(); err != nil {
-			return false, false, err
+			diag.Reason = "next-error"
+			return false, false, err, diag
 		}
 
 		if !iter.Valid() {
-			return false, true, nil
+			diag.Reason = "became-invalid"
+			diag.LastSig = "invalid"
+			return false, true, nil, diag
 		}
 
 		newSig := iteratorPositionSignature(iter)
+		diag.LastSig = newSig
 		if newSig != prevSig {
-			return true, true, nil
+			diag.Reason = "advanced"
+			return true, true, nil, diag
 		}
 	}
 
-	return false, false, nil
+	return false, false, nil, diag
 }
 
 // OperationType identifies the type of operation being performed
@@ -168,6 +223,8 @@ func formatQueryMetadataForLog(meta *QueryMetadata) string {
 	}
 
 	var b strings.Builder
+
+	// Authors
 	b.WriteString(" [authors=[")
 	for i, author := range meta.Authors {
 		if i > 0 {
@@ -212,7 +269,10 @@ func formatQueryMetadataForLog(meta *QueryMetadata) string {
 
 	b.WriteString(fmt.Sprintf(", since=%d", meta.Since))
 	b.WriteString(fmt.Sprintf(", until=%d", meta.Until))
-	b.WriteString(fmt.Sprintf(", limit=%d, elapsed=%v]", meta.Limit, time.Since(meta.StartTime).Round(time.Millisecond)))
+	b.WriteString(fmt.Sprintf(", limit=%d", meta.Limit))
+	b.WriteString(fmt.Sprintf(", authors_count=%d, kinds_count=%d, tags_count=%d",
+		meta.AuthorsCount, meta.KindsCount, meta.TagsCount))
+	b.WriteString(fmt.Sprintf(", elapsed=%v]", time.Since(meta.StartTime).Round(time.Millisecond)))
 	return b.String()
 }
 
@@ -332,35 +392,53 @@ func (s *sortedLocationIterator) Close() error {
 // It merges multiple descending index iterators and returns locations in timestamp descending order.
 // Automatically deduplicates by SegmentID:Offset.
 type mergeLocationIterator struct {
-	heap      *mergeHeap             // Max-heap for merging
-	iterators []index.Iterator       // Source iterators
-	seen      map[string]bool        // Deduplication map (key: "SegmentID:Offset")
-	rangeSeen map[int]map[string]int // Cycle detection per rangeIndex
-	current   types.LocationWithTime // Current location (cached after Next)
-	valid     bool                   // Whether current location is valid
-	closed    bool                   // Whether iterator is closed
+	heap             *mergeHeap             // Max-heap for merging
+	iterators        []index.Iterator       // Source iterators
+	ranges           []keyRange             // Active ranges aligned with iterators
+	source           string                 // Query strategy/index source label for diagnostics
+	seen             map[string]bool        // Deduplication map (key: "SegmentID:Offset")
+	rangeSeen        map[int]map[string]int // Cycle detection per rangeIndex
+	stallByRange     map[int]int            // Stalled drops grouped by range index
+	stallByReason    map[string]int         // Stalled drops grouped by reason
+	stallTotal       int                    // Total stalled drops in this iterator lifecycle
+	stallLoggedCount int                    // Count of emitted per-drop stalled logs (sampled)
+	stallLogged      bool                   // Whether summary was already emitted
+	current          types.LocationWithTime // Current location (cached after Next)
+	valid            bool                   // Whether current location is valid
+	closed           bool                   // Whether iterator is closed
 }
 
+const (
+	stalledDropLogInitial = 1
+	stalledDropLogEvery   = 16
+)
+
 // newMergeLocationIterator creates a new merge-based location iterator.
-func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []keyRange) (*mergeLocationIterator, error) {
+func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []keyRange, source string) (*mergeLocationIterator, error) {
 	// Create descending iterators for each range
 	var iterators []index.Iterator
+	var activeRanges []keyRange
 	for _, r := range ranges {
 		iter, err := idx.RangeDesc(ctx, r.start, r.end)
 		if err != nil {
 			continue
 		}
 		iterators = append(iterators, iter)
+		activeRanges = append(activeRanges, r)
 	}
 
 	if len(iterators) == 0 {
 		return &mergeLocationIterator{
-			heap:      &mergeHeap{},
-			iterators: nil,
-			seen:      make(map[string]bool),
-			rangeSeen: make(map[int]map[string]int),
-			valid:     false,
-			closed:    false,
+			heap:          &mergeHeap{},
+			iterators:     nil,
+			ranges:        nil,
+			source:        source,
+			seen:          make(map[string]bool),
+			rangeSeen:     make(map[int]map[string]int),
+			stallByRange:  make(map[int]int),
+			stallByReason: make(map[string]int),
+			valid:         false,
+			closed:        false,
 		}, nil
 	}
 
@@ -385,12 +463,16 @@ func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []key
 	}
 
 	miter := &mergeLocationIterator{
-		heap:      h,
-		iterators: iterators,
-		seen:      make(map[string]bool),
-		rangeSeen: make(map[int]map[string]int),
-		valid:     false,
-		closed:    false,
+		heap:          h,
+		iterators:     iterators,
+		ranges:        activeRanges,
+		source:        source,
+		seen:          make(map[string]bool),
+		rangeSeen:     make(map[int]map[string]int),
+		stallByRange:  make(map[int]int),
+		stallByReason: make(map[string]int),
+		valid:         false,
+		closed:        false,
 	}
 
 	// Prime the iterator by fetching the first valid item
@@ -423,6 +505,73 @@ func (m *mergeLocationIterator) Next(ctx context.Context) error {
 	return m.advance(ctx)
 }
 
+func (m *mergeLocationIterator) recordStalled(rangeIndex int, diag iteratorAdvanceDiagnostics) {
+	m.stallTotal++
+	m.stallByRange[rangeIndex]++
+	reason := diag.Reason
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.stallByReason[reason]++
+}
+
+func (m *mergeLocationIterator) shouldEmitStalledDropLog() bool {
+	if m.stallTotal <= stalledDropLogInitial {
+		return true
+	}
+	return m.stallTotal%stalledDropLogEvery == 0
+}
+
+func (m *mergeLocationIterator) emitStalledSummary(ctx context.Context, phase string) {
+	if m.stallLogged || m.stallTotal == 0 {
+		return
+	}
+	m.stallLogged = true
+
+	rangeKeys := make([]int, 0, len(m.stallByRange))
+	for idx := range m.stallByRange {
+		rangeKeys = append(rangeKeys, idx)
+	}
+	sort.Ints(rangeKeys)
+
+	rangeParts := make([]string, 0, len(rangeKeys))
+	for _, idx := range rangeKeys {
+		rangeSummary := "range=unknown"
+		if idx >= 0 && idx < len(m.ranges) {
+			rangeSummary = summarizeRangeForLog(m.ranges[idx])
+		}
+		rangeParts = append(rangeParts, fmt.Sprintf("%d:%d(%s)", idx, m.stallByRange[idx], rangeSummary))
+	}
+
+	reasons := make([]string, 0, len(m.stallByReason))
+	for reason := range m.stallByReason {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	reasonParts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		reasonParts = append(reasonParts, fmt.Sprintf("%s:%d", reason, m.stallByReason[reason]))
+	}
+
+	suppressed := m.stallTotal - m.stallLoggedCount
+	if suppressed < 0 {
+		suppressed = 0
+	}
+
+	log.Printf("[query] stalled iterator summary in mergeLocationIterator (phase=%s source=%s total=%d sampled=%d suppressed=%d sample_policy=first%d_every%d ranges={%s} reasons={%s})%s",
+		phase,
+		m.source,
+		m.stallTotal,
+		m.stallLoggedCount,
+		suppressed,
+		stalledDropLogInitial,
+		stalledDropLogEvery,
+		strings.Join(rangeParts, ","),
+		strings.Join(reasonParts, ","),
+		formatQueryMetadataForLog(GetQueryMetadata(ctx)),
+	)
+}
+
 // advance fetches the next unique (deduplicated) location from the heap
 func (m *mergeLocationIterator) advance(ctx context.Context) error {
 	iterCount := 0
@@ -432,6 +581,7 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 		if iterCount%1000 == 0 {
 			select {
 			case <-ctx.Done():
+				m.emitStalledSummary(ctx, "context_done")
 				// Output diagnostic information when timeout occurs
 				fmt.Printf("\n[TIMEOUT DIAGNOSTIC] Query iterator canceled after %d iterations\n", iterCount)
 
@@ -511,7 +661,7 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 
 		// Advance the iterator that provided this item.
 		// If iterator stalls (no forward progress), drop it to prevent infinite loops.
-		stillValid, advanced, err := advanceIteratorSafely(item.iterator, 3)
+		stillValid, advanced, err, diag := advanceIteratorSafely(item.iterator, 3)
 		if err == nil && stillValid {
 			loc := item.iterator.Value()
 			createdAt := extractTimestampFromKey(item.iterator.Key())
@@ -525,8 +675,16 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 				rangeIndex: item.rangeIndex,
 			})
 		} else if err == nil && !advanced {
-			log.Printf("[query] dropping stalled iterator in mergeLocationIterator (range=%d)%s",
-				item.rangeIndex, formatQueryMetadataForLog(GetQueryMetadata(ctx)))
+			m.recordStalled(item.rangeIndex, diag)
+			if m.shouldEmitStalledDropLog() {
+				m.stallLoggedCount++
+				rangeSummary := "range=unknown"
+				if item.rangeIndex >= 0 && item.rangeIndex < len(m.ranges) {
+					rangeSummary = summarizeRangeForLog(m.ranges[item.rangeIndex])
+				}
+				log.Printf("[query] dropping stalled iterator in mergeLocationIterator%s",
+					formatIteratorStallLogSuffix(ctx, m.source, item.rangeIndex, len(m.ranges), rangeSummary, diag))
+			}
 		}
 
 		// If this was a unique location, set it as current and return
@@ -540,6 +698,7 @@ func (m *mergeLocationIterator) advance(ctx context.Context) error {
 
 	// No more items
 	m.valid = false
+	m.emitStalledSummary(ctx, "exhausted")
 	return nil
 }
 
@@ -555,6 +714,7 @@ func (m *mergeLocationIterator) Close() error {
 		}
 	}
 	m.iterators = nil
+	m.ranges = nil
 	m.heap = nil
 	m.seen = nil
 	m.rangeSeen = nil
@@ -585,12 +745,12 @@ func newIntersectionLocationIterator(
 	idx1 index.Index, ranges1 []keyRange,
 	idx2 index.Index, ranges2 []keyRange,
 ) (*intersectionLocationIterator, error) {
-	iter1, err := newMergeLocationIterator(ctx, idx1, ranges1)
+	iter1, err := newMergeLocationIterator(ctx, idx1, ranges1, "intersection-left")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create first index iterator: %w", err)
 	}
 
-	iter2, err := newMergeLocationIterator(ctx, idx2, ranges2)
+	iter2, err := newMergeLocationIterator(ctx, idx2, ranges2, "intersection-right")
 	if err != nil {
 		iter1.Close()
 		return nil, fmt.Errorf("failed to create second index iterator: %w", err)
@@ -1017,7 +1177,7 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 			return nil, fmt.Errorf("author_time index not available")
 		}
 		ranges := e.buildAuthorTimeRanges(plan)
-		return newMergeLocationIterator(ctx, atIdx, ranges)
+		return newMergeLocationIterator(ctx, atIdx, ranges, "author_time")
 
 	case "search":
 		searchIdx := e.indexMgr.SearchIndex()
@@ -1025,7 +1185,7 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 			return nil, fmt.Errorf("search index not available")
 		}
 		ranges := e.buildSearchRanges(plan)
-		return newMergeLocationIterator(ctx, searchIdx, ranges)
+		return newMergeLocationIterator(ctx, searchIdx, ranges, "search")
 
 	case "kind_time":
 		kindTimeIdx := e.indexMgr.KindTimeIndex()
@@ -1033,7 +1193,7 @@ func (e *executorImpl) getLocationIterator(ctx context.Context, plan *planImpl) 
 			return nil, fmt.Errorf("kind_time index not available")
 		}
 		ranges := e.buildKindTimeRanges(plan)
-		return newMergeLocationIterator(ctx, kindTimeIdx, ranges)
+		return newMergeLocationIterator(ctx, kindTimeIdx, ranges, "kind_time")
 
 	case "intersection":
 		// Multi-index intersection for authors + tags queries
@@ -1206,6 +1366,65 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 	var results []types.LocationWithTime
 	seen := make(map[string]bool) // key: "SegmentID:Offset"
 	rangeSeen := make(map[int]map[string]int)
+	stallByRange := make(map[int]int)
+	stallByReason := make(map[string]int)
+	stallTotal := 0
+	stallLoggedCount := 0
+
+	shouldEmitDropLog := func(total int) bool {
+		if total <= stalledDropLogInitial {
+			return true
+		}
+		return total%stalledDropLogEvery == 0
+	}
+
+	emitSummary := func(phase string) {
+		if stallTotal == 0 {
+			return
+		}
+
+		rangeKeys := make([]int, 0, len(stallByRange))
+		for idx := range stallByRange {
+			rangeKeys = append(rangeKeys, idx)
+		}
+		sort.Ints(rangeKeys)
+
+		rangeParts := make([]string, 0, len(rangeKeys))
+		for _, idx := range rangeKeys {
+			rangeSummary := "range=unknown"
+			if idx >= 0 && idx < len(ranges) {
+				rangeSummary = summarizeRangeForLog(ranges[idx])
+			}
+			rangeParts = append(rangeParts, fmt.Sprintf("%d:%d(%s)", idx, stallByRange[idx], rangeSummary))
+		}
+
+		reasons := make([]string, 0, len(stallByReason))
+		for reason := range stallByReason {
+			reasons = append(reasons, reason)
+		}
+		sort.Strings(reasons)
+		reasonParts := make([]string, 0, len(reasons))
+		for _, reason := range reasons {
+			reasonParts = append(reasonParts, fmt.Sprintf("%s:%d", reason, stallByReason[reason]))
+		}
+
+		suppressed := stallTotal - stallLoggedCount
+		if suppressed < 0 {
+			suppressed = 0
+		}
+
+		log.Printf("[query] stalled iterator summary in queryIndexRangesMerge (phase=%s total=%d sampled=%d suppressed=%d sample_policy=first%d_every%d ranges={%s} reasons={%s})%s",
+			phase,
+			stallTotal,
+			stallLoggedCount,
+			suppressed,
+			stalledDropLogInitial,
+			stalledDropLogEvery,
+			strings.Join(rangeParts, ","),
+			strings.Join(reasonParts, ","),
+			formatQueryMetadataForLog(GetQueryMetadata(ctx)),
+		)
+	}
 
 	for h.Len() > 0 && len(results) < limit {
 		// Get the item with the largest timestamp (most recent)
@@ -1228,7 +1447,7 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 
 		// Advance the iterator that provided this item.
 		// If iterator stalls (no forward progress), drop it to prevent infinite loops.
-		stillValid, advanced, err := advanceIteratorSafely(item.iterator, 3)
+		stillValid, advanced, err, diag := advanceIteratorSafely(item.iterator, 3)
 		if err == nil && stillValid {
 			loc := item.iterator.Value()
 			createdAt := extractTimestampFromKey(item.iterator.Key())
@@ -1242,10 +1461,31 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 				rangeIndex: item.rangeIndex,
 			})
 		} else if err == nil && !advanced {
-			log.Printf("[query] dropping stalled iterator in queryIndexRangesMerge (range=%d)%s",
-				item.rangeIndex, formatQueryMetadataForLog(GetQueryMetadata(ctx)))
+			stallTotal++
+			stallByRange[item.rangeIndex]++
+			reason := diag.Reason
+			if reason == "" {
+				reason = "unknown"
+			}
+			stallByReason[reason]++
+
+			rangeSummary := "range=unknown"
+			if item.rangeIndex >= 0 && item.rangeIndex < len(ranges) {
+				rangeSummary = summarizeRangeForLog(ranges[item.rangeIndex])
+			}
+			if shouldEmitDropLog(stallTotal) {
+				stallLoggedCount++
+				log.Printf("[query] dropping stalled iterator in queryIndexRangesMerge%s",
+					formatIteratorStallLogSuffix(ctx, "queryIndexRangesMerge", item.rangeIndex, len(ranges), rangeSummary, diag))
+			}
 		}
 	}
+
+	phase := "exhausted"
+	if len(results) >= limit && h.Len() > 0 {
+		phase = "limit_reached"
+	}
+	emitSummary(phase)
 
 	return results, nil
 }
