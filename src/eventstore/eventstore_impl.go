@@ -404,8 +404,11 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 	}
 
 	// Step 4: Update primary index
+	// CRITICAL: If primary insert fails, skip secondary indexes to prevent
+	// secondary indexes from having entries without corresponding primary entries.
 	if err := primaryIdx.Insert(ctx, eventKeyBytes, loc); err != nil {
-		e.logger.Printf("Warning: primary index update failed: %v", err)
+		e.logger.Printf("Warning: primary index update failed, skipping secondary indexes: %v", err)
+		return loc, nil
 	}
 
 	// Step 5: Update author-time index
@@ -423,9 +426,11 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 	}
 
 	// Step 7: Build tag indexes for all configured tag types
+	// Use tag deduplication (consistent with InsertRecoveryBatch)
 	searchIdx := e.indexMgr.SearchIndex()
 	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
 
+	seenTags := make(map[string]struct{})
 	for _, tag := range event.Tags {
 		if len(tag) < 2 {
 			continue // Skip malformed tags
@@ -439,6 +444,13 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 		if !ok {
 			continue // Skip unconfigured tag types
 		}
+
+		// Deduplicate: same (tagName, tagValue) within one event
+		tagKey := tagName + "\x00" + tagValue
+		if _, exists := seenTags[tagKey]; exists {
+			continue // Skip duplicate tag
+		}
+		seenTags[tagKey] = struct{}{}
 
 		// Build and insert search index entry
 		searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
@@ -542,14 +554,20 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		return nil, fmt.Errorf("batch duplicate check: %w", err)
 	}
 
-	// Filter out duplicates
+	// Filter out duplicates (both already-indexed and within-batch duplicates)
 	uniqueEvents := make([]*types.Event, 0, len(events))
 	uniqueIndices := make([]int, 0, len(events))
+	seenInBatch := make(map[[32]byte]struct{}) // Track event IDs already seen in this batch
 	for i, exists := range existsFlags {
-		if !exists {
-			uniqueEvents = append(uniqueEvents, events[i])
-			uniqueIndices = append(uniqueIndices, i)
+		if exists {
+			continue // Already in primary index
 		}
+		if _, seen := seenInBatch[events[i].ID]; seen {
+			continue // Already seen in this batch (within-batch duplicate)
+		}
+		seenInBatch[events[i].ID] = struct{}{}
+		uniqueEvents = append(uniqueEvents, events[i])
+		uniqueIndices = append(uniqueIndices, i)
 	}
 
 	if len(uniqueEvents) == 0 {
@@ -658,6 +676,14 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	}
 
 	// Step 5: Batch index updates
+	// CRITICAL: All indexes must be updated atomically as a group. If the primary
+	// index batch insert fails (InsertBatch stops on first error), we must NOT
+	// continue inserting the full batch into secondary indexes, because that would
+	// create entries in secondary indexes with no corresponding primary entry —
+	// causing the secondary index entry count to exceed primary's. Instead, we
+	// determine how many entries were successfully inserted into primary and only
+	// insert those same entries into secondary indexes.
+
 	// Primary index
 	primaryKeys := make([][]byte, len(uniqueEvents))
 	primaryLocs := make([]types.RecordLocation, len(uniqueEvents))
@@ -666,29 +692,76 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		primaryLocs[i] = storedLocations[i]
 	}
 
+	// Track which events were successfully inserted into the primary index.
+	// We need this set so that secondary indexes only receive entries whose
+	// corresponding primary entry actually exists, even when InsertBatch
+	// fails partway through (it stops on first error).
+	primaryInsertedIDs := make(map[[32]byte]struct{}, len(uniqueEvents))
+	primaryInsertFailed := false
+
 	if err := primaryIdx.InsertBatch(ctx, primaryKeys, primaryLocs); err != nil {
 		e.logger.Printf("Warning: primary index batch update failed: %v", err)
+		primaryInsertFailed = true
+		// Check each key individually to find which ones actually made it in.
+		for i, key := range primaryKeys {
+			if _, exists, gerr := primaryIdx.Get(ctx, key); gerr == nil && exists {
+				primaryInsertedIDs[uniqueEvents[i].ID] = struct{}{}
+			}
+		}
+		if len(primaryInsertedIDs) == 0 {
+			// Primary completely failed; skip all secondary index updates.
+			e.logger.Printf("Warning: primary index batch insert got 0 entries, skipping secondary indexes")
+			e.noteEventsWritten(0)
+			return locations, nil
+		}
+		e.logger.Printf("Warning: primary index partial insert: %d/%d succeeded", len(primaryInsertedIDs), len(uniqueEvents))
+	} else {
+		// All succeeded — populate the full set.
+		for _, event := range uniqueEvents {
+			primaryInsertedIDs[event.ID] = struct{}{}
+		}
+	}
+
+	// Build secondary-index slices containing only events that are present in primary.
+	// When primary insert fully succeeded we use the original slices directly (fast path).
+	var indexEvents []*types.Event
+	var indexLocs []types.RecordLocation
+
+	if !primaryInsertFailed {
+		// Fast path: all events succeeded, no filtering needed.
+		indexEvents = uniqueEvents
+		indexLocs = primaryLocs
+	} else {
+		// Slow path: build filtered subset.
+		indexEvents = make([]*types.Event, 0, len(primaryInsertedIDs))
+		indexLocs = make([]types.RecordLocation, 0, len(primaryInsertedIDs))
+		for i, event := range uniqueEvents {
+			if _, ok := primaryInsertedIDs[event.ID]; ok {
+				indexEvents = append(indexEvents, event)
+				indexLocs = append(indexLocs, primaryLocs[i])
+			}
+		}
 	}
 
 	// Author-time index
 	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
-	authorTimeKeys := make([][]byte, len(uniqueEvents))
-	for i, event := range uniqueEvents {
+	authorTimeKeys := make([][]byte, len(indexEvents))
+	for i, event := range indexEvents {
 		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
 	}
 
-	if err := authorTimeIdx.InsertBatch(ctx, authorTimeKeys, primaryLocs); err != nil {
+	if err := authorTimeIdx.InsertBatch(ctx, authorTimeKeys, indexLocs); err != nil {
 		e.logger.Printf("Warning: author-time index batch update failed: %v", err)
 	}
 
 	// Kind-time index
 	kindTimeIdx := e.indexMgr.KindTimeIndex()
-	kindTimeKeys := make([][]byte, len(uniqueEvents))
-	for i, event := range uniqueEvents {
+	kindTimeKeys := make([][]byte, len(indexEvents))
+	for i, event := range indexEvents {
 		kindTimeKeys[i] = e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
 	}
 
-	if err := kindTimeIdx.InsertBatch(ctx, kindTimeKeys, primaryLocs); err != nil {
+	if err := kindTimeIdx.InsertBatch(ctx, kindTimeKeys, indexLocs); err != nil {
 		e.logger.Printf("Warning: kind-time index batch update failed: %v", err)
 	}
 
@@ -696,12 +769,13 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	searchIdx := e.indexMgr.SearchIndex()
 	tagMapping := e.keyBuilder.TagNameToSearchTypeCode()
 
-	// Collect all tag index entries
-	searchKeys := make([][]byte, 0, len(uniqueEvents)*5) // Estimate 5 tags per event
-	searchLocs := make([]types.RecordLocation, 0, len(uniqueEvents)*5)
+	// Collect all tag index entries (with tag dedup per event for consistency with InsertRecoveryBatch)
+	searchKeys := make([][]byte, 0, len(indexEvents)*5) // Estimate 5 tags per event
+	searchLocs := make([]types.RecordLocation, 0, len(indexEvents)*5)
 
-	for i, event := range uniqueEvents {
-		loc := storedLocations[i]
+	for i, event := range indexEvents {
+		loc := indexLocs[i]
+		seenTags := make(map[string]struct{})
 		for _, tag := range event.Tags {
 			if len(tag) < 2 {
 				continue
@@ -714,6 +788,13 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 			if !ok {
 				continue
 			}
+
+			// Deduplicate: same (tagName, tagValue) within one event
+			tagKey := tagName + "\x00" + tagValue
+			if _, exists := seenTags[tagKey]; exists {
+				continue // Skip duplicate tag
+			}
+			seenTags[tagKey] = struct{}{}
 
 			searchKey := e.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
 			if shouldLogSearchIndex(tagName, tagValue) {
@@ -731,7 +812,7 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		}
 	}
 
-	e.noteEventsWritten(len(uniqueEvents))
+	e.noteEventsWritten(len(primaryInsertedIDs))
 
 	return locations, nil
 }
@@ -2073,13 +2154,25 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 		return fmt.Errorf("author-time index insert: %w", err)
 	}
 
+	// Update kind-time index
+	kindTimeIdx := r.indexMgr.KindTimeIndex()
+	if kindTimeIdx == nil {
+		return fmt.Errorf("kind-time index is nil during recovery")
+	}
+	kindTimeKey := r.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+	if err := kindTimeIdx.Insert(ctx, kindTimeKey, location); err != nil {
+		return fmt.Errorf("kind-time index insert: %w", err)
+	}
+
 	// Update search indexes for configured tags
+	// Use tag deduplication (consistent with InsertRecoveryBatch and WriteEvent)
 	searchIdx := r.indexMgr.SearchIndex()
 	if searchIdx == nil {
 		return fmt.Errorf("search index is nil during recovery")
 	}
 	tagMapping := r.keyBuilder.TagNameToSearchTypeCode()
 
+	seenTags := make(map[string]struct{})
 	for _, tag := range event.Tags {
 		if len(tag) < 2 {
 			continue
@@ -2092,6 +2185,13 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 		if !ok {
 			continue
 		}
+
+		// Deduplicate: same (tagName, tagValue) within one event
+		tagKey := tagName + "\x00" + tagValue
+		if _, exists := seenTags[tagKey]; exists {
+			continue // Skip duplicate tag
+		}
+		seenTags[tagKey] = struct{}{}
 
 		searchKey := r.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
 		if err := searchIdx.Insert(ctx, searchKey, location); err != nil {
