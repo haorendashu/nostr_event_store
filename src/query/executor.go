@@ -388,6 +388,153 @@ func (s *sortedLocationIterator) Close() error {
 	return nil
 }
 
+// lazyEventIterator implements ResultIterator by lazily fetching and filtering events
+// from an underlying LocationIterator. Event reads and filter checks are deferred to
+// each Next() call, enabling early termination via context cancellation and avoiding
+// unnecessary disk I/O when the caller stops iterating before the limit is reached.
+type lazyEventIterator struct {
+	locationIter LocationIterator // owned; closed by Close()
+	store        storage.Store
+	filter       *types.QueryFilter
+	fullyIndexed bool
+	indexesUsed  []string
+	current      *types.Event
+	valid        bool
+	closed       bool
+	resultCount  int // number of valid events emitted (limit enforcement)
+	emittedCount int // total events consumed via Next() (returned by Count)
+}
+
+// newLazyEventIterator creates a lazyEventIterator and primes it to the first valid event.
+// On success the returned iterator owns locationIter and will close it.
+// On error locationIter is closed by this function before returning.
+func newLazyEventIterator(
+	ctx context.Context,
+	locationIter LocationIterator,
+	store storage.Store,
+	filter *types.QueryFilter,
+	fullyIndexed bool,
+	indexesUsed []string,
+) (*lazyEventIterator, error) {
+	it := &lazyEventIterator{
+		locationIter: locationIter,
+		store:        store,
+		filter:       filter,
+		fullyIndexed: fullyIndexed,
+		indexesUsed:  indexesUsed,
+	}
+	if err := it.advance(ctx); err != nil {
+		locationIter.Close()
+		return nil, err
+	}
+	return it, nil
+}
+
+// advance scans forward through the location iterator until it finds the next event
+// that passes deletion and filter checks, or until the limit is reached / iterator is
+// exhausted. Context cancellation is checked at every location to allow prompt
+// termination of long-running queries.
+func (it *lazyEventIterator) advance(ctx context.Context) error {
+	for it.locationIter.Valid() {
+		// Honour context cancellation between every disk read.
+		select {
+		case <-ctx.Done():
+			it.valid = false
+			return ctx.Err()
+		default:
+		}
+
+		// Limit already satisfied – stop here without reading any more events.
+		if it.filter.Limit > 0 && it.resultCount >= it.filter.Limit {
+			it.valid = false
+			return nil
+		}
+
+		locWithTime := it.locationIter.Value()
+		event, err := it.store.ReadEvent(ctx, locWithTime.RecordLocation)
+		if err != nil {
+			// Skip corrupted / unreadable events and continue.
+			if nerr := it.locationIter.Next(ctx); nerr != nil {
+				it.valid = false
+				return nil
+			}
+			continue
+		}
+
+		// Skip logically deleted events.
+		if event.Flags.IsDeleted() {
+			if nerr := it.locationIter.Next(ctx); nerr != nil {
+				it.valid = false
+				return nil
+			}
+			continue
+		}
+
+		// Apply filter when the index does not already guarantee full coverage.
+		if !it.fullyIndexed && !MatchesFilter(event, it.filter) {
+			if nerr := it.locationIter.Next(ctx); nerr != nil {
+				it.valid = false
+				return nil
+			}
+			continue
+		}
+
+		// Found a valid event.
+		it.current = event
+		it.valid = true
+		it.resultCount++
+		return nil
+	}
+
+	// Location iterator exhausted.
+	it.valid = false
+	return nil
+}
+
+func (it *lazyEventIterator) Valid() bool {
+	return it.valid && !it.closed
+}
+
+func (it *lazyEventIterator) Event() *types.Event {
+	if !it.Valid() {
+		return nil
+	}
+	return it.current
+}
+
+func (it *lazyEventIterator) Next(ctx context.Context) error {
+	if it.closed {
+		return fmt.Errorf("iterator is closed")
+	}
+	if it.valid {
+		it.emittedCount++
+		// Advance underlying location iterator before scanning for the next event.
+		if err := it.locationIter.Next(ctx); err != nil {
+			it.valid = false
+			return nil
+		}
+	}
+	return it.advance(ctx)
+}
+
+func (it *lazyEventIterator) Close() error {
+	if it.closed {
+		return nil
+	}
+	it.closed = true
+	it.valid = false
+	it.current = nil
+	if it.locationIter != nil {
+		it.locationIter.Close()
+		it.locationIter = nil
+	}
+	return nil
+}
+
+func (it *lazyEventIterator) Count() int {
+	return it.emittedCount
+}
+
 // mergeLocationIterator implements LocationIterator using heap-based merge algorithm.
 // It merges multiple descending index iterators and returns locations in timestamp descending order.
 // Automatically deduplicates by SegmentID:Offset.
@@ -1069,68 +1216,20 @@ func (e *executorImpl) ExecutePlan(ctx context.Context, plan ExecutionPlan) (Res
 	}
 
 	// Streaming strategy: author_time, search, kind_time, intersection
-	// Use location iterator for sorted, deduplicated results
+	// Use lazy event iterator: event reads and filter checks happen on each Next() call,
+	// enabling context cancellation and early termination without eager disk I/O.
 	if impl.strategy == "author_time" || impl.strategy == "search" || impl.strategy == "kind_time" || impl.strategy == "intersection" {
 		indexesUsed = append(indexesUsed, impl.strategy)
 
-		// Get streaming location iterator
+		// Get streaming location iterator (ownership transferred to lazyEventIterator).
 		locationIter, err := e.getLocationIterator(ctx, impl)
 		if err != nil {
 			return nil, err
 		}
-		defer locationIter.Close()
 
-		// Stream process: read events one by one, filter, and apply limit
-		for locationIter.Valid() {
-			locWithTime := locationIter.Value()
-			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
-			if err != nil {
-				// Skip corrupted events and continue
-				if err := locationIter.Next(ctx); err != nil {
-					break
-				}
-				continue
-			}
-
-			// Skip deleted events
-			if event.Flags.IsDeleted() {
-				if err := locationIter.Next(ctx); err != nil {
-					break
-				}
-				continue
-			}
-
-			// Filter event if not fully indexed
-			if !impl.fullyIndexed && !MatchesFilter(event, impl.filter) {
-				if err := locationIter.Next(ctx); err != nil {
-					break
-				}
-				continue
-			}
-
-			// Add to results
-			results = append(results, event)
-
-			// Early termination: stop when limit is reached
-			if impl.filter.Limit > 0 && len(results) >= impl.filter.Limit {
-				break
-			}
-
-			// Advance to next location
-			if err := locationIter.Next(ctx); err != nil {
-				break
-			}
-		}
-
-		duration := time.Since(start).Milliseconds()
-		return &resultIteratorImpl{
-			events:      results,
-			index:       0,
-			count:       0,
-			startTime:   start,
-			durationMs:  duration,
-			indexesUsed: indexesUsed,
-		}, nil
+		// Return a lazy iterator; it reads events and applies filters on demand.
+		// locationIter is owned by the returned iterator and closed via its Close().
+		return newLazyEventIterator(ctx, locationIter, e.store, impl.filter, impl.fullyIndexed, indexesUsed)
 	}
 
 	// Scan strategy (fallback)

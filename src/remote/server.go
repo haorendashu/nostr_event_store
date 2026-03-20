@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/haorendashu/nostr_event_store/protos"
+	"github.com/haorendashu/nostr_event_store/src/query"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
@@ -24,7 +25,7 @@ type EventStore interface {
 	GetEvent(ctx context.Context, eventID [32]byte) (*types.Event, error)
 	DeleteEvent(ctx context.Context, eventID [32]byte) error
 	DeleteEvents(ctx context.Context, eventIDs [][32]byte) error
-	QueryAll(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error)
+	Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error)
 	QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error)
 	Stats() interface{} // Returns eventstore.Stats
 	Flush(ctx context.Context) error
@@ -71,11 +72,11 @@ func (a *storeAdapter) DeleteEvents(ctx context.Context, eventIDs [][32]byte) er
 	return a.store.(deleteEventsMethod).DeleteEvents(ctx, eventIDs)
 }
 
-func (a *storeAdapter) QueryAll(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error) {
-	type queryAllMethod interface {
-		QueryAll(ctx context.Context, filter *types.QueryFilter) ([]*types.Event, error)
+func (a *storeAdapter) Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error) {
+	type queryMethod interface {
+		Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error)
 	}
-	return a.store.(queryAllMethod).QueryAll(ctx, filter)
+	return a.store.(queryMethod).Query(ctx, filter)
 }
 
 func (a *storeAdapter) QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error) {
@@ -431,16 +432,20 @@ func (s *Server) Query(req *pb.QueryRequest, stream grpc.ServerStreamingServer[p
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	// Query from store - get all results
-	events, err := s.store.QueryAll(ctx, filter)
+	// Query from store - returns a lazy iterator; events are read on demand.
+	iter, err := s.store.Query(ctx, filter)
 	if err != nil {
 		log.Printf("Query failed: %v", err)
 		return convertErrorToGRPC(err)
 	}
+	defer iter.Close()
 
-	// Convert events to protobuf and stream results
-	for _, event := range events {
-		pbEvent := ConvertEventToProto(event)
+	// Stream events to client one by one; context cancellation stops iteration promptly.
+	for iter.Valid() {
+		if err := ctx.Err(); err != nil {
+			return convertErrorToGRPC(err)
+		}
+		pbEvent := ConvertEventToProto(iter.Event())
 		if err := stream.Send(&pb.QueryResponse{
 			Result: &pb.QueryResponse_Event{
 				Event: pbEvent,
@@ -448,6 +453,10 @@ func (s *Server) Query(req *pb.QueryRequest, stream grpc.ServerStreamingServer[p
 		}); err != nil {
 			log.Printf("stream send failed: %v", err)
 			return status.Error(codes.Internal, "error sending response")
+		}
+		if err := iter.Next(ctx); err != nil {
+			log.Printf("Query iterator error: %v", err)
+			return convertErrorToGRPC(err)
 		}
 	}
 
