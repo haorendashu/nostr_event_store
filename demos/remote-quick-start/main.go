@@ -235,7 +235,8 @@ func runClient() error {
 	// 8. 统计查询
 	fmt.Println("\n📊 Query count...")
 	countCtx, cancel := newRequestContext()
-	count, err := c.QueryCount(countCtx, &types.QueryFilter{})
+	count, err := c.QueryCount(countCtx, &types.QueryFilter{
+		Kinds: []uint16{1}})
 	cancel()
 	if err != nil {
 		return fmt.Errorf("failed to query count: %w", err)
