@@ -407,5 +407,5 @@ For issues, questions, or contributions, refer to the documentation in [docs/](d
 ---
 
 **Last Updated:** February 28, 2026  
-**Project Status:** Active Development  
+**Project Status:** Active Development 
 **Go Version:** 1.21.5+
