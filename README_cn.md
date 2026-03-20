@@ -329,7 +329,20 @@ go run ./cmd/wal-hexdump/main.go -file wal.log
 go run ./cmd/wal-validator/main.go -file wal.log
 ```
 
-### 远程部署（开发中）
+### 远程中继示例
+这是一个两进程的 Demo，展示中继通过远程 gRPC 调用存储服务的完整方案。`store/` 进程运行 EventStore gRPC 服务端，`relay/` 进程运行 Nostr 中继并通过 RPC 客户端访问存储：
+```bash
+# 终端 1：启动 EventStore gRPC 服务
+cd demos/remote-relay/store
+go run . --config ./config.yaml
+
+# 终端 2：启动 Nostr 中继
+cd demos/remote-relay/relay
+go run . --config ./config.yaml --port 7447
+```
+任意 Nostr 客户端连接 `ws://localhost:7447` 即可使用。详细说明见 [demos/remote-relay/README.md](demos/remote-relay/README.md)。
+
+### 远程部署
 将存储以远程 gRPC 服务方式运行，支持多客户端接入。快速开始文档见：
 [demos/remote-quick-start/README_CN.md](demos/remote-quick-start/README_CN.md)
 
@@ -347,14 +360,14 @@ go run ./cmd/wal-validator/main.go -file wal.log
 
 ## 关键设计决策
 
-| 设计 | 理由 | 权衡 |
-|------|------|------|
-| 预写日志 | 行业标准持久性 | 小的性能开销 |
-| B+树索引 | 高效的范围查询 | 实现的复杂性 |
-| LRU 缓存 | 简洁性、强命中率 | 可能不适合所有模式 |
-| 仅追加存储 | 并发性、WAL 集成 | 需要额外压缩 |
-| 多索引 | 工作负载感知优化 | 索引的内存开销 |
-| 逻辑删除 | 快速删除、延迟回收 | 压缩前占用空间 |
+| 设计       | 理由               | 权衡               |
+| ---------- | ------------------ | ------------------ |
+| 预写日志   | 行业标准持久性     | 小的性能开销       |
+| B+树索引   | 高效的范围查询     | 实现的复杂性       |
+| LRU 缓存   | 简洁性、强命中率   | 可能不适合所有模式 |
+| 仅追加存储 | 并发性、WAL 集成   | 需要额外压缩       |
+| 多索引     | 工作负载感知优化   | 索引的内存开销     |
+| 逻辑删除   | 快速删除、延迟回收 | 压缩前占用空间     |
 
 ## 依赖项
 

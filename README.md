@@ -329,7 +329,20 @@ Validate WAL integrity:
 go run ./cmd/wal-validator/main.go -file wal.log
 ```
 
-### Remote Deployment (In Development)
+### Remote Relay Demo
+A two-process example where a Nostr relay calls a remote EventStore server via gRPC. The `store/` process runs the EventStore as a gRPC service, while the `relay/` process runs the Nostr relay and accesses storage through the remote RPC client:
+```bash
+# Terminal 1: start the EventStore gRPC server
+cd demos/remote-relay/store
+go run . --config ./config.yaml
+
+# Terminal 2: start the Nostr relay
+cd demos/remote-relay/relay
+go run . --config ./config.yaml --port 7447
+```
+Connect any Nostr client to `ws://localhost:7447`. See [demos/remote-relay/README.md](demos/remote-relay/README.md) for full details.
+
+### Remote Deployment
 Run the store as a remote gRPC service with multi-client access. See the quick start guide:
 [demos/remote-quick-start/README.md](demos/remote-quick-start/README.md)
 
@@ -347,14 +360,14 @@ Run the store with shard coordination across local/remote shards for horizontal 
 
 ## Key Design Decisions
 
-| Design | Rationale | Tradeoff |
-|--------|-----------|----------|
-| Write-Ahead Logging | Industry-standard durability | Small performance overhead |
-| B+Tree Indexing | Efficient range queries | Complexity in implementation |
-| LRU Caching | Simplicity, strong hit rates | May not suit all patterns |
-| Append-Only Storage | Concurrency, WAL integration | Additional compaction needed |
-| Multi-Index | Workload-aware optimization | Memory overhead for indexes |
-| Logical Deletion | Fast deletes, deferred reclamation | Space until compaction |
+| Design              | Rationale                          | Tradeoff                     |
+| ------------------- | ---------------------------------- | ---------------------------- |
+| Write-Ahead Logging | Industry-standard durability       | Small performance overhead   |
+| B+Tree Indexing     | Efficient range queries            | Complexity in implementation |
+| LRU Caching         | Simplicity, strong hit rates       | May not suit all patterns    |
+| Append-Only Storage | Concurrency, WAL integration       | Additional compaction needed |
+| Multi-Index         | Workload-aware optimization        | Memory overhead for indexes  |
+| Logical Deletion    | Fast deletes, deferred reclamation | Space until compaction       |
 
 ## Dependencies
 
