@@ -8,8 +8,10 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	pb "github.com/haorendashu/nostr_event_store/protos"
 	"github.com/haorendashu/nostr_event_store/src/recovery"
@@ -149,6 +151,16 @@ func (l *EventStoreListener) start(ctx context.Context) error {
 	// Create gRPC server with options
 	grpcServer := grpc.NewServer(
 		grpc.MaxConcurrentStreams(1000),
+		// Allow clients to ping as frequently as every 10 seconds (with or without streams).
+		// Without this policy the gRPC-go default is 5 minutes, causing ENHANCE_YOUR_CALM.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
 	)
 
 	// Register EventStore service
