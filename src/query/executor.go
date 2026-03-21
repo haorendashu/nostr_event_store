@@ -1112,10 +1112,15 @@ func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, 
 
 		count := 0
 
-		// If fully indexed, just count locations without reading events
+		// If fully indexed, just count locations without reading events.
+		// Limit traversal to 100,000 to prevent excessive resource usage.
+		const fullyIndexedCountLimit = 100000
 		if impl.fullyIndexed {
 			for locationIter.Valid() {
 				count++
+				if count >= fullyIndexedCountLimit {
+					break
+				}
 				if err := locationIter.Next(ctx); err != nil {
 					break
 				}
@@ -1123,8 +1128,16 @@ func (e *executorImpl) CountPlan(ctx context.Context, plan ExecutionPlan) (int, 
 			return count, nil
 		}
 
-		// Not fully indexed: need to read events and apply filter
+		// Not fully indexed: need to read events and apply filter.
+		// Limit traversal to 10,000 to prevent excessive resource usage.
+		const notFullyIndexedCountLimit = 10000
+		traversed := 0
 		for locationIter.Valid() {
+			traversed++
+			if traversed > notFullyIndexedCountLimit {
+				break
+			}
+
 			locWithTime := locationIter.Value()
 			event, err := e.store.ReadEvent(ctx, locWithTime.RecordLocation)
 			if err != nil {
