@@ -1616,8 +1616,8 @@ func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
 		return fmt.Errorf("replay WAL from LSN %d: %w", startLSN, err)
 	}
 
-	if len(collector.events) == 0 {
-		e.logger.Printf("WAL recovery: no insert entries to replay")
+	if len(collector.events) == 0 && len(collector.deletions) == 0 {
+		e.logger.Printf("WAL recovery: no entries to replay")
 		return nil
 	}
 
@@ -1643,6 +1643,20 @@ func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
 		if err := indexer.OnInsert(ctx, event, location); err != nil {
 			return fmt.Errorf("apply WAL insert %x: %w", eventID[:4], err)
 		}
+	}
+
+	// Replay index deletions for events whose DeleteEvent call crashed between
+	// primary-index removal and secondary-index (AuthorTime/KindTime/Search)
+	// removal.  Without this step, secondary indexes retain stale entries
+	// causing their EntryCount to exceed the primary index.
+	for _, d := range collector.deletions {
+		if err := indexer.replayDelete(ctx, d.event, d.loc); err != nil {
+			e.logger.Printf("WAL recovery warning: failed to replay delete for event %x: %v", d.event.ID[:4], err)
+			// Non-fatal: keep going so one bad event doesn't block all deletions
+		}
+	}
+	if len(collector.deletions) > 0 {
+		e.logger.Printf("WAL recovery: replayed %d deletes from LSN %d", len(collector.deletions), startLSN)
 	}
 
 	e.logger.Printf("WAL recovery: applied %d inserts from LSN %d", stats.InsertsReplayed, startLSN)
@@ -2139,10 +2153,19 @@ type indexReplayer struct {
 	logger     *log.Logger
 }
 
+// walDeletion records a deletion observed in the WAL so that the recovery
+// path can replay the secondary-index removals that may not have completed
+// before the crash.
+type walDeletion struct {
+	event *types.Event
+	loc   types.RecordLocation
+}
+
 type walRecoveryReplayer struct {
-	storage *store.EventStore
-	logger  *log.Logger
-	events  map[[32]byte]*types.Event
+	storage   *store.EventStore
+	logger    *log.Logger
+	events    map[[32]byte]*types.Event
+	deletions []walDeletion
 }
 
 // OnInsert handles WAL insert entries by updating indexes.
@@ -2215,15 +2238,61 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 	return nil
 }
 
+// replayDelete removes an event's entries from all secondary indexes using a
+// location constraint so that only the exact entry for this event is removed,
+// even when multiple events share the same composite key.
+func (r *indexReplayer) replayDelete(ctx context.Context, event *types.Event, location types.RecordLocation) error {
+	// Primary index (unique key – no location filter needed; no-op if already gone)
+	if primaryIdx := r.indexMgr.PrimaryIndex(); primaryIdx != nil {
+		eventKeyBytes := r.keyBuilder.BuildPrimaryKey(event.ID)
+		if err := primaryIdx.Delete(ctx, eventKeyBytes, nil); err != nil {
+			r.logger.Printf("Warning: primary index delete failed during recovery: %v", err)
+		}
+	}
+
+	// Author-time index
+	if authorTimeIdx := r.indexMgr.AuthorTimeIndex(); authorTimeIdx != nil {
+		authorTimeKey := r.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
+		if err := authorTimeIdx.Delete(ctx, authorTimeKey, &location); err != nil {
+			r.logger.Printf("Warning: author-time index delete failed during recovery: %v", err)
+		}
+	}
+
+	// Kind-time index
+	if kindTimeIdx := r.indexMgr.KindTimeIndex(); kindTimeIdx != nil {
+		kindTimeKey := r.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+		if err := kindTimeIdx.Delete(ctx, kindTimeKey, &location); err != nil {
+			r.logger.Printf("Warning: kind-time index delete failed during recovery: %v", err)
+		}
+	}
+
+	// Search index (all configured tag types)
+	if searchIdx := r.indexMgr.SearchIndex(); searchIdx != nil {
+		tagMapping := r.keyBuilder.TagNameToSearchTypeCode()
+		for _, tag := range event.Tags {
+			if len(tag) < 2 {
+				continue
+			}
+			searchTypeCode, ok := tagMapping[tag[0]]
+			if !ok {
+				continue
+			}
+			searchKey := r.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tag[1]), event.CreatedAt)
+			if err := searchIdx.Delete(ctx, searchKey, &location); err != nil {
+				r.logger.Printf("Warning: search index delete failed during recovery (tag %s): %v", tag[0], err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // OnUpdateFlags handles WAL update flags entries.
 func (r *indexReplayer) OnUpdateFlags(ctx context.Context, location types.RecordLocation, flags types.EventFlags) error {
 	// Update flags in storage
 	if err := r.storage.UpdateEventFlags(ctx, location, flags); err != nil {
 		return fmt.Errorf("update flags in storage: %w", err)
 	}
-
-	// If event is deleted or replaced, we might need to update indexes
-	// For now, flags don't affect index structure (only segment storage)
 	return nil
 }
 
@@ -2251,6 +2320,16 @@ func (r *walRecoveryReplayer) OnInsert(ctx context.Context, event *types.Event, 
 func (r *walRecoveryReplayer) OnUpdateFlags(ctx context.Context, location types.RecordLocation, flags types.EventFlags) error {
 	if r.storage == nil {
 		return fmt.Errorf("storage not available for WAL update flags")
+	}
+	// For delete operations, read the event metadata BEFORE marking it deleted
+	// so we can later replay the secondary-index removals that may have been
+	// skipped when the process crashed mid-DeleteEvent.
+	if flags.IsDeleted() {
+		if event, err := r.storage.ReadEvent(ctx, location); err == nil && event != nil {
+			r.deletions = append(r.deletions, walDeletion{event: event, loc: location})
+		} else if err != nil && r.logger != nil {
+			r.logger.Printf("WAL recovery: could not read event at loc=%v for delete replay: %v", location, err)
+		}
 	}
 	return r.storage.UpdateEventFlags(ctx, location, flags)
 }

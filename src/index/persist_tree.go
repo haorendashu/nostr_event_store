@@ -607,7 +607,13 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 				return nil, false, fmt.Errorf("borrow error: child leaf has %d keys but %d values after borrow (offset=%d)",
 					len(child.keys), len(child.values), child.offset)
 			}
-			parent.keys[childIndex] = child.cloneKey(firstKey)
+			// FIX: The parent separator for this subtree boundary must be the NEW
+			// first key of the right sibling (after the borrow), not the borrowed
+			// key (firstKey) that has moved into child's last slot.  Using firstKey
+			// here caused subsequent Delete(firstKey) calls to be routed to the
+			// right child where the key no longer exists, making them silent no-ops
+			// and leaking stale entries in secondary indexes (AuthorTime/KindTime).
+			parent.keys[childIndex] = right.cloneKey(right.keys[0])
 		} else {
 			if len(right.children) == 0 {
 				return nil, false, fmt.Errorf("invalid right internal state before borrow: no children to borrow (offset=%d)", right.offset)
