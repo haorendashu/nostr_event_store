@@ -21,3 +21,4 @@ demos/remote-relay/relay/remote-relay.exe
 demos/remote-relay/store/remote-store.exe
 demos/remote-relay/store/remote-store
 demos/remote-relay/store/eventData/
+.vscode/
