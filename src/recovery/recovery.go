@@ -95,7 +95,19 @@ func (m *Manager) RecoverFromCheckpoint(ctx context.Context, startLSN wal.LSN) (
 	// Open WAL reader at the starting LSN
 	reader := wal.NewFileReader()
 	if err := reader.Open(ctx, m.walDir, startLSN); err != nil {
-		return nil, fmt.Errorf("open wal reader: %w", err)
+		// If no WAL segments exist, fall back to segment-based recovery only
+		// (the store's WAL may not have been initialized yet)
+		state.ValidationErrors = append(state.ValidationErrors,
+			fmt.Sprintf("WAL not available: %v (falling back to segment scan)", err))
+
+		// Still scan segments to rebuild event ID map
+		if err := m.rebuildEventIDMap(ctx, state); err != nil {
+			state.ValidationErrors = append(state.ValidationErrors,
+				fmt.Sprintf("rebuild event id map: %v", err))
+		}
+		// When WAL is unavailable, derive EventCount from segment scan results
+		state.EventCount = int64(len(state.EventIDMap))
+		return state, nil
 	}
 	defer reader.Close()
 

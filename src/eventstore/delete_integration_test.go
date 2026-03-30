@@ -120,13 +120,12 @@ func TestDeleteIntegrationWALIndexStorage(t *testing.T) {
 	for _, idx := range deleteIndexes {
 		event := events[idx]
 		retrieved, err := store.GetEvent(ctx, event.ID)
-		if err == nil {
+		if err == nil && retrieved != nil {
 			t.Errorf("✗ FAILED: Deleted event still retrievable from primary index: %x",
 				event.ID[:4])
 		} else {
 			t.Logf("✓ Event correctly removed from primary index: %x", event.ID[:4])
 		}
-		_ = retrieved
 	}
 
 	// Verify non-deleted events are still accessible

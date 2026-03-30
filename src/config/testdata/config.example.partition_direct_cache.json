@@ -1,0 +1,54 @@
+{
+    "storage": {
+        "data_dir": "./data",
+        "page_size": 4096,
+        "max_segment_size": 1073741824,
+        "event_buffer_size": 16777216,
+        "write_batch_size": 500
+    },
+    "index": {
+        "index_dir": "./data/indexes",
+        "initialization_mode": "standard",
+        "search_type_map": {
+            "tag_name_to_search_type_code": {
+                "e": 1,
+                "p": 2,
+                "t": 9
+            },
+            "enabled_tags": [
+                "e",
+                "p",
+                "t"
+            ]
+        },
+        "cache": {
+            "primary_index_cache_mb": 50,
+            "author_time_index_cache_mb": 50,
+            "search_index_cache_mb": 100,
+            "kind_time_index_cache_mb": 50,
+            "eviction_policy": "lru",
+            "cache_concurrency": 16
+        },
+        "flush_interval_ms": 100,
+        "dirty_threshold": 128,
+        "enable_partition_cache_coordinator": false,
+        "partition_cache_strategy": "tiered",
+        "partition_cache_active_pct": 60,
+        "partition_cache_recent_pct": 30,
+        "partition_active_count": 2,
+        "partition_recent_count": 4
+    },
+    "wal": {
+        "wal_dir": "./data/wal",
+        "sync_mode": "batch",
+        "batch_interval_ms": 100,
+        "batch_size_bytes": 10485760,
+        "max_segment_size": 1073741824
+    },
+    "compaction": {
+        "enabled": true,
+        "fragmentation_threshold": 0.2,
+        "compaction_interval_ms": 60000,
+        "max_concurrent_compactions": 2
+    }
+}

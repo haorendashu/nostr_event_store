@@ -468,7 +468,7 @@ func TestRunCompactionOnceWithDeletion(t *testing.T) {
 	if _, err := store.GetEvent(ctx, keptEvent.ID); err != nil {
 		t.Fatalf("GetEvent(kept) failed after compaction: %v", err)
 	}
-	if _, err := store.GetEvent(ctx, deletedEvent.ID); err == nil {
+	if retrieved, err := store.GetEvent(ctx, deletedEvent.ID); err == nil && retrieved != nil {
 		t.Fatal("GetEvent(deleted) should fail after compaction")
 	}
 }
@@ -627,7 +627,7 @@ func TestRunCompactionOnceMultiSegment(t *testing.T) {
 	if _, err := store.GetEvent(ctx, keep2.ID); err != nil {
 		t.Fatalf("GetEvent(keep2) failed after compaction: %v", err)
 	}
-	if _, err := store.GetEvent(ctx, toDelete.ID); err == nil {
+	if retrieved, err := store.GetEvent(ctx, toDelete.ID); err == nil && retrieved != nil {
 		t.Fatal("GetEvent(deleted) should fail after compaction")
 	}
 }

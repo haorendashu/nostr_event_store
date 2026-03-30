@@ -30,6 +30,7 @@ func TestValidateConfig(t *testing.T) {
 					PageSize:        8192,
 					MaxSegmentSize:  2147483648,
 					EventBufferSize: 33554432,
+					WriteBatchSize:  500,
 				},
 				IndexConfig: IndexConfig{
 					IndexDir:           "/tmp/indexes",
@@ -45,9 +46,12 @@ func TestValidateConfig(t *testing.T) {
 						PrimaryIndexCacheMB:    100,
 						AuthorTimeIndexCacheMB: 100,
 						SearchIndexCacheMB:     200,
+						KindTimeIndexCacheMB:   50,
 						EvictionPolicy:         "lfu",
 						CacheConcurrency:       32,
 					},
+					FlushIntervalMs: 100,
+					DirtyThreshold:  128,
 				},
 				WALConfig: WALConfig{
 					WALDir:          "/tmp/wal",
@@ -74,6 +78,7 @@ func TestValidateConfig(t *testing.T) {
 					PageSize:        1024, // Invalid
 					MaxSegmentSize:  1073741824,
 					EventBufferSize: 16777216,
+					WriteBatchSize:  500,
 				},
 				IndexConfig: IndexConfig{
 					IndexDir: "/tmp/indexes",
@@ -85,8 +90,11 @@ func TestValidateConfig(t *testing.T) {
 						PrimaryIndexCacheMB:    50,
 						AuthorTimeIndexCacheMB: 50,
 						SearchIndexCacheMB:     100,
+						KindTimeIndexCacheMB:   50,
 						CacheConcurrency:       16,
 					},
+					FlushIntervalMs: 100,
+					DirtyThreshold:  128,
 				},
 				WALConfig: WALConfig{
 					WALDir:          "/tmp/wal",
@@ -298,6 +306,7 @@ func TestValidateConfig(t *testing.T) {
 					PageSize:        16384, // Valid
 					MaxSegmentSize:  1073741824,
 					EventBufferSize: 16777216,
+					WriteBatchSize:  500,
 				},
 				IndexConfig: IndexConfig{
 					IndexDir:           "/tmp/indexes",
@@ -310,9 +319,12 @@ func TestValidateConfig(t *testing.T) {
 						PrimaryIndexCacheMB:    50,
 						AuthorTimeIndexCacheMB: 50,
 						SearchIndexCacheMB:     100,
+						KindTimeIndexCacheMB:   50,
 						EvictionPolicy:         "lru",
 						CacheConcurrency:       16,
 					},
+					FlushIntervalMs: 100,
+					DirtyThreshold:  128,
 				},
 				WALConfig: WALConfig{
 					WALDir:          "/tmp/wal",

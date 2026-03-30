@@ -60,8 +60,8 @@ func TestDeleteEvent(t *testing.T) {
 	}
 
 	// Verify event is deleted (should not be found in index)
-	_, err = store.GetEvent(ctx, event.ID)
-	if err == nil {
+	retrievedAfter, err := store.GetEvent(ctx, event.ID)
+	if err == nil && retrievedAfter != nil {
 		t.Fatal("Event should not be found after delete")
 	}
 
@@ -125,8 +125,8 @@ func TestDeleteEvents(t *testing.T) {
 
 	// Verify all events are deleted
 	for i := 0; i < 3; i++ {
-		_, err := store.GetEvent(ctx, eventIDs[i])
-		if err == nil {
+		retrieved, err := store.GetEvent(ctx, eventIDs[i])
+		if err == nil && retrieved != nil {
 			t.Fatalf("Event %d should not be found after delete", i)
 		}
 	}

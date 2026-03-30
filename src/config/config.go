@@ -667,6 +667,13 @@ func (m *ManagerImpl) SetDefaults() {
 		m.config.IndexConfig.CacheConfig.CacheConcurrency = defaults.IndexConfig.CacheConfig.CacheConcurrency
 	}
 
+	if m.config.IndexConfig.FlushIntervalMs == 0 {
+		m.config.IndexConfig.FlushIntervalMs = defaults.IndexConfig.FlushIntervalMs
+	}
+	if m.config.IndexConfig.DirtyThreshold == 0 {
+		m.config.IndexConfig.DirtyThreshold = defaults.IndexConfig.DirtyThreshold
+	}
+
 	if m.config.WALConfig.WALDir == "" {
 		m.config.WALConfig.WALDir = defaults.WALConfig.WALDir
 	}

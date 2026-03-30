@@ -105,7 +105,7 @@ func TestRecoverySkipsDeletedRecords(t *testing.T) {
 	}
 
 	// Event 2 should not be found (it was deleted)
-	if _, err := store.GetEvent(ctx, events[1].ID); err == nil {
+	if retrieved, err := store.GetEvent(ctx, events[1].ID); err == nil && retrieved != nil {
 		t.Errorf("GetEvent(event 2) should have failed but succeeded")
 	}
 

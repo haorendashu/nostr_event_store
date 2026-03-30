@@ -18,7 +18,7 @@ func TestPartitionCacheCoordinatorConfig(t *testing.T) {
 	}{
 		{
 			name:                       "Direct Cache (Coordinator Disabled)",
-			configPath:                 "../../config.example.partition_direct_cache.json",
+			configPath:                 "testdata/config.example.partition_direct_cache.json",
 			expectedCoordinatorEnabled: false,
 			expectedActivePct:          60,
 			expectedRecentPct:          30,
@@ -27,7 +27,7 @@ func TestPartitionCacheCoordinatorConfig(t *testing.T) {
 		},
 		{
 			name:                       "With Coordinator Enabled",
-			configPath:                 "../../config.example.partition_with_coordinator.json",
+			configPath:                 "testdata/config.example.partition_with_coordinator.json",
 			expectedCoordinatorEnabled: true,
 			expectedActivePct:          60,
 			expectedRecentPct:          30,
