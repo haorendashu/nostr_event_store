@@ -151,3 +151,51 @@ func ConvertQueryFilterFromProto(pbFilter *pb.QueryFilter) (*types.QueryFilter, 
 
 	return filter, nil
 }
+
+// ConvertAggregationQueryToProto converts a types.AggregationQuery to protobuf.
+func ConvertAggregationQueryToProto(q *types.AggregationQuery) *pb.QueryAggregationRequest {
+	if q == nil {
+		return &pb.QueryAggregationRequest{}
+	}
+
+	groupBy := make([]pb.GroupByField, 0, len(q.GroupBy))
+	for _, g := range q.GroupBy {
+		switch g {
+		case types.GroupByAuthor:
+			groupBy = append(groupBy, pb.GroupByField_GROUP_BY_AUTHOR)
+		case types.GroupByKind:
+			groupBy = append(groupBy, pb.GroupByField_GROUP_BY_KIND)
+		case types.GroupByTimeBucket:
+			groupBy = append(groupBy, pb.GroupByField_GROUP_BY_TIME_BUCKET)
+		case types.GroupByTagValue:
+			groupBy = append(groupBy, pb.GroupByField_GROUP_BY_TAG_VALUE)
+		}
+	}
+
+	return &pb.QueryAggregationRequest{
+		Filter:            ConvertQueryFilterToProto(q.Filter),
+		GroupBy:           groupBy,
+		TimeBucketSeconds: q.TimeBucketSeconds,
+		TagName:           q.TagName,
+		Limit:             int32(q.Limit),
+		OrderDesc:         q.OrderDesc,
+	}
+}
+
+// ConvertAggregationEntriesFromProto converts protobuf AggregationEntry slice to types.
+func ConvertAggregationEntriesFromProto(pbEntries []*pb.AggregationEntry) []types.AggregationEntry {
+	entries := make([]types.AggregationEntry, len(pbEntries))
+	for i, e := range pbEntries {
+		entry := types.AggregationEntry{
+			Kind:       uint16(e.Kind),
+			TimeBucket: e.TimeBucket,
+			TagValue:   e.TagValue,
+			Count:      e.Count,
+		}
+		if len(e.Pubkey) == 32 {
+			copy(entry.Pubkey[:], e.Pubkey)
+		}
+		entries[i] = entry
+	}
+	return entries
+}

@@ -508,6 +508,42 @@ func (c *Client) QueryCount(ctx context.Context, filter *types.QueryFilter) (int
 	}
 }
 
+// QueryAggregation runs an index-key-only aggregation query on the remote server.
+// It does not load event content, making it suitable for analytics workloads.
+func (c *Client) QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error) {
+	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return nil, fmt.Errorf("client is closed")
+	}
+	c.mu.RUnlock()
+
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = c.getRequestContext()
+		defer cancel()
+	} else {
+		ctx = c.addAuthMetadata(ctx)
+	}
+
+	req := ConvertAggregationQueryToProto(q)
+	req.ApiKey = c.config.APIKey
+
+	resp, err := c.client.QueryAggregation(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("QueryAggregation failed: %w", err)
+	}
+
+	switch result := resp.Result.(type) {
+	case *pb.QueryAggregationResponse_Success:
+		return ConvertAggregationEntriesFromProto(result.Success.Entries), nil
+	case *pb.QueryAggregationResponse_Error:
+		return nil, fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message)
+	default:
+		return nil, fmt.Errorf("unknown response type")
+	}
+}
+
 // Stats retrieves storage statistics from the remote server.
 func (c *Client) Stats(ctx context.Context) (*pb.StorageStats, error) {
 	c.mu.RLock()

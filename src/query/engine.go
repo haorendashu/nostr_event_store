@@ -146,6 +146,10 @@ type engineImpl struct {
 type CompilerDefaults struct {
 	DefaultLimit int
 	DefaultKinds []uint16
+
+	// DefaultKindsFunc, when non-nil, is called at compile time to obtain the
+	// current set of known event kinds.  Takes precedence over DefaultKinds.
+	DefaultKindsFunc func() []uint16
 }
 
 // MonitoredEngine wraps an Engine to collect and report statistics.
@@ -245,7 +249,7 @@ func NewCompiler(indexMgr index.Manager) Compiler {
 func NewCompilerWithDefaults(indexMgr index.Manager, defaults CompilerDefaults) Compiler {
 	return &compilerImpl{
 		indexMgr: indexMgr,
-		defaults: buildCompilerDefaults(defaults.DefaultLimit, defaults.DefaultKinds),
+		defaults: buildCompilerDefaults(defaults.DefaultLimit, defaults.DefaultKinds, defaults.DefaultKindsFunc),
 	}
 }
 

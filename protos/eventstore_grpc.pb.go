@@ -19,17 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EventStore_WriteEvent_FullMethodName   = "/eventstore.EventStore/WriteEvent"
-	EventStore_WriteEvents_FullMethodName  = "/eventstore.EventStore/WriteEvents"
-	EventStore_GetEvent_FullMethodName     = "/eventstore.EventStore/GetEvent"
-	EventStore_DeleteEvent_FullMethodName  = "/eventstore.EventStore/DeleteEvent"
-	EventStore_DeleteEvents_FullMethodName = "/eventstore.EventStore/DeleteEvents"
-	EventStore_Query_FullMethodName        = "/eventstore.EventStore/Query"
-	EventStore_QueryAll_FullMethodName     = "/eventstore.EventStore/QueryAll"
-	EventStore_QueryCount_FullMethodName   = "/eventstore.EventStore/QueryCount"
-	EventStore_Stats_FullMethodName        = "/eventstore.EventStore/Stats"
-	EventStore_Flush_FullMethodName        = "/eventstore.EventStore/Flush"
-	EventStore_HealthCheck_FullMethodName  = "/eventstore.EventStore/HealthCheck"
+	EventStore_WriteEvent_FullMethodName       = "/eventstore.EventStore/WriteEvent"
+	EventStore_WriteEvents_FullMethodName      = "/eventstore.EventStore/WriteEvents"
+	EventStore_GetEvent_FullMethodName         = "/eventstore.EventStore/GetEvent"
+	EventStore_DeleteEvent_FullMethodName      = "/eventstore.EventStore/DeleteEvent"
+	EventStore_DeleteEvents_FullMethodName     = "/eventstore.EventStore/DeleteEvents"
+	EventStore_Query_FullMethodName            = "/eventstore.EventStore/Query"
+	EventStore_QueryCount_FullMethodName       = "/eventstore.EventStore/QueryCount"
+	EventStore_Stats_FullMethodName            = "/eventstore.EventStore/Stats"
+	EventStore_Flush_FullMethodName            = "/eventstore.EventStore/Flush"
+	EventStore_HealthCheck_FullMethodName      = "/eventstore.EventStore/HealthCheck"
+	EventStore_QueryAggregation_FullMethodName = "/eventstore.EventStore/QueryAggregation"
 )
 
 // EventStoreClient is the client API for EventStore service.
@@ -50,8 +50,6 @@ type EventStoreClient interface {
 	DeleteEvents(ctx context.Context, in *DeleteEventsRequest, opts ...grpc.CallOption) (*DeleteEventsResponse, error)
 	// Query events with filters (streaming response for large result sets)
 	Query(ctx context.Context, in *QueryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[QueryResponse], error)
-	// Query all events (returns all results at once)
-	QueryAll(ctx context.Context, in *QueryAllRequest, opts ...grpc.CallOption) (*QueryAllResponse, error)
 	// Query count only
 	QueryCount(ctx context.Context, in *QueryCountRequest, opts ...grpc.CallOption) (*QueryCountResponse, error)
 	// Get storage statistics
@@ -60,6 +58,9 @@ type EventStoreClient interface {
 	Flush(ctx context.Context, in *FlushRequest, opts ...grpc.CallOption) (*FlushResponse, error)
 	// Health check
 	HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
+	// Aggregate events by one or more dimensions using index-key-only scans.
+	// Does not load event content; 10-50x faster than streaming full events for analytics.
+	QueryAggregation(ctx context.Context, in *QueryAggregationRequest, opts ...grpc.CallOption) (*QueryAggregationResponse, error)
 }
 
 type eventStoreClient struct {
@@ -139,16 +140,6 @@ func (c *eventStoreClient) Query(ctx context.Context, in *QueryRequest, opts ...
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type EventStore_QueryClient = grpc.ServerStreamingClient[QueryResponse]
 
-func (c *eventStoreClient) QueryAll(ctx context.Context, in *QueryAllRequest, opts ...grpc.CallOption) (*QueryAllResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(QueryAllResponse)
-	err := c.cc.Invoke(ctx, EventStore_QueryAll_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *eventStoreClient) QueryCount(ctx context.Context, in *QueryCountRequest, opts ...grpc.CallOption) (*QueryCountResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(QueryCountResponse)
@@ -189,6 +180,16 @@ func (c *eventStoreClient) HealthCheck(ctx context.Context, in *HealthCheckReque
 	return out, nil
 }
 
+func (c *eventStoreClient) QueryAggregation(ctx context.Context, in *QueryAggregationRequest, opts ...grpc.CallOption) (*QueryAggregationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryAggregationResponse)
+	err := c.cc.Invoke(ctx, EventStore_QueryAggregation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EventStoreServer is the server API for EventStore service.
 // All implementations must embed UnimplementedEventStoreServer
 // for forward compatibility.
@@ -207,8 +208,6 @@ type EventStoreServer interface {
 	DeleteEvents(context.Context, *DeleteEventsRequest) (*DeleteEventsResponse, error)
 	// Query events with filters (streaming response for large result sets)
 	Query(*QueryRequest, grpc.ServerStreamingServer[QueryResponse]) error
-	// Query all events (returns all results at once)
-	QueryAll(context.Context, *QueryAllRequest) (*QueryAllResponse, error)
 	// Query count only
 	QueryCount(context.Context, *QueryCountRequest) (*QueryCountResponse, error)
 	// Get storage statistics
@@ -217,6 +216,9 @@ type EventStoreServer interface {
 	Flush(context.Context, *FlushRequest) (*FlushResponse, error)
 	// Health check
 	HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
+	// Aggregate events by one or more dimensions using index-key-only scans.
+	// Does not load event content; 10-50x faster than streaming full events for analytics.
+	QueryAggregation(context.Context, *QueryAggregationRequest) (*QueryAggregationResponse, error)
 	mustEmbedUnimplementedEventStoreServer()
 }
 
@@ -245,9 +247,6 @@ func (UnimplementedEventStoreServer) DeleteEvents(context.Context, *DeleteEvents
 func (UnimplementedEventStoreServer) Query(*QueryRequest, grpc.ServerStreamingServer[QueryResponse]) error {
 	return status.Error(codes.Unimplemented, "method Query not implemented")
 }
-func (UnimplementedEventStoreServer) QueryAll(context.Context, *QueryAllRequest) (*QueryAllResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method QueryAll not implemented")
-}
 func (UnimplementedEventStoreServer) QueryCount(context.Context, *QueryCountRequest) (*QueryCountResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method QueryCount not implemented")
 }
@@ -259,6 +258,9 @@ func (UnimplementedEventStoreServer) Flush(context.Context, *FlushRequest) (*Flu
 }
 func (UnimplementedEventStoreServer) HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method HealthCheck not implemented")
+}
+func (UnimplementedEventStoreServer) QueryAggregation(context.Context, *QueryAggregationRequest) (*QueryAggregationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method QueryAggregation not implemented")
 }
 func (UnimplementedEventStoreServer) mustEmbedUnimplementedEventStoreServer() {}
 func (UnimplementedEventStoreServer) testEmbeddedByValue()                    {}
@@ -382,24 +384,6 @@ func _EventStore_Query_Handler(srv interface{}, stream grpc.ServerStream) error 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type EventStore_QueryServer = grpc.ServerStreamingServer[QueryResponse]
 
-func _EventStore_QueryAll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(QueryAllRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(EventStoreServer).QueryAll(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: EventStore_QueryAll_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(EventStoreServer).QueryAll(ctx, req.(*QueryAllRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _EventStore_QueryCount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(QueryCountRequest)
 	if err := dec(in); err != nil {
@@ -472,6 +456,24 @@ func _EventStore_HealthCheck_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EventStore_QueryAggregation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryAggregationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStoreServer).QueryAggregation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStore_QueryAggregation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStoreServer).QueryAggregation(ctx, req.(*QueryAggregationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EventStore_ServiceDesc is the grpc.ServiceDesc for EventStore service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -500,10 +502,6 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _EventStore_DeleteEvents_Handler,
 		},
 		{
-			MethodName: "QueryAll",
-			Handler:    _EventStore_QueryAll_Handler,
-		},
-		{
 			MethodName: "QueryCount",
 			Handler:    _EventStore_QueryCount_Handler,
 		},
@@ -518,6 +516,10 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "HealthCheck",
 			Handler:    _EventStore_HealthCheck_Handler,
+		},
+		{
+			MethodName: "QueryAggregation",
+			Handler:    _EventStore_QueryAggregation_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

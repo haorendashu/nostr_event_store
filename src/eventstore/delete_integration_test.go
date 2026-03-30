@@ -23,6 +23,7 @@ func TestDeleteIntegrationWALIndexStorage(t *testing.T) {
 
 	// Create and open store
 	cfg := config.DefaultConfig()
+	cfg.IndexConfig.IndexDir = filepath.Join(tmpDir, "indexes")
 	store := New(&Options{
 		Config: cfg,
 	})

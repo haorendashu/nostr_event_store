@@ -228,3 +228,54 @@ func ValidateAPIKey(ctx context.Context, expectedKey string) error {
 	// In production, this should use gRPC metadata
 	return nil
 }
+
+// ConvertAggregationQueryFromProto converts a protobuf QueryAggregationRequest to types.AggregationQuery.
+func ConvertAggregationQueryFromProto(req *pb.QueryAggregationRequest) (*types.AggregationQuery, error) {
+	filter, err := ConvertQueryFilterFromProto(req.Filter)
+	if err != nil {
+		return nil, err
+	}
+
+	groupBy := make([]types.GroupByField, 0, len(req.GroupBy))
+	for _, g := range req.GroupBy {
+		switch g {
+		case pb.GroupByField_GROUP_BY_AUTHOR:
+			groupBy = append(groupBy, types.GroupByAuthor)
+		case pb.GroupByField_GROUP_BY_KIND:
+			groupBy = append(groupBy, types.GroupByKind)
+		case pb.GroupByField_GROUP_BY_TIME_BUCKET:
+			groupBy = append(groupBy, types.GroupByTimeBucket)
+		case pb.GroupByField_GROUP_BY_TAG_VALUE:
+			groupBy = append(groupBy, types.GroupByTagValue)
+		}
+	}
+
+	return &types.AggregationQuery{
+		Filter:            filter,
+		GroupBy:           groupBy,
+		TimeBucketSeconds: req.TimeBucketSeconds,
+		TagName:           req.TagName,
+		Limit:             int(req.Limit),
+		OrderDesc:         req.OrderDesc,
+	}, nil
+}
+
+// ConvertAggregationEntriesToProto converts a slice of types.AggregationEntry to protobuf.
+func ConvertAggregationEntriesToProto(entries []types.AggregationEntry) []*pb.AggregationEntry {
+	pbEntries := make([]*pb.AggregationEntry, len(entries))
+	for i, e := range entries {
+		pbEntry := &pb.AggregationEntry{
+			Kind:       uint32(e.Kind),
+			TimeBucket: e.TimeBucket,
+			TagValue:   e.TagValue,
+			Count:      e.Count,
+		}
+		// Only set pubkey bytes when non-zero (avoids 32 zero bytes on the wire)
+		var zero [32]byte
+		if e.Pubkey != zero {
+			pbEntry.Pubkey = e.Pubkey[:]
+		}
+		pbEntries[i] = pbEntry
+	}
+	return pbEntries
+}

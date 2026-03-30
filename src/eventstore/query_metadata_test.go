@@ -2,6 +2,7 @@ package eventstore
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ func openTestStore(t *testing.T) (EventStore, context.Context) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	cfg := config.DefaultConfig()
+	cfg.IndexConfig.IndexDir = filepath.Join(tmpDir, "indexes")
 	store := New(&Options{Config: cfg, Logger: nil})
 	ctx := context.Background()
 	if err := store.Open(ctx, tmpDir, true); err != nil {

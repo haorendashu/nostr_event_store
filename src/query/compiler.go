@@ -10,11 +10,9 @@ import (
 
 const builtinDefaultQueryLimit = 100
 
-var builtinDefaultSearchKinds = []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111}
-
 type compilerDefaults struct {
-	defaultLimit int
-	defaultKinds []uint16
+	defaultLimit     int
+	defaultKindsFunc func() []uint16
 }
 
 // compilerImpl implements Compiler interface.
@@ -152,7 +150,9 @@ func (c *compilerImpl) normalizeFilter(filter *types.QueryFilter) *types.QueryFi
 	}
 
 	if len(normalized.Kinds) == 0 && shouldApplyDefaultKinds(normalized) {
-		normalized.Kinds = append([]uint16(nil), c.defaults.defaultKinds...)
+		if c.defaults.defaultKindsFunc != nil {
+			normalized.Kinds = c.defaults.defaultKindsFunc()
+		}
 	}
 
 	return normalized
@@ -197,24 +197,24 @@ func normalizeTagFilters(tags map[string][]string) map[string][]string {
 	return normalized
 }
 
-func defaultSearchKinds() []uint16 {
-	return append([]uint16(nil), builtinDefaultSearchKinds...)
-}
-
-func buildCompilerDefaults(defaultLimit int, defaultKinds []uint16) compilerDefaults {
+func buildCompilerDefaults(defaultLimit int, defaultKinds []uint16, defaultKindsFunc func() []uint16) compilerDefaults {
 	resolvedLimit := defaultLimit
 	if resolvedLimit <= 0 {
 		resolvedLimit = builtinDefaultQueryLimit
 	}
 
-	resolvedKinds := append([]uint16(nil), defaultKinds...)
-	if len(resolvedKinds) == 0 {
-		resolvedKinds = defaultSearchKinds()
+	var resolvedFunc func() []uint16
+	if defaultKindsFunc != nil {
+		resolvedFunc = defaultKindsFunc
+	} else if len(defaultKinds) > 0 {
+		// Wrap static slice in a func for backward compatibility.
+		copy := append([]uint16(nil), defaultKinds...)
+		resolvedFunc = func() []uint16 { return append([]uint16(nil), copy...) }
 	}
 
 	return compilerDefaults{
-		defaultLimit: resolvedLimit,
-		defaultKinds: resolvedKinds,
+		defaultLimit:     resolvedLimit,
+		defaultKindsFunc: resolvedFunc,
 	}
 }
 

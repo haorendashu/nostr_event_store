@@ -3,11 +3,13 @@ package eventstore
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/haorendashu/nostr_event_store/src/config"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
@@ -17,7 +19,9 @@ func TestEventStoreConcurrentWriteRead(t *testing.T) {
 
 	// Create and open the store
 	tmpDir := t.TempDir()
-	store := New(&Options{})
+	cfg := config.DefaultConfig()
+	cfg.IndexConfig.IndexDir = filepath.Join(tmpDir, "indexes")
+	store := New(&Options{Config: cfg})
 	if err := store.Open(ctx, tmpDir, true); err != nil {
 		t.Fatalf("Failed to open store: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/haorendashu/nostr_event_store/src/aggregation"
 	"github.com/haorendashu/nostr_event_store/src/compaction"
 	"github.com/haorendashu/nostr_event_store/src/config"
 	"github.com/haorendashu/nostr_event_store/src/index"
@@ -89,6 +90,7 @@ type eventStoreImpl struct {
 	indexMgr    index.Manager
 	keyBuilder  index.KeyBuilder
 	queryEngine query.Engine
+	aggEngine   aggregation.Engine
 
 	// State
 	dir        string
@@ -113,6 +115,47 @@ type eventStoreImpl struct {
 	checkpointDone        chan struct{}
 	checkpointEventCount  int64
 	lastCheckpointLSN     uint64
+
+	// Known kinds: distinct event kinds present in the KindTime index.
+	// Populated at startup via skip-scan, maintained incrementally on writes.
+	knownKinds    []uint16
+	knownKindsSet map[uint16]struct{}
+	knownKindsMu  sync.RWMutex
+}
+
+// getKnownKinds returns a copy of the current known-kinds slice.
+// Safe for concurrent use — called by query and aggregation compilers.
+func (e *eventStoreImpl) getKnownKinds() []uint16 {
+	e.knownKindsMu.RLock()
+	defer e.knownKindsMu.RUnlock()
+	return append([]uint16(nil), e.knownKinds...)
+}
+
+// addKindIfNew registers a kind in the known-kinds cache.
+// Only acquires the write lock when the kind is truly new.
+func (e *eventStoreImpl) addKindIfNew(kind uint16) {
+	e.knownKindsMu.RLock()
+	_, exists := e.knownKindsSet[kind]
+	e.knownKindsMu.RUnlock()
+	if exists {
+		return
+	}
+
+	e.knownKindsMu.Lock()
+	defer e.knownKindsMu.Unlock()
+	if _, exists := e.knownKindsSet[kind]; exists {
+		return // Double-check after acquiring write lock.
+	}
+	if e.knownKindsSet == nil {
+		e.knownKindsSet = make(map[uint16]struct{})
+	}
+	e.knownKindsSet[kind] = struct{}{}
+	// Rebuild sorted slice.
+	e.knownKinds = make([]uint16, 0, len(e.knownKindsSet))
+	for k := range e.knownKindsSet {
+		e.knownKinds = append(e.knownKinds, k)
+	}
+	sort.Slice(e.knownKinds, func(i, j int) bool { return e.knownKinds[i] < e.knownKinds[j] })
 }
 
 // New creates a new EventStore instance.
@@ -253,13 +296,9 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 		return fmt.Errorf("search index is nil after manager open")
 	}
 
-	// Initialize query engine
-	e.queryEngine = query.NewEngineWithDefaults(e.indexMgr, e.storage, query.CompilerDefaults{
-		DefaultLimit: cfg.QueryConfig.DefaultLimit,
-		DefaultKinds: cfg.QueryConfig.DefaultKinds,
-	})
-
 	// Recovery: Replay WAL if recovery mode is not "skip"
+	// Must happen BEFORE engine initialization so that the KindTime index
+	// is fully populated when we collect distinct kinds.
 	e.logger.Printf("Recovery mode: %s (indexFilesInvalidated=%v)", e.opts.RecoveryMode, e.indexFilesInvalidated)
 	if e.opts.RecoveryMode != "skip" {
 		if err := e.recoverFromWAL(ctx); err != nil {
@@ -268,6 +307,32 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	} else {
 		e.logger.Printf("Recovery skipped by configuration")
 	}
+
+	// Collect all distinct event kinds from the KindTime index.
+	// Uses a skip-scan so cost is O(K × tree_depth) regardless of data volume.
+	kindsCtx := query.WithOperationMetadata(ctx, query.OpTypeInternal, map[string]interface{}{
+		"operation": "CollectDistinctKinds",
+	})
+	kinds, err := aggregation.CollectDistinctKinds(kindsCtx, e.indexMgr.KindTimeIndex(), e.keyBuilder)
+	if err != nil {
+		e.logger.Printf("Warning: failed to collect distinct kinds: %v", err)
+	} else {
+		e.knownKindsSet = make(map[uint16]struct{}, len(kinds))
+		for _, k := range kinds {
+			e.knownKindsSet[k] = struct{}{}
+		}
+		e.knownKinds = kinds
+		e.logger.Printf("Collected %d distinct kinds from KindTime index", len(kinds))
+	}
+
+	// Initialize query engine with static default kinds from configuration
+	e.queryEngine = query.NewEngineWithDefaults(e.indexMgr, e.storage, query.CompilerDefaults{
+		DefaultLimit: cfg.QueryConfig.DefaultLimit,
+		DefaultKinds: cfg.QueryConfig.DefaultKinds,
+	})
+
+	// Initialize aggregation engine with dynamic kinds provider
+	e.aggEngine = aggregation.NewEngineWithKinds(e.indexMgr, e.getKnownKinds)
 
 	if e.walEnabled {
 		// Configure WAL checkpoint scheduling
@@ -464,6 +529,7 @@ func (e *eventStoreImpl) WriteEvent(ctx context.Context, event *types.Event) (ty
 		}
 	}
 
+	e.addKindIfNew(event.Kind)
 	e.noteEventsWritten(1)
 
 	return loc, nil
@@ -812,6 +878,9 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		}
 	}
 
+	for _, event := range indexEvents {
+		e.addKindIfNew(event.Kind)
+	}
 	e.noteEventsWritten(len(primaryInsertedIDs))
 
 	return locations, nil
@@ -1227,6 +1296,35 @@ func (e *eventStoreImpl) QueryCount(ctx context.Context, filter *types.QueryFilt
 	ctx = query.WithQueryMetadata(ctx, filter)
 
 	return e.queryEngine.Count(ctx, filter)
+}
+
+// ── Aggregation ──────────────────────────────────────────────────────────────
+
+// QueryAggregation counts events grouped by the requested dimensions, scanning
+// index keys directly without loading event content.
+func (e *eventStoreImpl) QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error) {
+	e.mu.RLock()
+	if !e.opened {
+		e.mu.RUnlock()
+		return nil, fmt.Errorf("store not opened")
+	}
+	e.mu.RUnlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return e.aggEngine.Aggregate(ctx, q)
+}
+
+// ExplainAggregation compiles the aggregation query and returns a human-readable
+// execution plan without scanning any data.
+func (e *eventStoreImpl) ExplainAggregation(ctx context.Context, q *types.AggregationQuery) (string, error) {
+	return e.aggEngine.Explain(ctx, q)
+}
+
+// AggregationEngine returns the underlying aggregation engine.
+func (e *eventStoreImpl) AggregationEngine() aggregation.Engine {
+	return e.aggEngine
 }
 
 // Flush flushes all pending data to disk.
@@ -1821,12 +1919,16 @@ func (e *eventStoreImpl) startCheckpointScheduler() {
 	e.checkpointTicker = time.NewTicker(e.checkpointInterval)
 	e.checkpointDone = make(chan struct{})
 
+	// Capture local copies to avoid racing with stopCheckpointScheduler
+	ticker := e.checkpointTicker
+	done := e.checkpointDone
+
 	go func() {
 		for {
 			select {
-			case <-e.checkpointTicker.C:
+			case <-ticker.C:
 				e.createCheckpoint(context.Background(), "interval")
-			case <-e.checkpointDone:
+			case <-done:
 				return
 			}
 		}
@@ -1834,13 +1936,13 @@ func (e *eventStoreImpl) startCheckpointScheduler() {
 }
 
 func (e *eventStoreImpl) stopCheckpointScheduler() {
-	if e.checkpointTicker != nil {
-		e.checkpointTicker.Stop()
-		e.checkpointTicker = nil
-	}
 	if e.checkpointDone != nil {
 		close(e.checkpointDone)
 		e.checkpointDone = nil
+	}
+	if e.checkpointTicker != nil {
+		e.checkpointTicker.Stop()
+		e.checkpointTicker = nil
 	}
 }
 

@@ -27,6 +27,7 @@ type EventStore interface {
 	DeleteEvents(ctx context.Context, eventIDs [][32]byte) error
 	Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error)
 	QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error)
+	QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error)
 	Stats() interface{} // Returns eventstore.Stats
 	Flush(ctx context.Context) error
 	Close(ctx context.Context) error
@@ -84,6 +85,13 @@ func (a *storeAdapter) QueryCount(ctx context.Context, filter *types.QueryFilter
 		QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error)
 	}
 	return a.store.(queryCountMethod).QueryCount(ctx, filter)
+}
+
+func (a *storeAdapter) QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error) {
+	type queryAggregationMethod interface {
+		QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error)
+	}
+	return a.store.(queryAggregationMethod).QueryAggregation(ctx, q)
 }
 
 func (a *storeAdapter) Stats() interface{} {
@@ -579,6 +587,40 @@ func (s *Server) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*
 	return &pb.HealthCheckResponse{
 		Healthy: true,
 		Status:  "operational",
+	}, nil
+}
+
+// QueryAggregation aggregates events by one or more dimensions using index-key-only scans.
+func (s *Server) QueryAggregation(ctx context.Context, req *pb.QueryAggregationRequest) (*pb.QueryAggregationResponse, error) {
+	if err := s.validateAPIKey(ctx); err != nil {
+		return nil, err
+	}
+
+	q, err := ConvertAggregationQueryFromProto(req)
+	if err != nil {
+		return &pb.QueryAggregationResponse{
+			Result: &pb.QueryAggregationResponse_Error{
+				Error: &pb.ErrorResponse{Code: "INVALID_ARGUMENT", Message: err.Error()},
+			},
+		}, nil
+	}
+
+	entries, err := s.store.QueryAggregation(ctx, q)
+	if err != nil {
+		log.Printf("QueryAggregation failed: %v", err)
+		return &pb.QueryAggregationResponse{
+			Result: &pb.QueryAggregationResponse_Error{
+				Error: &pb.ErrorResponse{Code: convertErrorToCode(err), Message: err.Error()},
+			},
+		}, nil
+	}
+
+	return &pb.QueryAggregationResponse{
+		Result: &pb.QueryAggregationResponse_Success{
+			Success: &pb.QueryAggregationResult{
+				Entries: ConvertAggregationEntriesToProto(entries),
+			},
+		},
 	}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/haorendashu/nostr_event_store/src/aggregation"
 	"github.com/haorendashu/nostr_event_store/src/cache"
 	"github.com/haorendashu/nostr_event_store/src/compaction"
 	"github.com/haorendashu/nostr_event_store/src/config"
@@ -95,6 +96,26 @@ type EventStore interface {
 	// More efficient than Query() when only the count is needed.
 	// ctx is used for cancellation and timeouts.
 	QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error)
+
+	// QueryAggregation counts events grouped by one or more dimensions without loading
+	// event content. It scans index keys directly (AuthorTime or Search index),
+	// making it 10–50× faster than iterating full events for analytics workloads.
+	//
+	// Typical use cases:
+	//   - Top authors by event count in a time range  (GroupBy: [GroupByAuthor])
+	//   - Event kind distribution                      (GroupBy: [GroupByKind])
+	//   - Most-mentioned pubkeys in kind-1 today       (GroupBy: [GroupByTagValue], TagName: "p")
+	//   - Hourly activity of a specific author         (GroupBy: [GroupByAuthor, GroupByTimeBucket])
+	//
+	// ctx is used for cancellation and timeouts.
+	QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error)
+
+	// ExplainAggregation compiles the aggregation query and returns a human-readable
+	// execution plan without scanning any data. Useful for debugging and optimization.
+	ExplainAggregation(ctx context.Context, q *types.AggregationQuery) (string, error)
+
+	// AggregationEngine returns the underlying aggregation engine for advanced usage.
+	AggregationEngine() aggregation.Engine
 
 	// Flush flushes all pending data to disk.
 	// After Flush, all previous write operations are durable and crash-safe.
