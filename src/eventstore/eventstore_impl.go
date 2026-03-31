@@ -1993,8 +1993,8 @@ func (e *eventStoreImpl) createCheckpoint(ctx context.Context, reason string) {
 		e.logger.Printf("Warning: failed to create checkpoint (%s): %v", reason, err)
 		return
 	}
+	prevCheckpoint := atomic.LoadUint64(&e.lastCheckpointLSN)
 	atomic.StoreUint64(&e.lastCheckpointLSN, checkpointLSN)
-	e.logger.Printf("WAL checkpoint created (%s): LSN=%d", reason, checkpointLSN)
 
 	// Clean up old WAL segments based on retention policy
 	cfg := e.config.Get()
@@ -2003,7 +2003,11 @@ func (e *eventStoreImpl) createCheckpoint(ctx context.Context, reason string) {
 			e.logger.Printf("Warning: failed to cleanup old WAL segments: %v", err)
 		}
 	}
-	// MaxRetainedSegments == 0 means keep all segments, no auto-cleanup
+
+	// Only log significant checkpoints (large LSN jumps or non-interval triggers)
+	if reason != "interval" || checkpointLSN-prevCheckpoint >= 1000 {
+		e.logger.Printf("WAL checkpoint created (%s): LSN=%d", reason, checkpointLSN)
+	}
 }
 
 func hasIndexEntries(stats map[string]index.Stats) bool {
