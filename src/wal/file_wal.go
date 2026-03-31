@@ -68,6 +68,10 @@ func (w *FileWriter) Open(ctx context.Context, cfg Config) error {
 
 	w.cfg = cfg
 
+	if cfg.MaxSegmentSize == 0 {
+		fmt.Printf("warning: WAL MaxSegmentSize is 0, file rotation is disabled — WAL file will grow unbounded\n")
+	}
+
 	segments, err := listWalSegments(cfg.Dir)
 	if err != nil {
 		return fmt.Errorf("list WAL segments: %w", err)
@@ -514,6 +518,7 @@ func (r *FileReader) Close() error {
 
 func (w *FileWriter) ensureCapacityLocked(dataLen int) error {
 	if w.cfg.MaxSegmentSize == 0 {
+		// MaxSegmentSize=0 means rotation is disabled; WAL file grows unbounded.
 		return nil
 	}
 

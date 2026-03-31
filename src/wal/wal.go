@@ -183,6 +183,11 @@ type Manager interface {
 	// ctx is used for cancellation and timeouts.
 	DeleteSegmentsBefore(ctx context.Context, beforeLSN LSN) error
 
+	// CleanupSegments deletes old segments keeping at most 'keep' old segments
+	// (plus the active segment). If keep <= 0, no segments are deleted.
+	// Segments are sorted by ID; the oldest ones beyond 'keep' are removed.
+	CleanupSegments(ctx context.Context, keep int) error
+
 	// Stats returns WAL statistics (size, checkpoint count, latest LSN).
 	Stats(ctx context.Context) (Stats, error)
 

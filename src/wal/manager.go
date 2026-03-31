@@ -132,6 +132,44 @@ func (m *FileManager) DeleteSegmentsBefore(ctx context.Context, beforeLSN LSN) e
 	return nil
 }
 
+// CleanupSegments deletes old segments keeping at most 'keep' old segments
+// (plus the active segment). If keep <= 0, no segments are deleted.
+func (m *FileManager) CleanupSegments(ctx context.Context, keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	segments, err := listWalSegments(m.cfg.Dir)
+	if err != nil {
+		return fmt.Errorf("list WAL segments: %w", err)
+	}
+
+	// Separate active segment from old segments
+	var old []walSegment
+	for _, seg := range segments {
+		if m.writer != nil && seg.id == m.writer.segmentID {
+			continue
+		}
+		old = append(old, seg)
+	}
+
+	// Delete oldest segments beyond the retention limit
+	if len(old) <= keep {
+		return nil
+	}
+	toDelete := old[:len(old)-keep]
+	for _, seg := range toDelete {
+		if err := os.Remove(seg.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete segment %s: %w", seg.path, err)
+		}
+	}
+
+	return nil
+}
+
 // Stats returns WAL statistics.
 func (m *FileManager) Stats(ctx context.Context) (Stats, error) {
 	m.mu.Lock()

@@ -268,6 +268,12 @@ type WALConfig struct {
 	// CheckpointEventCount is the number of events between WAL checkpoints.
 	// Default: 5000 events
 	CheckpointEventCount int `json:"checkpoint_event_count,omitempty" yaml:"checkpoint_event_count,omitempty"`
+
+	// MaxRetainedSegments controls how many old WAL segments to keep after checkpoint cleanup.
+	// 0 = keep all segments, never auto-cleanup (default)
+	// N > 0 = keep at most N old segments (plus the active one), delete the rest
+	// For example, MaxRetainedSegments=2 keeps 2 old segments + the active segment.
+	MaxRetainedSegments int `json:"max_retained_segments,omitempty" yaml:"max_retained_segments,omitempty"`
 }
 
 // CompactionConfig defines background compaction parameters.
@@ -939,6 +945,7 @@ func DefaultConfig() *Config {
 			MaxSegmentSize:       1073741824, // 1 GB
 			CheckpointIntervalMs: 30000,
 			CheckpointEventCount: 5000,
+			MaxRetainedSegments:  0, // 0 = keep all old segments
 		},
 		CompactionConfig: CompactionConfig{
 			Enabled:                  true,

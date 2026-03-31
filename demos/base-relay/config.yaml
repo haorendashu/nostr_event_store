@@ -44,6 +44,10 @@ wal:
   sync_mode: "batch"
   batch_interval_ms: 100
   batch_size_bytes: 10485760
+  max_segment_size: 1073741824       # 1 GB per segment
+  checkpoint_interval_ms: 30000
+  checkpoint_event_count: 5000
+  max_retained_segments: 0           # 0 = keep all old segments
 
 # Compaction configuration
 compaction:

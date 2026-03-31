@@ -189,6 +189,7 @@ func New(opts *Options) EventStore {
 	configMgr.Get().WALConfig = opts.Config.WALConfig
 	configMgr.Get().CompactionConfig = opts.Config.CompactionConfig
 	configMgr.Get().RemoteConfig = opts.Config.RemoteConfig
+	configMgr.SetDefaults()
 
 	return &eventStoreImpl{
 		config:   configMgr,
@@ -1994,6 +1995,15 @@ func (e *eventStoreImpl) createCheckpoint(ctx context.Context, reason string) {
 	}
 	atomic.StoreUint64(&e.lastCheckpointLSN, checkpointLSN)
 	e.logger.Printf("WAL checkpoint created (%s): LSN=%d", reason, checkpointLSN)
+
+	// Clean up old WAL segments based on retention policy
+	cfg := e.config.Get()
+	if cfg.WALConfig.MaxRetainedSegments > 0 {
+		if err := e.walMgr.CleanupSegments(ctx, cfg.WALConfig.MaxRetainedSegments); err != nil {
+			e.logger.Printf("Warning: failed to cleanup old WAL segments: %v", err)
+		}
+	}
+	// MaxRetainedSegments == 0 means keep all segments, no auto-cleanup
 }
 
 func hasIndexEntries(stats map[string]index.Stats) bool {
