@@ -3,6 +3,7 @@ package aggregation
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/haorendashu/nostr_event_store/src/index"
@@ -254,6 +255,42 @@ func TestCompile_StrategyAuthorTime(t *testing.T) {
 	}
 }
 
+func TestCompile_StrategyAuthorTime_AuthorKindTimeRanges(t *testing.T) {
+	c := NewCompiler(newTestIndexMgr())
+	author := [32]byte{0x01}
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor, types.GroupByKind},
+		Filter: &types.QueryFilter{
+			Authors: [][32]byte{author},
+			Kinds:   []uint16{1, 7},
+			Since:   100,
+			Until:   200,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyAuthorTime {
+		t.Fatalf("expected StrategyAuthorTime, got %v", plan.Strategy)
+	}
+	if len(plan.KeyRanges) != 2 {
+		t.Fatalf("expected 2 key ranges (one per author-kind pair), got %d", len(plan.KeyRanges))
+	}
+	kb := newTestIndexMgr().KeyBuilder()
+	if string(plan.KeyRanges[0].MinKey) != string(kb.BuildAuthorTimeKey(author, 1, 100)) {
+		t.Errorf("unexpected first MinKey")
+	}
+	if string(plan.KeyRanges[0].MaxKey) != string(kb.BuildAuthorTimeKey(author, 1, 200)) {
+		t.Errorf("unexpected first MaxKey")
+	}
+	if string(plan.KeyRanges[1].MinKey) != string(kb.BuildAuthorTimeKey(author, 7, 100)) {
+		t.Errorf("unexpected second MinKey")
+	}
+	if string(plan.KeyRanges[1].MaxKey) != string(kb.BuildAuthorTimeKey(author, 7, 200)) {
+		t.Errorf("unexpected second MaxKey")
+	}
+}
+
 func TestCompile_StrategyAuthorTime_FullScan(t *testing.T) {
 	c := NewCompiler(newTestIndexMgr())
 	plan, err := c.Compile(&types.AggregationQuery{
@@ -350,6 +387,83 @@ func TestCompile_StrategyMultiIndex_AuthorAndTagFilter(t *testing.T) {
 	}
 	if len(plan.TagConstraints[0].SearchKeyRanges) == 0 {
 		t.Error("expected TagConstraints[0].SearchKeyRanges to be populated")
+	}
+}
+
+func TestCompile_StrategyMultiIndex_TagFilter_ExactRangesWithKinds(t *testing.T) {
+	c := NewCompiler(newTestIndexMgr())
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor},
+		Filter: &types.QueryFilter{
+			Kinds: []uint16{1, 7},
+			Since: 100,
+			Until: 200,
+			Tags:  map[string][]string{"p": {"alice", "bob"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.TagConstraints) != 1 {
+		t.Fatalf("expected 1 TagConstraint, got %d", len(plan.TagConstraints))
+	}
+	tc := plan.TagConstraints[0]
+	if len(tc.SearchKeyRanges) != 4 {
+		t.Fatalf("expected 4 exact SearchKeyRanges, got %d", len(tc.SearchKeyRanges))
+	}
+	kb := newTestIndexMgr().KeyBuilder()
+	expected := map[string]struct{}{
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(1, 1, []byte("alice"), 100), kb.BuildSearchKey(1, 1, []byte("alice"), 200)): {},
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(1, 1, []byte("bob"), 100), kb.BuildSearchKey(1, 1, []byte("bob"), 200)):     {},
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(7, 1, []byte("alice"), 100), kb.BuildSearchKey(7, 1, []byte("alice"), 200)): {},
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(7, 1, []byte("bob"), 100), kb.BuildSearchKey(7, 1, []byte("bob"), 200)):     {},
+	}
+	for _, kr := range tc.SearchKeyRanges {
+		key := fmt.Sprintf("%x|%x", kr.MinKey, kr.MaxKey)
+		if _, ok := expected[key]; !ok {
+			t.Fatalf("unexpected exact SearchKeyRange: %s", key)
+		}
+		delete(expected, key)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("missing expected exact SearchKeyRanges: %d", len(expected))
+	}
+}
+
+func TestCompile_StrategyMultiIndex_TagFilter_ExactRangesWithResolvedKinds(t *testing.T) {
+	c := NewCompilerWithKinds(newTestIndexMgr(), func() []uint16 { return []uint16{1, 7} })
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor},
+		Filter: &types.QueryFilter{
+			Since: 50,
+			Until: 60,
+			Tags:  map[string][]string{"p": {"alice"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.TagConstraints) != 1 {
+		t.Fatalf("expected 1 TagConstraint, got %d", len(plan.TagConstraints))
+	}
+	tc := plan.TagConstraints[0]
+	if len(tc.SearchKeyRanges) != 2 {
+		t.Fatalf("expected 2 exact SearchKeyRanges from resolved kinds, got %d", len(tc.SearchKeyRanges))
+	}
+	kb := newTestIndexMgr().KeyBuilder()
+	expected := map[string]struct{}{
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(1, 1, []byte("alice"), 50), kb.BuildSearchKey(1, 1, []byte("alice"), 60)): {},
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(7, 1, []byte("alice"), 50), kb.BuildSearchKey(7, 1, []byte("alice"), 60)): {},
+	}
+	for _, kr := range tc.SearchKeyRanges {
+		key := fmt.Sprintf("%x|%x", kr.MinKey, kr.MaxKey)
+		if _, ok := expected[key]; !ok {
+			t.Fatalf("unexpected resolved-kind SearchKeyRange: %s", key)
+		}
+		delete(expected, key)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("missing expected resolved-kind SearchKeyRanges: %d", len(expected))
 	}
 }
 
@@ -646,5 +760,45 @@ func TestCompile_StrategyMultiIndex_MultiTag_OnlyGroupByNoFilter(t *testing.T) {
 	}
 	if groupByCount != 1 {
 		t.Errorf("expected 1 IsGroupByTag constraint, got %d", groupByCount)
+	}
+}
+
+func TestCompile_StrategyMultiIndex_GroupByTagWithoutFilterValues_UsesBroadRanges(t *testing.T) {
+	c := NewCompilerWithKinds(newTestIndexMgr(), func() []uint16 { return []uint16{1, 7} })
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		TagName: "p",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plan.TagConstraints) != 1 {
+		t.Fatalf("expected 1 TagConstraint, got %d", len(plan.TagConstraints))
+	}
+	tc := plan.TagConstraints[0]
+	if len(tc.FilterValues) != 0 {
+		t.Fatalf("expected no FilterValues for pure groupBy tag, got %d", len(tc.FilterValues))
+	}
+	if len(tc.SearchKeyRanges) != 2 {
+		t.Fatalf("expected 2 broad SearchKeyRanges (one per resolved kind), got %d", len(tc.SearchKeyRanges))
+	}
+	kb := newTestIndexMgr().KeyBuilder()
+	maxTagVal := make([]byte, 255)
+	for i := range maxTagVal {
+		maxTagVal[i] = 0xFF
+	}
+	expected := map[string]struct{}{
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(1, 1, []byte{}, 0), kb.BuildSearchKey(1, 1, maxTagVal, ^uint32(0))): {},
+		fmt.Sprintf("%x|%x", kb.BuildSearchKey(7, 1, []byte{}, 0), kb.BuildSearchKey(7, 1, maxTagVal, ^uint32(0))): {},
+	}
+	for _, kr := range tc.SearchKeyRanges {
+		key := fmt.Sprintf("%x|%x", kr.MinKey, kr.MaxKey)
+		if _, ok := expected[key]; !ok {
+			t.Fatalf("unexpected broad SearchKeyRange: %s", key)
+		}
+		delete(expected, key)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("missing expected broad SearchKeyRanges: %d", len(expected))
 	}
 }

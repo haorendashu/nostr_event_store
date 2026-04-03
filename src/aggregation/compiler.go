@@ -2,6 +2,7 @@ package aggregation
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/haorendashu/nostr_event_store/src/index"
 	"github.com/haorendashu/nostr_event_store/src/types"
@@ -259,10 +260,68 @@ func (c *compilerImpl) buildSearchRanges(kb index.KeyBuilder, filter *types.Quer
 	return []KeyRange{{MinKey: minKey, MaxKey: maxKey}}
 }
 
+// buildExactSearchRanges builds Search-index ranges for exact tag values.
+// This is safe to narrow by Since/Until only because kind+searchType+tagValue are fixed.
+// If no kinds can be resolved, it falls back to the broader buildSearchRanges shape.
+func (c *compilerImpl) buildExactSearchRanges(kb index.KeyBuilder, filter *types.QueryFilter, searchType index.SearchType, filterValues map[string]struct{}) []KeyRange {
+	kinds := c.resolveKinds(filter)
+	if len(kinds) == 0 || len(filterValues) == 0 {
+		return c.buildSearchRanges(kb, filter, searchType)
+	}
+
+	values := make([]string, 0, len(filterValues))
+	for value := range filterValues {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+
+	since := uint32(0)
+	until := ^uint32(0)
+	if filter != nil {
+		since = filter.Since
+		if filter.Until > 0 {
+			until = filter.Until
+		}
+	}
+
+	ranges := make([]KeyRange, 0, len(kinds)*len(values))
+	for _, kind := range kinds {
+		for _, value := range values {
+			tagValue := []byte(value)
+			ranges = append(ranges, KeyRange{
+				MinKey: kb.BuildSearchKey(kind, searchType, tagValue, since),
+				MaxKey: kb.BuildSearchKey(kind, searchType, tagValue, until),
+			})
+		}
+	}
+	return ranges
+}
+
 // buildAuthorTimeRanges builds key ranges for the AuthorTime index.
-// If filter has Authors → one range per author; otherwise one full-scan range.
+// If filter has Authors+Kinds → one range per author-kind pair, narrowed by Since/Until.
+// If filter has Authors only → one range per author across all kinds.
+// Otherwise one full-scan range.
 func (c *compilerImpl) buildAuthorTimeRanges(kb index.KeyBuilder, filter *types.QueryFilter) []KeyRange {
 	if filter != nil && len(filter.Authors) > 0 {
+		if len(filter.Kinds) > 0 {
+			since := filter.Since
+			until := filter.Until
+			if until == 0 {
+				until = ^uint32(0)
+			}
+
+			ranges := make([]KeyRange, 0, len(filter.Authors)*len(filter.Kinds))
+			for _, author := range filter.Authors {
+				for _, kind := range filter.Kinds {
+					ranges = append(ranges, KeyRange{
+						MinKey: kb.BuildAuthorTimeKey(author, kind, since),
+						MaxKey: kb.BuildAuthorTimeKey(author, kind, until),
+					})
+				}
+			}
+			return ranges
+		}
+
 		ranges := make([]KeyRange, len(filter.Authors))
 		for i, author := range filter.Authors {
 			ranges[i] = KeyRange{
@@ -335,10 +394,14 @@ func (c *compilerImpl) buildTagConstraints(kb index.KeyBuilder, q *types.Aggrega
 		if !ok {
 			return nil, fmt.Errorf("QueryAggregation: tag %q is not indexed; check IndexConfig.SearchTypeMapConfig", sp.name)
 		}
+		searchKeyRanges := c.buildSearchRanges(kb, q.Filter, code)
+		if len(sp.filterValues) > 0 {
+			searchKeyRanges = c.buildExactSearchRanges(kb, q.Filter, code, sp.filterValues)
+		}
 		constraints = append(constraints, TagConstraint{
 			TagName:         sp.name,
 			SearchTypeCode:  code,
-			SearchKeyRanges: c.buildSearchRanges(kb, q.Filter, code),
+			SearchKeyRanges: searchKeyRanges,
 			FilterValues:    sp.filterValues,
 			IsGroupByTag:    sp.isGroupBy,
 		})
