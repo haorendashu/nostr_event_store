@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/query"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
@@ -41,6 +42,9 @@ func NewEngineWithKinds(indexMgr index.Manager, knownKindsFunc func() []uint16) 
 }
 
 func (e *engineImpl) Aggregate(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error) {
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeQuery, map[string]interface{}{
+		"source": "aggregation",
+	})
 	plan, err := e.compiler.Compile(q)
 	if err != nil {
 		return nil, err
