@@ -270,14 +270,111 @@ func TestCompile_StrategyAuthorTime_FullScan(t *testing.T) {
 	}
 }
 
-func TestCompile_UnsupportedCombo_TagValueWithAuthor(t *testing.T) {
+// GroupByTagValue + GroupByAuthor is now handled by StrategyMultiIndex.
+func TestCompile_StrategyMultiIndex_GroupByBoth(t *testing.T) {
 	c := NewCompiler(newTestIndexMgr())
-	_, err := c.Compile(&types.AggregationQuery{
+	plan, err := c.Compile(&types.AggregationQuery{
 		GroupBy: []types.GroupByField{types.GroupByTagValue, types.GroupByAuthor},
 		TagName: "p",
 	})
-	if err == nil {
-		t.Fatal("expected error for unsupported TagValue+Author combo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	if len(plan.TagConstraints) == 0 {
+		t.Fatal("expected TagConstraints to be populated")
+	}
+	if plan.TagConstraints[0].SearchTypeCode != 1 {
+		t.Errorf("expected searchTypeCode=1 for tag 'p', got %d", plan.TagConstraints[0].SearchTypeCode)
+	}
+	if len(plan.KeyRanges) == 0 {
+		t.Error("expected AuthorTime KeyRanges to be populated")
+	}
+	if len(plan.TagConstraints[0].SearchKeyRanges) == 0 {
+		t.Error("expected TagConstraints[0].SearchKeyRanges to be populated")
+	}
+	if !plan.TagConstraints[0].IsGroupByTag {
+		t.Error("expected IsGroupByTag=true for the 'p' constraint when wantTagValue=true")
+	}
+}
+
+func TestCompile_StrategyMultiIndex_AuthorFilterAndTagValue(t *testing.T) {
+	c := NewCompiler(newTestIndexMgr())
+	author := [32]byte{0x01}
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByTagValue},
+		TagName: "p",
+		Filter: &types.QueryFilter{
+			Authors: [][32]byte{author},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	// KeyRanges should be per-author AuthorTime ranges.
+	if len(plan.KeyRanges) != 1 {
+		t.Errorf("expected 1 AuthorTime key range, got %d", len(plan.KeyRanges))
+	}
+	if len(plan.TagConstraints) == 0 {
+		t.Fatal("expected TagConstraints to be populated")
+	}
+	if len(plan.TagConstraints[0].SearchKeyRanges) == 0 {
+		t.Error("expected TagConstraints[0].SearchKeyRanges to be populated")
+	}
+}
+
+func TestCompile_StrategyMultiIndex_AuthorAndTagFilter(t *testing.T) {
+	c := NewCompiler(newTestIndexMgr())
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor},
+		Filter: &types.QueryFilter{
+			Tags: map[string][]string{"p": {"v1", "v2"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	if len(plan.TagConstraints) == 0 {
+		t.Fatal("expected TagConstraints to be populated")
+	}
+	if len(plan.TagConstraints[0].FilterValues) != 2 {
+		t.Errorf("expected 2 FilterValues in TagConstraints[0], got %d", len(plan.TagConstraints[0].FilterValues))
+	}
+	if len(plan.TagConstraints[0].SearchKeyRanges) == 0 {
+		t.Error("expected TagConstraints[0].SearchKeyRanges to be populated")
+	}
+}
+
+func TestCompile_StrategyMultiIndex_AuthorFilterAndTagFilter(t *testing.T) {
+	c := NewCompiler(newTestIndexMgr())
+	author := [32]byte{0x02}
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy:           []types.GroupByField{types.GroupByAuthor, types.GroupByTimeBucket},
+		TimeBucketSeconds: 3600,
+		Filter: &types.QueryFilter{
+			Authors: [][32]byte{author},
+			Tags:    map[string][]string{"p": {"v1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	if plan.EstimatedIO <= 0 {
+		t.Errorf("EstimatedIO should be > 0, got %d", plan.EstimatedIO)
+	}
+	if plan.TimeBucketSecs != 3600 {
+		t.Errorf("TimeBucketSecs = %d, want 3600", plan.TimeBucketSecs)
 	}
 }
 
@@ -296,16 +393,20 @@ func TestCompile_UnsupportedCombo_TagValueWithTagFilter(t *testing.T) {
 	}
 }
 
-func TestCompile_UnsupportedCombo_AuthorWithTagFilter(t *testing.T) {
+func TestCompile_StrategyMultiIndex_AuthorOnlyGroupByWithTagFilter(t *testing.T) {
+	// GroupBy=[Author] with tag filter is now handled by StrategyMultiIndex.
 	c := NewCompiler(newTestIndexMgr())
-	_, err := c.Compile(&types.AggregationQuery{
+	plan, err := c.Compile(&types.AggregationQuery{
 		GroupBy: []types.GroupByField{types.GroupByAuthor},
 		Filter: &types.QueryFilter{
 			Tags: map[string][]string{"e": {"abc"}},
 		},
 	})
-	if err == nil {
-		t.Fatal("expected error for Author grouping with tag filter")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
 	}
 }
 
@@ -388,17 +489,24 @@ func TestCompile_Search_TagValueWithMatchingTagFilter(t *testing.T) {
 	}
 }
 
-func TestCompile_MultiTagFilter_Error(t *testing.T) {
-	// Filter.Tags with 2 different tag names → error.
+func TestCompile_MultiTagFilter_NoAuthorDim_UsesMultiIndex(t *testing.T) {
+	// Filter.Tags with 2 different tag names but no author dimension:
+	// should route to StrategyMultiIndex (N Search scans + AND intersection), not error.
 	c := NewCompiler(newTestIndexMgr())
-	_, err := c.Compile(&types.AggregationQuery{
+	plan, err := c.Compile(&types.AggregationQuery{
 		GroupBy: []types.GroupByField{types.GroupByKind},
 		Filter: &types.QueryFilter{
 			Tags: map[string][]string{"p": {"v1"}, "e": {"v2"}},
 		},
 	})
-	if err == nil {
-		t.Fatal("expected error for multi-tag filter")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Fatalf("expected StrategyMultiIndex, got %s", plan.Strategy)
+	}
+	if len(plan.TagConstraints) != 2 {
+		t.Fatalf("expected 2 TagConstraints, got %d", len(plan.TagConstraints))
 	}
 }
 
@@ -413,5 +521,130 @@ func TestCompile_TagFilter_UnindexedTag_Error(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for unindexed tag in filter")
+	}
+}
+
+// ── Multi-tag StrategyMultiIndex compiler tests ──────────────────────────────
+
+func TestCompile_StrategyMultiIndex_MultiTag_TwoConstraints(t *testing.T) {
+	// GroupBy=[Author] + Filter.Tags{"p": ..., "e": ...} → StrategyMultiIndex with 2 TagConstraints.
+	c := NewCompiler(newTestIndexMgr())
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor},
+		Filter: &types.QueryFilter{
+			Tags: map[string][]string{
+				"p": {"pubkey1"},
+				"e": {"eventid1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	if len(plan.TagConstraints) != 2 {
+		t.Fatalf("expected 2 TagConstraints, got %d", len(plan.TagConstraints))
+	}
+	// Neither is a groupBy tag (wantTagValue=false).
+	for i, tc := range plan.TagConstraints {
+		if tc.IsGroupByTag {
+			t.Errorf("TagConstraints[%d].IsGroupByTag should be false (wantTagValue=false)", i)
+		}
+		if len(tc.SearchKeyRanges) == 0 {
+			t.Errorf("TagConstraints[%d].SearchKeyRanges not populated", i)
+		}
+	}
+	// Each constraint should have exactly 1 FilterValue.
+	totalValues := 0
+	for _, tc := range plan.TagConstraints {
+		totalValues += len(tc.FilterValues)
+	}
+	if totalValues != 2 {
+		t.Errorf("expected total 2 FilterValues across constraints, got %d", totalValues)
+	}
+}
+
+func TestCompile_StrategyMultiIndex_MultiTag_WithGroupByTag(t *testing.T) {
+	// GroupBy=[TagValue] (TagName="p") + hasAuthorFilter + Filter.Tags{"p": ..., "e": ...}
+	// → StrategyMultiIndex with 2 TagConstraints; the "p" constraint has IsGroupByTag=true.
+	c := NewCompiler(newTestIndexMgr())
+	author := [32]byte{0x01}
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByTagValue},
+		TagName: "p",
+		Filter: &types.QueryFilter{
+			Authors: [][32]byte{author},
+			Tags: map[string][]string{
+				"p": {"alice", "bob"},
+				"e": {"eventid1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	if len(plan.TagConstraints) != 2 {
+		t.Fatalf("expected 2 TagConstraints, got %d", len(plan.TagConstraints))
+	}
+	groupByCount := 0
+	for _, tc := range plan.TagConstraints {
+		if tc.IsGroupByTag {
+			groupByCount++
+			if tc.TagName != "p" {
+				t.Errorf("IsGroupByTag constraint has TagName=%q, want \"p\"", tc.TagName)
+			}
+			if len(tc.FilterValues) != 2 {
+				t.Errorf("groupBy 'p' constraint: expected 2 FilterValues (alice,bob), got %d", len(tc.FilterValues))
+			}
+		}
+	}
+	if groupByCount != 1 {
+		t.Errorf("expected exactly 1 IsGroupByTag constraint, got %d", groupByCount)
+	}
+}
+
+func TestCompile_StrategyMultiIndex_MultiTag_OnlyGroupByNoFilter(t *testing.T) {
+	// GroupBy=[Author, TagValue] (TagName="p") with Filter.Tags{"e": ...}
+	// → StrategyMultiIndex; 2 TagConstraints: one for "p" (groupBy, no filter values),
+	// one for "e" (filter only).
+	c := NewCompiler(newTestIndexMgr())
+	plan, err := c.Compile(&types.AggregationQuery{
+		GroupBy: []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		TagName: "p",
+		Filter: &types.QueryFilter{
+			Tags: map[string][]string{
+				"e": {"eventid1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plan.Strategy != StrategyMultiIndex {
+		t.Errorf("expected StrategyMultiIndex, got %v", plan.Strategy)
+	}
+	if len(plan.TagConstraints) != 2 {
+		t.Fatalf("expected 2 TagConstraints (p+e), got %d", len(plan.TagConstraints))
+	}
+	groupByCount := 0
+	for _, tc := range plan.TagConstraints {
+		if tc.IsGroupByTag {
+			groupByCount++
+			if tc.TagName != "p" {
+				t.Errorf("IsGroupByTag.TagName=%q, want \"p\"", tc.TagName)
+			}
+			// "p" is not in Filter.Tags, so no value filter.
+			if len(tc.FilterValues) != 0 {
+				t.Errorf("groupBy 'p' constraint should have no FilterValues (it's not filtered), got %d", len(tc.FilterValues))
+			}
+		}
+	}
+	if groupByCount != 1 {
+		t.Errorf("expected 1 IsGroupByTag constraint, got %d", groupByCount)
 	}
 }

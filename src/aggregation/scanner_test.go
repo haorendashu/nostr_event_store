@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // ── Scanner unit tests ──────────────────────────────────────────────────────
@@ -269,5 +270,82 @@ func TestCollectDistinctKinds_ContextCancelled(t *testing.T) {
 	_, err := CollectDistinctKinds(ctx, idx, kb)
 	if err == nil {
 		t.Fatal("expected context error, got nil")
+	}
+}
+
+// ── *WithLocation scanner tests ──────────────────────────────────────────────
+
+func TestScanAuthorTimeKeysWithLocation_Basic(t *testing.T) {
+	kb := &mockKeyBuilder{}
+	author1 := [32]byte{0x01}
+	author2 := [32]byte{0x02}
+	loc1 := types.RecordLocation{SegmentID: 0, Offset: 100}
+	loc2 := types.RecordLocation{SegmentID: 1, Offset: 200}
+
+	entries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: loc1},
+		{key: kb.BuildAuthorTimeKey(author2, 7, 2000), loc: loc2},
+	}
+	iter := &locIterator{entries: entries}
+
+	type result struct {
+		pubkey    [32]byte
+		kind      uint16
+		createdAt uint32
+		loc       types.RecordLocation
+	}
+	var results []result
+	err := ScanAuthorTimeKeysWithLocation(context.Background(), iter, func(pubkey [32]byte, kind uint16, createdAt uint32, loc types.RecordLocation) error {
+		results = append(results, result{pubkey, kind, createdAt, loc})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].pubkey != author1 || results[0].kind != 1 || results[0].createdAt != 1000 || results[0].loc != loc1 {
+		t.Errorf("result[0] mismatch: %+v", results[0])
+	}
+	if results[1].pubkey != author2 || results[1].kind != 7 || results[1].createdAt != 2000 || results[1].loc != loc2 {
+		t.Errorf("result[1] mismatch: %+v", results[1])
+	}
+}
+
+func TestScanSearchKeysWithLocation_Basic(t *testing.T) {
+	kb := &mockKeyBuilder{}
+	loc1 := types.RecordLocation{SegmentID: 0, Offset: 42}
+	loc2 := types.RecordLocation{SegmentID: 0, Offset: 99}
+	searchType := index.SearchType(1)
+
+	entries := []locEntry{
+		{key: kb.BuildSearchKey(1, searchType, []byte("alice"), 1000), loc: loc1},
+		{key: kb.BuildSearchKey(7, searchType, []byte("bob"), 2000), loc: loc2},
+	}
+	iter := &locIterator{entries: entries}
+
+	type result struct {
+		kind      uint16
+		tagValue  string
+		createdAt uint32
+		loc       types.RecordLocation
+	}
+	var results []result
+	err := ScanSearchKeysWithLocation(context.Background(), iter, searchType, false, func(kind uint16, tagValue string, createdAt uint32, loc types.RecordLocation) error {
+		results = append(results, result{kind, tagValue, createdAt, loc})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].kind != 1 || results[0].tagValue != "alice" || results[0].createdAt != 1000 || results[0].loc != loc1 {
+		t.Errorf("result[0] mismatch: %+v", results[0])
+	}
+	if results[1].kind != 7 || results[1].tagValue != "bob" || results[1].createdAt != 2000 || results[1].loc != loc2 {
+		t.Errorf("result[1] mismatch: %+v", results[1])
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/haorendashu/nostr_event_store/src/index"
+	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
 // ctxCheckInterval controls how often scanners call ctx.Err() — every N keys.
@@ -105,6 +106,74 @@ func CollectDistinctKinds(ctx context.Context, idx index.Index, kb index.KeyBuil
 		nextKind = kind + 1
 	}
 	return kinds, nil
+}
+
+// ScanAuthorTimeKeysWithLocation iterates an AuthorTime index iterator and calls fn for each
+// valid key, additionally passing the RecordLocation from iter.Value().
+// Key format: pubkey[32] + kind[2BE] + createdAt[4BE] = 38 bytes.
+// Use this instead of ScanAuthorTimeKeys when the location is needed for index joining.
+func ScanAuthorTimeKeysWithLocation(ctx context.Context, iter index.Iterator, fn func([32]byte, uint16, uint32, types.RecordLocation) error) error {
+	defer iter.Close()
+	n := 0
+	for iter.Valid() {
+		n++
+		if n%ctxCheckInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if key := iter.Key(); len(key) >= 38 {
+			var pubkey [32]byte
+			copy(pubkey[:], key[0:32])
+			kind := binary.BigEndian.Uint16(key[32:34])
+			createdAt := binary.BigEndian.Uint32(key[34:38])
+			loc := iter.Value()
+			if err := fn(pubkey, kind, createdAt, loc); err != nil {
+				return err
+			}
+		}
+		if err := iter.Next(); err != nil {
+			return fmt.Errorf("author-time iterator: %w", err)
+		}
+	}
+	return nil
+}
+
+// ScanSearchKeysWithLocation iterates a Search index iterator and calls fn for each valid key,
+// additionally passing the RecordLocation from iter.Value().
+// Key format: kind[2BE] + searchType[1] + tagValueLen[1] + tagValue[N] + createdAt[4BE].
+// When filterByType is true, only keys whose searchType matches wantType are processed.
+func ScanSearchKeysWithLocation(ctx context.Context, iter index.Iterator, wantType index.SearchType, filterByType bool, fn func(uint16, string, uint32, types.RecordLocation) error) error {
+	defer iter.Close()
+	n := 0
+	for iter.Valid() {
+		n++
+		if n%ctxCheckInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		key := iter.Key()
+		if len(key) >= 8 {
+			gotType := index.SearchType(key[2])
+			if !filterByType || gotType == wantType {
+				kind := binary.BigEndian.Uint16(key[0:2])
+				tagLen := int(key[3])
+				if len(key) >= 4+tagLen+4 {
+					tagValue := string(key[4 : 4+tagLen])
+					createdAt := binary.BigEndian.Uint32(key[4+tagLen : 4+tagLen+4])
+					loc := iter.Value()
+					if err := fn(kind, tagValue, createdAt, loc); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if err := iter.Next(); err != nil {
+			return fmt.Errorf("search iterator: %w", err)
+		}
+	}
+	return nil
 }
 
 // ScanSearchKeys iterates a Search index iterator and calls fn for each valid key.

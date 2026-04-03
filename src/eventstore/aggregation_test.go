@@ -283,22 +283,24 @@ func TestQueryAggregationValidation(t *testing.T) {
 		}
 	})
 	t.Run("TagValue combined with Author", func(t *testing.T) {
+		// GroupByTagValue + GroupByAuthor is now supported via StrategyMultiIndex.
 		_, err := store.QueryAggregation(ctx, &types.AggregationQuery{
 			GroupBy: []types.GroupByField{types.GroupByTagValue, types.GroupByAuthor},
 			TagName: "p",
 		})
-		if err == nil {
-			t.Error("expected error for GroupByTagValue + GroupByAuthor combination")
+		if err != nil {
+			t.Errorf("unexpected error for GroupByTagValue + GroupByAuthor: %v", err)
 		}
 	})
 	t.Run("TagValue with Authors filter", func(t *testing.T) {
+		// GroupByTagValue with Authors filter is now supported via StrategyMultiIndex.
 		_, err := store.QueryAggregation(ctx, &types.AggregationQuery{
 			GroupBy: []types.GroupByField{types.GroupByTagValue},
 			TagName: "p",
 			Filter:  &types.QueryFilter{Authors: [][32]byte{{0x01}}},
 		})
-		if err == nil {
-			t.Error("expected error for GroupByTagValue with Authors filter")
+		if err != nil {
+			t.Errorf("unexpected error for GroupByTagValue with Authors filter: %v", err)
 		}
 	})
 }

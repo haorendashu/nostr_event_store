@@ -380,7 +380,442 @@ func TestExecute_KindTime_FallbackToAuthorTime(t *testing.T) {
 	}
 }
 
-// ── buildAggResults tests ───────────────────────────────────────────────────
+// ── locIterator: iterator with per-entry RecordLocations for join tests ─────
+
+type locEntry struct {
+	key []byte
+	loc types.RecordLocation
+}
+
+type locIterator struct {
+	entries []locEntry
+	pos     int
+}
+
+func (it *locIterator) Valid() bool                 { return it.pos < len(it.entries) }
+func (it *locIterator) Key() []byte                 { return it.entries[it.pos].key }
+func (it *locIterator) Value() types.RecordLocation { return it.entries[it.pos].loc }
+func (it *locIterator) Next() error                 { it.pos++; return nil }
+func (it *locIterator) Prev() error {
+	if it.pos > 0 {
+		it.pos--
+	}
+	return nil
+}
+func (it *locIterator) Close() error { return nil }
+
+// locCapturingIndex returns a locIterator with pre-set key+location pairs.
+type locCapturingIndex struct {
+	mockIndex
+	entries []locEntry
+}
+
+func (li *locCapturingIndex) Range(_ context.Context, _, _ []byte) (index.Iterator, error) {
+	return &locIterator{entries: li.entries}, nil
+}
+
+// ── MultiIndex executor tests ────────────────────────────────────────────────
+
+func TestExecute_MultiIndex_GroupByAuthorAndTagValue(t *testing.T) {
+	// AuthorTime-as-probe path: hasAuthorFilter=true.
+	// Two events belonging to author1; event A tagged "alice", event B tagged "bob".
+	kb := &mockKeyBuilder{tagMapping: map[string]index.SearchType{"p": 1}}
+	author1 := [32]byte{0x01}
+	locA := types.RecordLocation{SegmentID: 0, Offset: 0}
+	locB := types.RecordLocation{SegmentID: 0, Offset: 100}
+
+	authorEntries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: locA},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 2000), loc: locB},
+	}
+	searchEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 1000), loc: locA},
+		{key: kb.BuildSearchKey(1, 1, []byte("bob"), 2000), loc: locB},
+	}
+
+	mgr := &mockIndexMgr{
+		authorTime: &locCapturingIndex{entries: authorEntries},
+		search:     &locCapturingIndex{entries: searchEntries},
+		kb:         kb,
+		primary:    &mockIndex{}, kindTime: &mockIndex{},
+	}
+	exec := NewExecutor(mgr)
+
+	plan := &Plan{
+		Strategy:  StrategyMultiIndex,
+		GroupBy:   []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		AggFunc:   types.AggCount,
+		Filter:    &types.QueryFilter{Authors: [][32]byte{author1}},
+		KeyRanges: []KeyRange{{MinKey: make([]byte, 38), MaxKey: make([]byte, 38)}},
+		TagConstraints: []TagConstraint{{
+			TagName:         "p",
+			SearchTypeCode:  1,
+			SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+			IsGroupByTag:    true,
+		}},
+	}
+	results, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(results), results)
+	}
+	byTag := make(map[string]int64)
+	for _, r := range results {
+		if r.Pubkey != author1 {
+			t.Errorf("expected pubkey=author1, got %v", r.Pubkey)
+		}
+		byTag[r.TagValue] = r.Count
+	}
+	if byTag["alice"] != 1 {
+		t.Errorf("alice count=%d, want 1", byTag["alice"])
+	}
+	if byTag["bob"] != 1 {
+		t.Errorf("bob count=%d, want 1", byTag["bob"])
+	}
+}
+
+func TestExecute_MultiIndex_SearchProbe_NoAuthorFilter(t *testing.T) {
+	// Search-as-probe path: no author filter.
+	// Two events: author1→"alice", author2→"bob". No author filter, GroupBy=[Author, TagValue].
+	kb := &mockKeyBuilder{tagMapping: map[string]index.SearchType{"p": 1}}
+	author1 := [32]byte{0x01}
+	author2 := [32]byte{0x02}
+	locA := types.RecordLocation{SegmentID: 0, Offset: 0}
+	locB := types.RecordLocation{SegmentID: 0, Offset: 200}
+
+	searchEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 1000), loc: locA},
+		{key: kb.BuildSearchKey(1, 1, []byte("bob"), 2000), loc: locB},
+	}
+	authorEntries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: locA},
+		{key: kb.BuildAuthorTimeKey(author2, 1, 2000), loc: locB},
+	}
+
+	mgr := &mockIndexMgr{
+		authorTime: &locCapturingIndex{entries: authorEntries},
+		search:     &locCapturingIndex{entries: searchEntries},
+		kb:         kb,
+		primary:    &mockIndex{}, kindTime: &mockIndex{},
+	}
+	exec := NewExecutor(mgr)
+
+	plan := &Plan{
+		Strategy:  StrategyMultiIndex,
+		GroupBy:   []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		AggFunc:   types.AggCount,
+		KeyRanges: []KeyRange{{MinKey: make([]byte, 38), MaxKey: make([]byte, 38)}},
+		TagConstraints: []TagConstraint{{
+			TagName:         "p",
+			SearchTypeCode:  1,
+			SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+			IsGroupByTag:    true,
+		}},
+	}
+	results, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 groups, got %d: %+v", len(results), results)
+	}
+	type key struct {
+		author   [32]byte
+		tagValue string
+	}
+	byKey := make(map[key]int64)
+	for _, r := range results {
+		byKey[key{r.Pubkey, r.TagValue}] = r.Count
+	}
+	if byKey[key{author1, "alice"}] != 1 {
+		t.Errorf("author1/alice count=%d, want 1", byKey[key{author1, "alice"}])
+	}
+	if byKey[key{author2, "bob"}] != 1 {
+		t.Errorf("author2/bob count=%d, want 1", byKey[key{author2, "bob"}])
+	}
+}
+
+func TestExecute_MultiIndex_SinceUntilFilter(t *testing.T) {
+	// AuthorTime-as-probe path; events at ts=500 (before Since) and ts=3000 (after Until)
+	// should be excluded; only ts=1000 passes.
+	kb := &mockKeyBuilder{tagMapping: map[string]index.SearchType{"p": 1}}
+	author1 := [32]byte{0x01}
+	loc0 := types.RecordLocation{SegmentID: 0, Offset: 0}
+	loc1 := types.RecordLocation{SegmentID: 0, Offset: 50}
+	loc2 := types.RecordLocation{SegmentID: 0, Offset: 100}
+
+	authorEntries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 500), loc: loc0},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: loc1},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 3000), loc: loc2},
+	}
+	searchEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 500), loc: loc0},
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 1000), loc: loc1},
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 3000), loc: loc2},
+	}
+
+	mgr := &mockIndexMgr{
+		authorTime: &locCapturingIndex{entries: authorEntries},
+		search:     &locCapturingIndex{entries: searchEntries},
+		kb:         kb,
+		primary:    &mockIndex{}, kindTime: &mockIndex{},
+	}
+	exec := NewExecutor(mgr)
+
+	plan := &Plan{
+		Strategy:  StrategyMultiIndex,
+		GroupBy:   []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		AggFunc:   types.AggCount,
+		Filter:    &types.QueryFilter{Authors: [][32]byte{author1}, Since: 800, Until: 2500},
+		KeyRanges: []KeyRange{{MinKey: make([]byte, 38), MaxKey: make([]byte, 38)}},
+		TagConstraints: []TagConstraint{{
+			TagName:         "p",
+			SearchTypeCode:  1,
+			SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+			IsGroupByTag:    true,
+		}},
+	}
+	results, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 group (only ts=1000 passes), got %d: %+v", len(results), results)
+	}
+	if results[0].Count != 1 {
+		t.Errorf("count=%d, want 1", results[0].Count)
+	}
+}
+
+func TestExecute_MultiIndex_TagFilterValues(t *testing.T) {
+	// Only "alice" is in TagFilterValues; "bob" should be excluded.
+	kb := &mockKeyBuilder{tagMapping: map[string]index.SearchType{"p": 1}}
+	author1 := [32]byte{0x01}
+	locA := types.RecordLocation{SegmentID: 0, Offset: 0}
+	locB := types.RecordLocation{SegmentID: 0, Offset: 100}
+
+	authorEntries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: locA},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 2000), loc: locB},
+	}
+	searchEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 1000), loc: locA},
+		{key: kb.BuildSearchKey(1, 1, []byte("bob"), 2000), loc: locB},
+	}
+
+	mgr := &mockIndexMgr{
+		authorTime: &locCapturingIndex{entries: authorEntries},
+		search:     &locCapturingIndex{entries: searchEntries},
+		kb:         kb,
+		primary:    &mockIndex{}, kindTime: &mockIndex{},
+	}
+	exec := NewExecutor(mgr)
+
+	plan := &Plan{
+		Strategy:  StrategyMultiIndex,
+		GroupBy:   []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		AggFunc:   types.AggCount,
+		Filter:    &types.QueryFilter{Authors: [][32]byte{author1}},
+		KeyRanges: []KeyRange{{MinKey: make([]byte, 38), MaxKey: make([]byte, 38)}},
+		TagConstraints: []TagConstraint{{
+			TagName:         "p",
+			SearchTypeCode:  1,
+			SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+			FilterValues:    map[string]struct{}{"alice": {}},
+			IsGroupByTag:    true,
+		}},
+	}
+	results, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 group (bob filtered), got %d: %+v", len(results), results)
+	}
+	if results[0].TagValue != "alice" || results[0].Count != 1 {
+		t.Errorf("expected alice/1, got %+v", results[0])
+	}
+}
+
+// ── Multi-tag executor tests ─────────────────────────────────────────────────
+
+func TestExecute_MultiIndex_MultiTag_AuthorProbe_BothMustMatch(t *testing.T) {
+	// Three events:
+	//   locA — has "p"=alice AND "e"=evtX → should be counted
+	//   locB — has "p"=bob only (no "e" entry) → excluded (AND semantics)
+	//   locC — has "e"=evtX only (no "p" entry) → excluded
+	// Two TagConstraints: "p" (IsGroupByTag=true) and "e" (filter only).
+	kb := &mockKeyBuilder{tagMapping: map[string]index.SearchType{"p": 1, "e": 2}}
+	author1 := [32]byte{0x01}
+	locA := types.RecordLocation{SegmentID: 0, Offset: 0}
+	locB := types.RecordLocation{SegmentID: 0, Offset: 100}
+	locC := types.RecordLocation{SegmentID: 0, Offset: 200}
+
+	authorEntries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: locA},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 2000), loc: locB},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 3000), loc: locC},
+	}
+	// Search entries for tag "p" (searchType=1): locA and locB
+	searchPEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 1000), loc: locA},
+		{key: kb.BuildSearchKey(1, 1, []byte("bob"), 2000), loc: locB},
+	}
+	// Search entries for tag "e" (searchType=2): locA and locC
+	searchEEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 2, []byte("evtX"), 1000), loc: locA},
+		{key: kb.BuildSearchKey(1, 2, []byte("evtX"), 3000), loc: locC},
+	}
+
+	// The mock search index delivers both "p" and "e" entries; the scanConstraint uses
+	// per-constraint copies because locCapturingIndex is consumed once. We need separate
+	// index instances per TagConstraint. We achieve this via a sequenced index that returns
+	// different entry sets on successive Range calls.
+	type multiSearchIndex struct {
+		calls   int
+		batches [][]locEntry
+	}
+	msIdx := &multiSearchIndex{batches: [][]locEntry{searchPEntries, searchEEntries}}
+	_ = msIdx // used below via interface wrapper
+
+	// Use a fresh locCapturingIndex per Range call by wrapping with callOrderedIndex.
+	type callOrderedIndex struct {
+		*locCapturingIndex
+		batches [][]locEntry
+		calls   int
+	}
+	coi := &callOrderedIndex{batches: [][]locEntry{searchPEntries, searchEEntries}}
+	coi.locCapturingIndex = &locCapturingIndex{entries: searchPEntries} // placeholder
+
+	// Simplest approach: build a custom index that cycles entries per Range call.
+	type seqSearchIndex struct {
+		calls   int
+		batches [][]locEntry
+	}
+	seqIdx := &seqSearchIndex{batches: [][]locEntry{searchPEntries, searchEEntries}}
+	// We cannot implement the index.Index interface inline easily, so let's use the
+	// two-constraint approach via two separate locCapturingIndex objects configured in a
+	// wrapper that satisfies the IndexManager interface.
+	//
+	// Instead, restructure: use a perCallSearchIndex that returns entries round-robin.
+	_ = seqIdx
+
+	// Practical: build a test that uses a known-order locCapturingIndex and an explicit
+	// seqSearchIndex adapter by embedding all entries and using filterByType in the scanner.
+	// Merge both p and e entries into one slice (scanner filters by searchType).
+	allSearchEntries := append(searchPEntries, searchEEntries...)
+
+	mgr := &mockIndexMgr{
+		authorTime: &locCapturingIndex{entries: authorEntries},
+		search:     &locCapturingIndex{entries: allSearchEntries},
+		kb:         kb,
+		primary:    &mockIndex{}, kindTime: &mockIndex{},
+	}
+	exec := NewExecutor(mgr)
+
+	plan := &Plan{
+		Strategy:  StrategyMultiIndex,
+		GroupBy:   []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		AggFunc:   types.AggCount,
+		Filter:    &types.QueryFilter{Authors: [][32]byte{author1}},
+		KeyRanges: []KeyRange{{MinKey: make([]byte, 38), MaxKey: make([]byte, 38)}},
+		TagConstraints: []TagConstraint{
+			{
+				TagName:         "p",
+				SearchTypeCode:  1,
+				SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+				IsGroupByTag:    true,
+			},
+			{
+				TagName:         "e",
+				SearchTypeCode:  2,
+				SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+				IsGroupByTag:    false,
+			},
+		},
+	}
+	results, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Only locA passes both constraints.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (only locA has both p and e), got %d: %+v", len(results), results)
+	}
+	if results[0].TagValue != "alice" {
+		t.Errorf("expected tagValue=alice, got %q", results[0].TagValue)
+	}
+	if results[0].Count != 1 {
+		t.Errorf("expected count=1, got %d", results[0].Count)
+	}
+}
+
+func TestExecute_MultiIndex_MultiTag_OnlyOneTagMatch_Excluded(t *testing.T) {
+	// Both events have tag "p", but only one also has tag "e" matching the filter.
+	kb := &mockKeyBuilder{tagMapping: map[string]index.SearchType{"p": 1, "e": 2}}
+	author1 := [32]byte{0x01}
+	locA := types.RecordLocation{SegmentID: 0, Offset: 0}   // has p=alice, e=evtGood
+	locB := types.RecordLocation{SegmentID: 0, Offset: 100} // has p=alice, no matching e
+
+	authorEntries := []locEntry{
+		{key: kb.BuildAuthorTimeKey(author1, 1, 1000), loc: locA},
+		{key: kb.BuildAuthorTimeKey(author1, 1, 2000), loc: locB},
+	}
+	searchPEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 1000), loc: locA},
+		{key: kb.BuildSearchKey(1, 1, []byte("alice"), 2000), loc: locB},
+	}
+	// e filter only matches locA
+	searchEEntries := []locEntry{
+		{key: kb.BuildSearchKey(1, 2, []byte("evtGood"), 1000), loc: locA},
+	}
+	allSearchEntries := append(searchPEntries, searchEEntries...)
+
+	mgr := &mockIndexMgr{
+		authorTime: &locCapturingIndex{entries: authorEntries},
+		search:     &locCapturingIndex{entries: allSearchEntries},
+		kb:         kb,
+		primary:    &mockIndex{}, kindTime: &mockIndex{},
+	}
+	exec := NewExecutor(mgr)
+
+	plan := &Plan{
+		Strategy:  StrategyMultiIndex,
+		GroupBy:   []types.GroupByField{types.GroupByAuthor, types.GroupByTagValue},
+		AggFunc:   types.AggCount,
+		Filter:    &types.QueryFilter{Authors: [][32]byte{author1}},
+		KeyRanges: []KeyRange{{MinKey: make([]byte, 38), MaxKey: make([]byte, 38)}},
+		TagConstraints: []TagConstraint{
+			{
+				TagName:         "p",
+				SearchTypeCode:  1,
+				SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+				IsGroupByTag:    true,
+			},
+			{
+				TagName:         "e",
+				SearchTypeCode:  2,
+				SearchKeyRanges: []KeyRange{{MinKey: make([]byte, 8), MaxKey: make([]byte, 8)}},
+				FilterValues:    map[string]struct{}{"evtGood": {}},
+				IsGroupByTag:    false,
+			},
+		},
+	}
+	results, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// locB has p=alice but no matching e → only locA counted.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (locB excluded by missing e), got %d: %+v", len(results), results)
+	}
+	if results[0].TagValue != "alice" || results[0].Count != 1 {
+		t.Errorf("expected alice/1, got %+v", results[0])
+	}
+}
 
 func TestBuildAggResults_OrderAsc(t *testing.T) {
 	counts := map[aggKey]int64{

@@ -25,6 +25,11 @@ const (
 	// StrategyAuthorTime scans the AuthorTime index (38-byte keys: pubkey+kind+createdAt).
 	// Most general path — supports Author, Kind, and TimeBucket dimensions.
 	StrategyAuthorTime
+
+	// StrategyMultiIndex performs a probe-build join across the AuthorTime and Search
+	// indexes using their shared RecordLocation values as the join key.
+	// Enables GroupByAuthor+GroupByTagValue combinations without event deserialization.
+	StrategyMultiIndex
 )
 
 func (s Strategy) String() string {
@@ -35,6 +40,8 @@ func (s Strategy) String() string {
 		return "SearchIndexScan"
 	case StrategyAuthorTime:
 		return "AuthorTimeScan"
+	case StrategyMultiIndex:
+		return "MultiIndexScan"
 	default:
 		return "Unknown"
 	}
@@ -65,6 +72,28 @@ type Plan struct {
 	// to constrain a Search-index scan. Only populated for StrategySearch
 	// when hasTagFilter is true. Empty means no tag-value filtering.
 	TagFilterValues map[string]struct{}
+
+	// SearchKeyRanges holds the Search-index key ranges for StrategyMultiIndex
+	// single-tag case. KeyRanges holds the AuthorTime key ranges in that strategy.
+	// For multi-tag MultiIndex, use TagConstraints instead.
+	SearchKeyRanges []KeyRange
+
+	// TagConstraints holds per-tag Search-index scan specs for StrategyMultiIndex.
+	// When len > 1, events must match ALL constraints (AND semantics).
+	// Always non-nil for StrategyMultiIndex; replaces SearchKeyRanges/SearchTypeCode
+	// for that strategy.
+	TagConstraints []TagConstraint
+}
+
+// TagConstraint describes one Search-index scan within a StrategyMultiIndex plan.
+// Multiple constraints are evaluated with AND semantics: only events that appear
+// in every constraint's result set are counted.
+type TagConstraint struct {
+	TagName         string
+	SearchTypeCode  index.SearchType
+	SearchKeyRanges []KeyRange
+	FilterValues    map[string]struct{} // empty = no value filter on this tag
+	IsGroupByTag    bool                // true = this tag's value populates aggKey.tagValue
 }
 
 // String returns a human-readable description of the execution plan.
@@ -74,6 +103,21 @@ func (p *Plan) String() string {
 	fmt.Fprintf(&b, "  AggFunc: %s\n", p.AggFunc)
 	fmt.Fprintf(&b, "  GroupBy: %s\n", formatGroupBy(p.GroupBy))
 	fmt.Fprintf(&b, "  KeyRanges: %d\n", len(p.KeyRanges))
+	if p.Strategy == StrategyMultiIndex && len(p.TagConstraints) > 0 {
+		groupByTag := ""
+		for _, tc := range p.TagConstraints {
+			if tc.IsGroupByTag {
+				groupByTag = tc.TagName
+			}
+		}
+		if groupByTag != "" {
+			fmt.Fprintf(&b, "  TagConstraints: %d (groupBy=%q)\n", len(p.TagConstraints), groupByTag)
+		} else {
+			fmt.Fprintf(&b, "  TagConstraints: %d\n", len(p.TagConstraints))
+		}
+	} else if p.Strategy == StrategyMultiIndex && len(p.SearchKeyRanges) > 0 {
+		fmt.Fprintf(&b, "  SearchKeyRanges: %d\n", len(p.SearchKeyRanges))
+	}
 	if p.Filter != nil {
 		if len(p.Filter.Authors) > 0 {
 			fmt.Fprintf(&b, "  Authors: %d\n", len(p.Filter.Authors))

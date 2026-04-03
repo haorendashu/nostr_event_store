@@ -52,7 +52,12 @@ func (c *compilerImpl) Compile(q *types.AggregationQuery) (*Plan, error) {
 	}
 
 	hasAuthorFilter := q.Filter != nil && len(q.Filter.Authors) > 0
-	hasTagFilter := q.Filter != nil && len(q.Filter.Tags) > 0
+	tagFilterCount := 0
+	if q.Filter != nil {
+		tagFilterCount = len(q.Filter.Tags)
+	}
+	hasOneTagFilter := tagFilterCount == 1
+	hasMultiTagFilter := tagFilterCount > 1
 
 	// Default AggFunc to COUNT.
 	aggFunc := q.AggFunc
@@ -64,14 +69,11 @@ func (c *compilerImpl) Compile(q *types.AggregationQuery) (*Plan, error) {
 	}
 
 	// ── Tag filter validation ──
-	// When Filter.Tags is present, only single-tag-name filters are supported
-	// (multi-tag is AND semantics requiring multi-index intersection).
+	// Single-tag filters (len==1): resolve tagFilterName/Values and check conflicts.
+	// Multi-tag filters (len>1): only valid for StrategyMultiIndex; validated after strategy selection.
 	var tagFilterName string
 	var tagFilterValues map[string]struct{}
-	if hasTagFilter {
-		if len(q.Filter.Tags) > 1 {
-			return nil, fmt.Errorf("QueryAggregation: only single tag filter is supported; got %d tag names", len(q.Filter.Tags))
-		}
+	if hasOneTagFilter {
 		for name, vals := range q.Filter.Tags {
 			tagFilterName = name
 			tagFilterValues = make(map[string]struct{}, len(vals))
@@ -79,34 +81,44 @@ func (c *compilerImpl) Compile(q *types.AggregationQuery) (*Plan, error) {
 				tagFilterValues[v] = struct{}{}
 			}
 		}
-		if wantTagValue && q.TagName != tagFilterName {
+		// Conflict: for StrategySearch (single-index, no author), the groupBy tag must match
+		// the filter tag because there is only one Search scan. For StrategyMultiIndex (author
+		// dimension present), q.TagName and tagFilterName CAN differ — they become separate
+		// TagConstraints. Guard the check with !wantAuthor && !hasAuthorFilter.
+		if wantTagValue && q.TagName != tagFilterName && !wantAuthor && !hasAuthorFilter {
 			return nil, fmt.Errorf("QueryAggregation: GroupByTagValue TagName=%q conflicts with Filter.Tags key=%q", q.TagName, tagFilterName)
 		}
 	}
 
 	// ── Strategy selection ──
-	// Each branch declares what it CAN handle; unmatched combos → error.
-	//   KindTime   : kind[2] + createdAt[4]                → Kind, TimeBucket
-	//   Search     : kind[2] + type[1] + tagVal[N] + ts[4] → TagValue, Kind, TimeBucket (+ tag filter)
-	//   AuthorTime : pubkey[32] + kind[2] + createdAt[4]   → Author, Kind, TimeBucket
+	// Each strategy has explicit necessary conditions; default catches all remaining combos.
+	//
+	//   KindTime   : no author (wantAuthor/hasAuthorFilter), no tag (wantTagValue/tagFilter) at all
+	//   Search     : no author, exactly one tag type (wantTagValue or hasOneTagFilter)
+	//   AuthorTime : author present, no tag at all
+	//   MultiIndex : everything else — author+tag, or multi-tag without author
 	var strategy Strategy
 	switch {
-	case !wantAuthor && !wantTagValue && !hasAuthorFilter && !hasTagFilter:
+	case !wantAuthor && !hasAuthorFilter && !wantTagValue && tagFilterCount == 0:
 		strategy = StrategyKindTime
-	case !wantAuthor && !hasAuthorFilter:
-		// Covers: wantTagValue, hasTagFilter, or both.
-		// Search key contains kind+searchType+tagValue+createdAt.
+	case !wantAuthor && !hasAuthorFilter && !hasMultiTagFilter:
+		// wantTagValue || hasOneTagFilter is implied — single tag type, no author.
 		strategy = StrategySearch
-	case !wantTagValue && !hasTagFilter:
+	case (wantAuthor || hasAuthorFilter) && !wantTagValue && tagFilterCount == 0:
+		// Author dimension only, no tag dimension.
 		strategy = StrategyAuthorTime
 	default:
-		return nil, fmt.Errorf("QueryAggregation: unsupported groupBy/filter combination")
+		// Covers: author+tag, or !author+multiTagFilter.
+		// All served by probe-build join in executeMultiIndex.
+		strategy = StrategyMultiIndex
 	}
 
-	// ── Resolve search type code (for Search strategy) ──
+	// ── Resolve search type code (for Search and single-tag MultiIndex strategies) ──
 	// The tag name may come from GroupByTagValue (q.TagName) or from Filter.Tags (tagFilterName).
+	// Multi-tag MultiIndex computes per-tag codes in buildTagConstraints instead.
+	isMultiTagMultiIndex := strategy == StrategyMultiIndex && hasMultiTagFilter
 	var searchTypeCode index.SearchType
-	if strategy == StrategySearch {
+	if (strategy == StrategySearch || strategy == StrategyMultiIndex) && !isMultiTagMultiIndex {
 		resolvedTagName := q.TagName
 		if resolvedTagName == "" {
 			resolvedTagName = tagFilterName
@@ -140,6 +152,33 @@ func (c *compilerImpl) Compile(q *types.AggregationQuery) (*Plan, error) {
 	case StrategyAuthorTime:
 		keyRanges = c.buildAuthorTimeRanges(keyBuilder, q.Filter)
 		estimatedIO = 4 + len(keyRanges)
+
+	case StrategyMultiIndex:
+		keyRanges = c.buildAuthorTimeRanges(keyBuilder, q.Filter)
+		tagConstraints, err := c.buildTagConstraints(keyBuilder, q, wantTagValue)
+		if err != nil {
+			return nil, err
+		}
+		totalSearchRanges := 0
+		for _, tc := range tagConstraints {
+			totalSearchRanges += len(tc.SearchKeyRanges)
+		}
+		estimatedIO = 3 + len(keyRanges) + totalSearchRanges
+		return &Plan{
+			Strategy:        strategy,
+			GroupBy:         q.GroupBy,
+			AggFunc:         aggFunc,
+			Filter:          q.Filter,
+			TagName:         q.TagName,
+			SearchTypeCode:  searchTypeCode,
+			TimeBucketSecs:  q.TimeBucketSeconds,
+			Limit:           q.Limit,
+			OrderDesc:       q.OrderDesc,
+			KeyRanges:       keyRanges,
+			TagConstraints:  tagConstraints,
+			EstimatedIO:     estimatedIO,
+			TagFilterValues: tagFilterValues,
+		}, nil
 	}
 
 	return &Plan{
@@ -240,4 +279,69 @@ func (c *compilerImpl) buildAuthorTimeRanges(kb index.KeyBuilder, filter *types.
 		maxKey[i] = 0xFF
 	}
 	return []KeyRange{{MinKey: minKey, MaxKey: maxKey}}
+}
+
+// buildTagConstraints builds a TagConstraint for each tag dimension in the query.
+// For multi-tag MultiIndex: one constraint per Filter.Tags entry; if wantTagValue=true
+// and q.TagName is not in Filter.Tags, an additional unconstrained groupBy constraint is added.
+// For single-tag MultiIndex: exactly one constraint.
+func (c *compilerImpl) buildTagConstraints(kb index.KeyBuilder, q *types.AggregationQuery, wantTagValue bool) ([]TagConstraint, error) {
+	tagMapping := c.indexMgr.KeyBuilder().TagNameToSearchTypeCode()
+
+	// Collect tags from Filter.Tags (with value filters).
+	type tagSpec struct {
+		name         string
+		filterValues map[string]struct{}
+		isGroupBy    bool
+	}
+	var specs []tagSpec
+
+	if q.Filter != nil && len(q.Filter.Tags) > 0 {
+		for name, vals := range q.Filter.Tags {
+			fv := make(map[string]struct{}, len(vals))
+			for _, v := range vals {
+				fv[v] = struct{}{}
+			}
+			isGroupBy := wantTagValue && q.TagName == name
+			specs = append(specs, tagSpec{name: name, filterValues: fv, isGroupBy: isGroupBy})
+		}
+	}
+
+	// If wantTagValue and q.TagName is NOT already covered by Filter.Tags, add it as a
+	// pure groupBy constraint (no value filter — scan all values for that tag).
+	if wantTagValue && q.TagName != "" {
+		covered := false
+		for _, sp := range specs {
+			if sp.name == q.TagName {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			specs = append(specs, tagSpec{name: q.TagName, isGroupBy: true})
+		}
+	}
+
+	// If no specs yet (e.g. wantTagValue=false and no Filter.Tags), this path shouldn't
+	// be reached — the compiler only calls this for StrategyMultiIndex which requires
+	// at least one tag dimension. Guard defensively.
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("QueryAggregation: internal error — buildTagConstraints called with no tag dimensions")
+	}
+
+	constraints := make([]TagConstraint, 0, len(specs))
+	for _, sp := range specs {
+		code, ok := tagMapping[sp.name]
+		if !ok {
+			return nil, fmt.Errorf("QueryAggregation: tag %q is not indexed; check IndexConfig.SearchTypeMapConfig", sp.name)
+		}
+		constraints = append(constraints, TagConstraint{
+			TagName:         sp.name,
+			SearchTypeCode:  code,
+			SearchKeyRanges: c.buildSearchRanges(kb, q.Filter, code),
+			FilterValues:    sp.filterValues,
+			IsGroupByTag:    sp.isGroupBy,
+		})
+	}
+	return constraints, nil
 }
