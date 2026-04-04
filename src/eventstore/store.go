@@ -165,6 +165,7 @@ type Stats struct {
 
 	// Storage stats
 	TotalDataSizeBytes  uint64
+	SegmentCount        uint64
 	TotalIndexSizeBytes uint64
 	TotalWALSizeBytes   uint64
 

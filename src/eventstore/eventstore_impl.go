@@ -1401,6 +1401,7 @@ func (e *eventStoreImpl) Stats() Stats {
 		if segMgr != nil {
 			segmentIDs, err := segMgr.ListSegments(context.Background())
 			if err == nil {
+				stats.SegmentCount = uint64(len(segmentIDs))
 				var totalData uint64
 				for _, id := range segmentIDs {
 					seg, err := segMgr.GetSegment(context.Background(), id)

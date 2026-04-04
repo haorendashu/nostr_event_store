@@ -520,17 +520,23 @@ func (s *Server) Stats(ctx context.Context, req *pb.StatsRequest) (*pb.StatsResp
 	// Get stats from store
 	statsObj := s.store.Stats()
 
-	// Extract field values using reflection to avoid circular imports
-	var eventCount, totalSize, indexSize, walSize uint64
+	// Extract field values using reflection to avoid circular imports.
+	var eventCount, totalSize, segmentCount, indexSize, walSize uint64
 
 	if statsObj != nil {
 		v := reflect.ValueOf(statsObj)
+		if v.Kind() == reflect.Ptr && !v.IsNil() {
+			v = v.Elem()
+		}
 		if v.Kind() == reflect.Struct {
 			if fv := v.FieldByName("TotalEvents"); fv.IsValid() {
 				eventCount = fv.Uint()
 			}
 			if fv := v.FieldByName("TotalDataSizeBytes"); fv.IsValid() {
 				totalSize = fv.Uint()
+			}
+			if fv := v.FieldByName("SegmentCount"); fv.IsValid() {
+				segmentCount = fv.Uint()
 			}
 			if fv := v.FieldByName("TotalIndexSizeBytes"); fv.IsValid() {
 				indexSize = fv.Uint()
@@ -546,7 +552,7 @@ func (s *Server) Stats(ctx context.Context, req *pb.StatsRequest) (*pb.StatsResp
 			Stats: &pb.StorageStats{
 				EventCount:   eventCount,
 				TotalSize:    totalSize,
-				SegmentCount: uint64(0), // TODO: get actual segment count
+				SegmentCount: segmentCount,
 				IndexSize:    indexSize,
 				WalSize:      walSize,
 			},
