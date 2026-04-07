@@ -11,7 +11,7 @@ import (
 
 // MaxAggGroupKeys is the upper bound on unique group keys per aggregation call.
 // Prevents unbounded memory growth on large unfiltered scans.
-const MaxAggGroupKeys = 1_000_000
+const MaxAggGroupKeys = 10_000_000
 
 // Executor runs a compiled Plan and returns aggregation results.
 type Executor interface {
