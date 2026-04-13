@@ -401,6 +401,7 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 }
 
 // discoverPartitions scans the directory for existing partition files and opens them.
+// Partition files are opened in parallel for faster startup.
 func (pi *PartitionedIndex) discoverPartitions() error {
 	dir := filepath.Dir(pi.basePath) // Use parent directory to scan for partition files
 	baseFilename := filepath.Base(pi.basePath)
@@ -415,35 +416,56 @@ func (pi *PartitionedIndex) discoverPartitions() error {
 		return err
 	}
 
-	// Find files matching the pattern: <base>_YYYY-MM.idx (monthly) or <base>_YYYY-WXX.idx (weekly).
+	// Collect matching filenames.
+	var filePaths []string
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-
 		name := entry.Name()
-		// Check if it starts with our base filename and ends with .idx.
 		if !strings.HasPrefix(name, baseFilename+"_") || !strings.HasSuffix(name, ".idx") {
 			continue
 		}
+		filePaths = append(filePaths, filepath.Join(dir, name))
+	}
 
-		// Parse the time range from the filename.
-		partition, err := pi.parsePartitionFilename(filepath.Join(dir, name))
-		if err != nil {
-			// Skip files that don't match the expected format or are corrupted.
-			fmt.Printf("[partition] Warning: skipping invalid partition file %s: %v\n", name, err)
-			// If the error is due to corruption, try to delete the corrupted file
-			if strings.Contains(err.Error(), "corrupted") || strings.Contains(err.Error(), "exceeds file size") {
-				filePath := filepath.Join(dir, name)
-				fmt.Printf("[partition] Deleting corrupted partition file: %s\n", name)
-				if removeErr := os.Remove(filePath); removeErr != nil {
-					fmt.Printf("[partition] Warning: failed to remove corrupted file %s: %v\n", name, removeErr)
+	if len(filePaths) == 0 {
+		return nil
+	}
+
+	// Open partition files in parallel.
+	type result struct {
+		idx       int
+		partition *TimePartition
+		err       error
+		filePath  string
+	}
+
+	results := make([]result, len(filePaths))
+	var wg sync.WaitGroup
+	for i, fp := range filePaths {
+		wg.Add(1)
+		go func(idx int, filePath string) {
+			defer wg.Done()
+			partition, err := pi.parsePartitionFilename(filePath)
+			results[idx] = result{idx: idx, partition: partition, err: err, filePath: filePath}
+		}(i, fp)
+	}
+	wg.Wait()
+
+	// Collect successful results, handle errors.
+	for _, r := range results {
+		if r.err != nil {
+			fmt.Printf("[partition] Warning: skipping invalid partition file %s: %v\n", filepath.Base(r.filePath), r.err)
+			if strings.Contains(r.err.Error(), "corrupted") || strings.Contains(r.err.Error(), "exceeds file size") {
+				fmt.Printf("[partition] Deleting corrupted partition file: %s\n", filepath.Base(r.filePath))
+				if removeErr := os.Remove(r.filePath); removeErr != nil {
+					fmt.Printf("[partition] Warning: failed to remove corrupted file %s: %v\n", filepath.Base(r.filePath), removeErr)
 				}
 			}
 			continue
 		}
-
-		pi.partitions = append(pi.partitions, partition)
+		pi.partitions = append(pi.partitions, r.partition)
 	}
 
 	// Sort partitions by start time.
@@ -840,6 +862,72 @@ func (pi *PartitionedIndex) GetCacheCoordinator() *cache.PartitionCacheCoordinat
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
 	return pi.cacheCoordinator
+}
+
+// IndexIntegrityResult holds per-partition verification results.
+type IndexIntegrityResult struct {
+	Partition     string // partition label (e.g. "2025-03" or "legacy")
+	ReportedCount uint64
+	ActualCount   uint64
+	Mismatch      bool
+}
+
+// VerifyEntryCount scans leaf nodes in every partition and compares with the
+// cached entryCount. Returns per-partition results plus aggregated totals.
+func (pi *PartitionedIndex) VerifyEntryCount() (totalReported, totalActual uint64, details []IndexIntegrityResult) {
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+
+	if pi.legacyIndex != nil {
+		if pbi, ok := pi.legacyIndex.(*PersistentBTreeIndex); ok {
+			reported, actual, err := pbi.VerifyEntryCount()
+			if err == nil {
+				details = append(details, IndexIntegrityResult{
+					Partition:     "legacy",
+					ReportedCount: reported,
+					ActualCount:   actual,
+					Mismatch:      reported != actual,
+				})
+				return reported, actual, details
+			}
+		}
+		// Fallback: use Stats
+		s := pi.legacyIndex.Stats()
+		details = append(details, IndexIntegrityResult{
+			Partition:     "legacy",
+			ReportedCount: s.EntryCount,
+			ActualCount:   s.EntryCount,
+		})
+		return s.EntryCount, s.EntryCount, details
+	}
+
+	for _, p := range pi.partitions {
+		label := p.StartTime.Format("2006-01")
+		if pbi, ok := p.Index.(*PersistentBTreeIndex); ok {
+			reported, actual, err := pbi.VerifyEntryCount()
+			if err != nil {
+				continue
+			}
+			details = append(details, IndexIntegrityResult{
+				Partition:     label,
+				ReportedCount: reported,
+				ActualCount:   actual,
+				Mismatch:      reported != actual,
+			})
+			totalReported += reported
+			totalActual += actual
+		} else {
+			s := p.Index.Stats()
+			details = append(details, IndexIntegrityResult{
+				Partition:     label,
+				ReportedCount: s.EntryCount,
+				ActualCount:   s.EntryCount,
+			})
+			totalReported += s.EntryCount
+			totalActual += s.EntryCount
+		}
+	}
+	return totalReported, totalActual, details
 }
 
 // PartitionInfo contains information about a single partition.

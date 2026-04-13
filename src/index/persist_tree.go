@@ -69,6 +69,18 @@ func openBTree(file *indexFile, cache *cache.BTreeCache) (*btree, error) {
 			// EntryCount was not persisted (old file format). Scan tree to initialize it.
 			count := t.countEntriesInTree()
 			atomic.StoreUint64(&t.entryCount, count)
+		} else if file.header.NodeCount > 0 {
+			// Verify entryCount against actual leaf data.
+			// Cache eviction can write dirty leaf nodes to disk without updating
+			// the header, so after an unclean shutdown the header value may lag
+			// behind the true count stored in the leaves.
+			actual := t.countEntriesInTree()
+			reported := atomic.LoadUint64(&t.entryCount)
+			if actual != reported {
+				log.Printf("[btree] entryCount corrected for %s: header=%d actual=%d (delta=%+d)",
+					file.path, reported, actual, int64(actual)-int64(reported))
+				atomic.StoreUint64(&t.entryCount, actual)
+			}
 		}
 	}
 	return t, nil

@@ -62,6 +62,10 @@ func (m *mockIndexManager) InsertRecoveryBatch(ctx context.Context, events []*ty
 	return nil
 }
 
+func (m *mockIndexManager) VerifyIndexIntegrity() map[string][]index.IndexIntegrityResult {
+	return nil
+}
+
 // mockIndex implements index.Index for testing.
 type mockIndex struct {
 	mgr       *mockIndexManager

@@ -203,6 +203,10 @@ func (m *mockIndexManagerForMerge) AllStats() map[string]index.Stats {
 	return nil
 }
 
+func (m *mockIndexManagerForMerge) VerifyIndexIntegrity() map[string][]index.IndexIntegrityResult {
+	return nil
+}
+
 func (m *mockIndexManagerForMerge) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
 	return nil
 }

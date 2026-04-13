@@ -297,6 +297,17 @@ func (idx *PersistentBTreeIndex) Stats() Stats {
 	}
 }
 
+// VerifyEntryCount scans all leaf nodes and compares the actual count against
+// the cached entryCount. Returns (reported, actual, nil) on success.
+func (idx *PersistentBTreeIndex) VerifyEntryCount() (reported uint64, actual uint64, err error) {
+	if idx.closed {
+		return 0, 0, errors.ErrIndexClosed
+	}
+	reported = idx.tree.stats().EntryCount
+	actual = idx.tree.countEntriesInTree()
+	return reported, actual, nil
+}
+
 // ResizeCache adjusts the cache size to the specified MB value.
 // Returns the number of evicted entries and any error encountered.
 func (idx *PersistentBTreeIndex) ResizeCache(newCacheMB int) (int, error) {

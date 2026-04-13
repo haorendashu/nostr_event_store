@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/cache"
@@ -62,67 +63,120 @@ func (m *manager) Open(ctx context.Context, dir string, cfg Config) error {
 	// Note: Primary index typically doesn't have timestamps, so partitioning may not be useful
 	// We still use PartitionedIndex wrapper for consistency, but with partitioning disabled
 	primaryPath := filepath.Join(dir, "primary")
-	fmt.Printf("[index] Creating primary index at %s (partitioning=false)\n", primaryPath)
-	primaryPartitioned, err := NewPartitionedIndex(primaryPath, indexTypePrimary, cfg, granularity, false)
-	if err != nil {
-		return fmt.Errorf("failed to create primary index: %w", err)
+	authorTimePath := filepath.Join(dir, "author_time")
+	searchPath := filepath.Join(dir, "search")
+	kindTimePath := filepath.Join(dir, "kind_time")
+
+	// Open all four indexes in parallel for faster startup.
+	type indexResult struct {
+		index *PartitionedIndex
+		err   error
 	}
-	if primaryPartitioned == nil {
+
+	var (
+		primaryRes, authorTimeRes, searchRes, kindTimeRes indexResult
+		openWg                                            sync.WaitGroup
+	)
+
+	openWg.Add(4)
+
+	go func() {
+		defer openWg.Done()
+		fmt.Printf("[index] Creating primary index at %s (partitioning=false)\n", primaryPath)
+		idx, err := NewPartitionedIndex(primaryPath, indexTypePrimary, cfg, granularity, false)
+		primaryRes = indexResult{idx, err}
+		if err == nil {
+			fmt.Printf("[index] Primary index created successfully\n")
+		}
+	}()
+
+	go func() {
+		defer openWg.Done()
+		fmt.Printf("[index] Creating author_time index at %s (partitioning=%v)\n", authorTimePath, cfg.EnableTimePartitioning)
+		idx, err := NewPartitionedIndex(authorTimePath, indexTypeAuthorTime, cfg, granularity, cfg.EnableTimePartitioning)
+		authorTimeRes = indexResult{idx, err}
+		if err == nil {
+			fmt.Printf("[index] Author_time index created successfully\n")
+		}
+	}()
+
+	go func() {
+		defer openWg.Done()
+		fmt.Printf("[index] Creating search index at %s (partitioning=%v)\n", searchPath, cfg.EnableTimePartitioning)
+		idx, err := NewPartitionedIndex(searchPath, indexTypeSearch, cfg, granularity, cfg.EnableTimePartitioning)
+		searchRes = indexResult{idx, err}
+		if err == nil {
+			fmt.Printf("[index] Search index created successfully\n")
+		}
+	}()
+
+	go func() {
+		defer openWg.Done()
+		fmt.Printf("[index] Creating kind_time index at %s (partitioning=%v)\n", kindTimePath, cfg.EnableTimePartitioning)
+		idx, err := NewPartitionedIndex(kindTimePath, indexTypeKindTime, cfg, granularity, cfg.EnableTimePartitioning)
+		kindTimeRes = indexResult{idx, err}
+		if err == nil {
+			fmt.Printf("[index] Kind_time index created successfully\n")
+		}
+	}()
+
+	openWg.Wait()
+
+	// Close any successfully opened indexes if any failed.
+	closeOnError := func() {
+		if primaryRes.index != nil {
+			primaryRes.index.Close()
+		}
+		if authorTimeRes.index != nil {
+			authorTimeRes.index.Close()
+		}
+		if searchRes.index != nil {
+			searchRes.index.Close()
+		}
+		if kindTimeRes.index != nil {
+			kindTimeRes.index.Close()
+		}
+	}
+
+	if primaryRes.err != nil {
+		closeOnError()
+		return fmt.Errorf("failed to create primary index: %w", primaryRes.err)
+	}
+	if primaryRes.index == nil {
+		closeOnError()
 		return fmt.Errorf("primary index is nil after creation")
 	}
-	fmt.Printf("[index] Primary index created successfully\n")
-	m.primary = primaryPartitioned
+	m.primary = primaryRes.index
 
-	// Create author+time index (has timestamps, benefits from partitioning)
-	authorTimePath := filepath.Join(dir, "author_time")
-	fmt.Printf("[index] Creating author_time index at %s (partitioning=%v)\n", authorTimePath, cfg.EnableTimePartitioning)
-	authorTimePartitioned, err := NewPartitionedIndex(authorTimePath, indexTypeAuthorTime, cfg, granularity, cfg.EnableTimePartitioning)
-	if err != nil {
-		m.primary.Close()
-		return fmt.Errorf("failed to create author_time index: %w", err)
+	if authorTimeRes.err != nil {
+		closeOnError()
+		return fmt.Errorf("failed to create author_time index: %w", authorTimeRes.err)
 	}
-	if authorTimePartitioned == nil {
-		m.primary.Close()
+	if authorTimeRes.index == nil {
+		closeOnError()
 		return fmt.Errorf("author_time index is nil after creation")
 	}
-	fmt.Printf("[index] Author_time index created successfully\n")
-	m.authorTime = authorTimePartitioned
+	m.authorTime = authorTimeRes.index
 
-	// Create search index (has timestamps, benefits from partitioning)
-	searchPath := filepath.Join(dir, "search")
-	fmt.Printf("[index] Creating search index at %s (partitioning=%v)\n", searchPath, cfg.EnableTimePartitioning)
-	searchPartitioned, err := NewPartitionedIndex(searchPath, indexTypeSearch, cfg, granularity, cfg.EnableTimePartitioning)
-	if err != nil {
-		m.primary.Close()
-		m.authorTime.Close()
-		return fmt.Errorf("failed to create search index: %w", err)
+	if searchRes.err != nil {
+		closeOnError()
+		return fmt.Errorf("failed to create search index: %w", searchRes.err)
 	}
-	if searchPartitioned == nil {
-		m.primary.Close()
-		m.authorTime.Close()
+	if searchRes.index == nil {
+		closeOnError()
 		return fmt.Errorf("search index is nil after creation")
 	}
-	fmt.Printf("[index] Search index created successfully\n")
-	m.search = searchPartitioned
+	m.search = searchRes.index
 
-	// Create kind+time index (has timestamps, benefits from partitioning)
-	kindTimePath := filepath.Join(dir, "kind_time")
-	fmt.Printf("[index] Creating kind_time index at %s (partitioning=%v)\n", kindTimePath, cfg.EnableTimePartitioning)
-	kindTimePartitioned, err := NewPartitionedIndex(kindTimePath, indexTypeKindTime, cfg, granularity, cfg.EnableTimePartitioning)
-	if err != nil {
-		m.primary.Close()
-		m.authorTime.Close()
-		m.search.Close()
-		return fmt.Errorf("failed to create kind_time index: %w", err)
+	if kindTimeRes.err != nil {
+		closeOnError()
+		return fmt.Errorf("failed to create kind_time index: %w", kindTimeRes.err)
 	}
-	if kindTimePartitioned == nil {
-		m.primary.Close()
-		m.authorTime.Close()
-		m.search.Close()
+	if kindTimeRes.index == nil {
+		closeOnError()
 		return fmt.Errorf("kind_time index is nil after creation")
 	}
-	fmt.Printf("[index] Kind_time index created successfully\n")
-	m.kindTime = kindTimePartitioned
+	m.kindTime = kindTimeRes.index
 
 	// Start flush scheduler for periodic persistence
 	m.flusher = newFlushScheduler([]Index{m.primary, m.authorTime, m.search, m.kindTime}, int64(cfg.FlushIntervalMs))
@@ -350,6 +404,27 @@ func (m *manager) AllStats() map[string]Stats {
 		stats["kind_time"] = m.kindTime.Stats()
 	}
 	return stats
+}
+
+// VerifyIndexIntegrity scans leaf nodes in every index partition and compares
+// the actual entry count against the cached entryCount counter.
+func (m *manager) VerifyIndexIntegrity() map[string][]IndexIntegrityResult {
+	result := make(map[string][]IndexIntegrityResult)
+	for name, idx := range map[string]Index{
+		"primary":     m.primary,
+		"author_time": m.authorTime,
+		"kind_time":   m.kindTime,
+		"search":      m.search,
+	} {
+		if idx == nil {
+			continue
+		}
+		if pi, ok := idx.(*PartitionedIndex); ok {
+			_, _, details := pi.VerifyEntryCount()
+			result[name] = details
+		}
+	}
+	return result
 }
 
 // updateIndexSizes updates the allocator with current index file sizes.

@@ -121,6 +121,10 @@ type eventStoreImpl struct {
 	knownKinds    []uint16
 	knownKindsSet map[uint16]struct{}
 	knownKindsMu  sync.RWMutex
+
+	// Recovery diagnostics
+	lastRecoveryStats *recovery.RecoveryState
+	lastRecoveryTime  time.Time
 }
 
 // getKnownKinds returns a copy of the current known-kinds slice.
@@ -308,6 +312,9 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 	} else {
 		e.logger.Printf("Recovery skipped by configuration")
 	}
+
+	// Log per-index and per-partition entry counts for drift diagnosis.
+	e.logIndexIntegrity()
 
 	// Collect all distinct event kinds from the KindTime index.
 	// Uses a skip-scan so cost is O(K × tree_depth) regardless of data volume.
@@ -760,6 +767,13 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	// determine how many entries were successfully inserted into primary and only
 	// insert those same entries into secondary indexes.
 
+	// Snapshot entry counts before insert for drift detection.
+	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
+	kindTimeIdx := e.indexMgr.KindTimeIndex()
+	prePrimary := primaryIdx.Stats().EntryCount
+	preAuthorTime := authorTimeIdx.Stats().EntryCount
+	preKindTime := kindTimeIdx.Stats().EntryCount
+
 	// Primary index
 	primaryKeys := make([][]byte, len(uniqueEvents))
 	primaryLocs := make([]types.RecordLocation, len(uniqueEvents))
@@ -820,7 +834,6 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	}
 
 	// Author-time index
-	authorTimeIdx := e.indexMgr.AuthorTimeIndex()
 	authorTimeKeys := make([][]byte, len(indexEvents))
 	for i, event := range indexEvents {
 		authorTimeKeys[i] = e.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
@@ -831,7 +844,6 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	}
 
 	// Kind-time index
-	kindTimeIdx := e.indexMgr.KindTimeIndex()
 	kindTimeKeys := make([][]byte, len(indexEvents))
 	for i, event := range indexEvents {
 		kindTimeKeys[i] = e.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
@@ -891,6 +903,19 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 	for _, event := range indexEvents {
 		e.addKindIfNew(event.Kind)
 	}
+
+	// Drift detection: compare deltas across indexes.
+	postPrimary := primaryIdx.Stats().EntryCount
+	postAuthorTime := authorTimeIdx.Stats().EntryCount
+	postKindTime := kindTimeIdx.Stats().EntryCount
+	dPrimary := postPrimary - prePrimary
+	dAuthorTime := postAuthorTime - preAuthorTime
+	dKindTime := postKindTime - preKindTime
+	if dAuthorTime != dPrimary || dKindTime != dPrimary {
+		e.logger.Printf("[INDEX-DRIFT] batch delta mismatch: primary=%d authorTime=%d kindTime=%d (expected %d), batch_size=%d unique=%d",
+			dPrimary, dAuthorTime, dKindTime, dPrimary, len(events), len(indexEvents))
+	}
+
 	e.noteEventsWritten(len(primaryInsertedIDs))
 
 	return locations, nil
@@ -1558,7 +1583,43 @@ func (e *eventStoreImpl) Stats() Stats {
 		}
 	}
 
+	// Recovery stats
+	stats.LastRecoveryStats = e.lastRecoveryStats
+
 	return stats
+}
+
+// logIndexIntegrity logs per-index entry counts and cross-index comparison.
+// entryCount is already corrected by openBTree during index open, so this
+// only reads the (now accurate) Stats — no expensive leaf scan needed.
+func (e *eventStoreImpl) logIndexIntegrity() {
+	if e.indexMgr == nil {
+		return
+	}
+	allStats := e.indexMgr.AllStats()
+	primaryCount := uint64(0)
+	if ps, ok := allStats["primary"]; ok {
+		primaryCount = ps.EntryCount
+	}
+	for _, name := range []string{"primary", "author_time", "kind_time", "search"} {
+		s, ok := allStats[name]
+		if !ok {
+			continue
+		}
+		if name == "search" || name == "primary" {
+			e.logger.Printf("[INDEX-INTEGRITY] %s: entries=%d nodes=%d depth=%d",
+				name, s.EntryCount, s.NodeCount, s.Depth)
+		} else {
+			diff := int64(s.EntryCount) - int64(primaryCount)
+			if diff != 0 {
+				e.logger.Printf("[INDEX-INTEGRITY] %s: entries=%d (primary%+d) nodes=%d depth=%d",
+					name, s.EntryCount, diff, s.NodeCount, s.Depth)
+			} else {
+				e.logger.Printf("[INDEX-INTEGRITY] %s: entries=%d nodes=%d depth=%d",
+					name, s.EntryCount, s.NodeCount, s.Depth)
+			}
+		}
+	}
 }
 
 // Config returns the configuration manager.
@@ -1722,7 +1783,7 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	e.logger.Printf("Starting WAL recovery...")
 	if e.walMgr == nil {
 		if e.indexFilesInvalidated {
-			e.logger.Printf("WAL disabled, indexes invalid - rebuilding from segments")
+			e.logger.Printf("[RECOVERY TRIGGERED] reason=index_files_invalidated wal=disabled")
 			if err := e.rebuildIndexesFromSegments(ctx); err != nil {
 				return fmt.Errorf("rebuild indexes from segments: %w", err)
 			}
@@ -1733,12 +1794,12 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 	}
 
 	if e.indexFilesInvalidated {
-		e.logger.Printf("WAL recovery: index files were invalid, rebuilding from segments")
+		e.logger.Printf("[RECOVERY TRIGGERED] reason=index_files_invalidated wal=enabled")
 		if err := e.rebuildIndexesFromSegments(ctx); err != nil {
 			return fmt.Errorf("rebuild indexes from segments: %w", err)
 		}
 	} else if e.indexDirtyOnStart {
-		e.logger.Printf("WAL recovery: index dirty marker found, replaying from checkpoint")
+		e.logger.Printf("[RECOVERY TRIGGERED] reason=dirty_marker wal=enabled")
 		if err := e.replayWALFromCheckpoint(ctx); err != nil {
 			e.logger.Printf("WAL recovery warning: replay failed, rebuilding from segments: %v", err)
 			if err := e.rebuildIndexesFromSegments(ctx); err != nil {
@@ -1746,12 +1807,16 @@ func (e *eventStoreImpl) recoverFromWAL(ctx context.Context) error {
 			}
 		}
 	} else {
-		if e.indexDirtyOnStart {
-			e.logger.Printf("WAL recovery skipped: index dirty marker found but index files are valid")
-		} else {
-			e.logger.Printf("WAL recovery skipped: index files present and valid")
-		}
+		e.logger.Printf("WAL recovery skipped: index files present and valid, no dirty marker")
 		return nil
+	}
+
+	// Record recovery stats
+	e.lastRecoveryTime = time.Now()
+	e.lastRecoveryStats = &recovery.RecoveryState{}
+	allStats := e.indexMgr.AllStats()
+	if ps, ok := allStats["primary"]; ok {
+		e.lastRecoveryStats.EventCount = int64(ps.EntryCount)
 	}
 
 	// Verify after recovery if configured

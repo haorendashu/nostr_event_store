@@ -212,6 +212,11 @@ type Manager interface {
 
 	// Stats returns statistics for all indexes.
 	AllStats() map[string]Stats
+
+	// VerifyIndexIntegrity scans leaf nodes in every index and compares the
+	// actual entry count against the cached/reported count.
+	// Returns per-index results keyed by index name.
+	VerifyIndexIntegrity() map[string][]IndexIntegrityResult
 }
 
 // Config defines index configuration including search types and caching.

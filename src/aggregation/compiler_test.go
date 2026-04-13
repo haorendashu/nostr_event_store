@@ -120,6 +120,9 @@ func (m *mockIndexMgr) InsertRecoveryBatch(_ context.Context, _ []*types.Event, 
 func (m *mockIndexMgr) Flush(_ context.Context) error    { return nil }
 func (m *mockIndexMgr) Close() error                     { return nil }
 func (m *mockIndexMgr) AllStats() map[string]index.Stats { return nil }
+func (m *mockIndexMgr) VerifyIndexIntegrity() map[string][]index.IndexIntegrityResult {
+	return nil
+}
 
 // newTestIndexMgr creates a mockIndexMgr with all indexes and a default tag mapping.
 func newTestIndexMgr() *mockIndexMgr {
