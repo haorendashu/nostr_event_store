@@ -80,6 +80,13 @@ type EventStore interface {
 	// ctx is used for cancellation and timeouts.
 	DeleteEvents(ctx context.Context, eventIDs [][32]byte) error
 
+	// DeleteByFilter deletes all events matching the given filter.
+	// The filter must specify at least one Authors or Tags entry to prevent accidental full-store deletion.
+	// Returns the number of events deleted, or an error if the operation fails.
+	// Internally queries matching events then deletes them in a batch, reusing WAL-first durability.
+	// ctx is used for cancellation and timeouts.
+	DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error)
+
 	// Query executes a complex query with filters and returns results.
 	// Supports constraints on kind, author, time range, tags, and more.
 	// Automatically selects optimal indexes for the given filter.

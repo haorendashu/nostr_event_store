@@ -24,6 +24,7 @@ const (
 	EventStore_GetEvent_FullMethodName         = "/eventstore.EventStore/GetEvent"
 	EventStore_DeleteEvent_FullMethodName      = "/eventstore.EventStore/DeleteEvent"
 	EventStore_DeleteEvents_FullMethodName     = "/eventstore.EventStore/DeleteEvents"
+	EventStore_DeleteByFilter_FullMethodName   = "/eventstore.EventStore/DeleteByFilter"
 	EventStore_Query_FullMethodName            = "/eventstore.EventStore/Query"
 	EventStore_QueryCount_FullMethodName       = "/eventstore.EventStore/QueryCount"
 	EventStore_Stats_FullMethodName            = "/eventstore.EventStore/Stats"
@@ -48,6 +49,8 @@ type EventStoreClient interface {
 	DeleteEvent(ctx context.Context, in *DeleteEventRequest, opts ...grpc.CallOption) (*DeleteEventResponse, error)
 	// Delete multiple events
 	DeleteEvents(ctx context.Context, in *DeleteEventsRequest, opts ...grpc.CallOption) (*DeleteEventsResponse, error)
+	// Delete all events matching a filter (e.g. all events by an author)
+	DeleteByFilter(ctx context.Context, in *DeleteByFilterRequest, opts ...grpc.CallOption) (*DeleteByFilterResponse, error)
 	// Query events with filters (streaming response for large result sets)
 	Query(ctx context.Context, in *QueryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[QueryResponse], error)
 	// Query count only
@@ -115,6 +118,16 @@ func (c *eventStoreClient) DeleteEvents(ctx context.Context, in *DeleteEventsReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteEventsResponse)
 	err := c.cc.Invoke(ctx, EventStore_DeleteEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *eventStoreClient) DeleteByFilter(ctx context.Context, in *DeleteByFilterRequest, opts ...grpc.CallOption) (*DeleteByFilterResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteByFilterResponse)
+	err := c.cc.Invoke(ctx, EventStore_DeleteByFilter_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -206,6 +219,8 @@ type EventStoreServer interface {
 	DeleteEvent(context.Context, *DeleteEventRequest) (*DeleteEventResponse, error)
 	// Delete multiple events
 	DeleteEvents(context.Context, *DeleteEventsRequest) (*DeleteEventsResponse, error)
+	// Delete all events matching a filter (e.g. all events by an author)
+	DeleteByFilter(context.Context, *DeleteByFilterRequest) (*DeleteByFilterResponse, error)
 	// Query events with filters (streaming response for large result sets)
 	Query(*QueryRequest, grpc.ServerStreamingServer[QueryResponse]) error
 	// Query count only
@@ -243,6 +258,9 @@ func (UnimplementedEventStoreServer) DeleteEvent(context.Context, *DeleteEventRe
 }
 func (UnimplementedEventStoreServer) DeleteEvents(context.Context, *DeleteEventsRequest) (*DeleteEventsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteEvents not implemented")
+}
+func (UnimplementedEventStoreServer) DeleteByFilter(context.Context, *DeleteByFilterRequest) (*DeleteByFilterResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteByFilter not implemented")
 }
 func (UnimplementedEventStoreServer) Query(*QueryRequest, grpc.ServerStreamingServer[QueryResponse]) error {
 	return status.Error(codes.Unimplemented, "method Query not implemented")
@@ -369,6 +387,24 @@ func _EventStore_DeleteEvents_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(EventStoreServer).DeleteEvents(ctx, req.(*DeleteEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EventStore_DeleteByFilter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteByFilterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStoreServer).DeleteByFilter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStore_DeleteByFilter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStoreServer).DeleteByFilter(ctx, req.(*DeleteByFilterRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -500,6 +536,10 @@ var EventStore_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteEvents",
 			Handler:    _EventStore_DeleteEvents_Handler,
+		},
+		{
+			MethodName: "DeleteByFilter",
+			Handler:    _EventStore_DeleteByFilter_Handler,
 		},
 		{
 			MethodName: "QueryCount",

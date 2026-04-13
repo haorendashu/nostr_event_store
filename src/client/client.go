@@ -413,6 +413,45 @@ func (c *Client) DeleteEvents(ctx context.Context, eventIDs [][32]byte) error {
 	}
 }
 
+// DeleteByFilter deletes all events matching the given filter.
+// The filter must specify at least one of Authors or IDs.
+// Returns the number of events deleted.
+func (c *Client) DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error) {
+	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return 0, fmt.Errorf("client is closed")
+	}
+	c.mu.RUnlock()
+
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = c.getRequestContext()
+		defer cancel()
+	} else {
+		ctx = c.addAuthMetadata(ctx)
+	}
+
+	req := &pb.DeleteByFilterRequest{
+		ApiKey: c.config.APIKey,
+		Filter: ConvertQueryFilterToProto(filter),
+	}
+
+	resp, err := c.client.DeleteByFilter(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf("DeleteByFilter failed: %w", err)
+	}
+
+	switch result := resp.Result.(type) {
+	case *pb.DeleteByFilterResponse_Success:
+		return int(result.Success.DeletedCount), nil
+	case *pb.DeleteByFilterResponse_Error:
+		return 0, fmt.Errorf("%s: %s", result.Error.Code, result.Error.Message)
+	default:
+		return 0, fmt.Errorf("unknown response type")
+	}
+}
+
 // Query executes a streaming query with the given filter.
 // Returns a QueryStream that can be used to iterate over results.
 func (c *Client) Query(ctx context.Context, filter *types.QueryFilter) (QueryStream, error) {

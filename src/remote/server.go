@@ -25,6 +25,7 @@ type EventStore interface {
 	GetEvent(ctx context.Context, eventID [32]byte) (*types.Event, error)
 	DeleteEvent(ctx context.Context, eventID [32]byte) error
 	DeleteEvents(ctx context.Context, eventIDs [][32]byte) error
+	DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error)
 	Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error)
 	QueryCount(ctx context.Context, filter *types.QueryFilter) (int, error)
 	QueryAggregation(ctx context.Context, q *types.AggregationQuery) ([]types.AggregationEntry, error)
@@ -71,6 +72,13 @@ func (a *storeAdapter) DeleteEvents(ctx context.Context, eventIDs [][32]byte) er
 		DeleteEvents(ctx context.Context, eventIDs [][32]byte) error
 	}
 	return a.store.(deleteEventsMethod).DeleteEvents(ctx, eventIDs)
+}
+
+func (a *storeAdapter) DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error) {
+	type deleteByFilterMethod interface {
+		DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error)
+	}
+	return a.store.(deleteByFilterMethod).DeleteByFilter(ctx, filter)
 }
 
 func (a *storeAdapter) Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error) {
@@ -422,6 +430,55 @@ func (s *Server) DeleteEvents(ctx context.Context, req *pb.DeleteEventsRequest) 
 	return &pb.DeleteEventsResponse{
 		Result: &pb.DeleteEventsResponse_Success{
 			Success: &pb.DeleteEventsResult{DeletedCount: int32(len(eventIDs))},
+		},
+	}, nil
+}
+
+// DeleteByFilter deletes all events matching the given filter.
+func (s *Server) DeleteByFilter(ctx context.Context, req *pb.DeleteByFilterRequest) (*pb.DeleteByFilterResponse, error) {
+	if err := s.validateAPIKey(ctx); err != nil {
+		return nil, err
+	}
+
+	if req.Filter == nil {
+		return &pb.DeleteByFilterResponse{
+			Result: &pb.DeleteByFilterResponse_Error{
+				Error: &pb.ErrorResponse{
+					Code:    "INVALID_ARGUMENT",
+					Message: "filter is required",
+				},
+			},
+		}, nil
+	}
+
+	filter, err := ConvertQueryFilterFromProto(req.Filter)
+	if err != nil {
+		return &pb.DeleteByFilterResponse{
+			Result: &pb.DeleteByFilterResponse_Error{
+				Error: &pb.ErrorResponse{
+					Code:    "INVALID_ARGUMENT",
+					Message: err.Error(),
+				},
+			},
+		}, nil
+	}
+
+	count, err := s.store.DeleteByFilter(ctx, filter)
+	if err != nil {
+		log.Printf("DeleteByFilter failed: %v", err)
+		return &pb.DeleteByFilterResponse{
+			Result: &pb.DeleteByFilterResponse_Error{
+				Error: &pb.ErrorResponse{
+					Code:    convertErrorToCode(err),
+					Message: err.Error(),
+				},
+			},
+		}, nil
+	}
+
+	return &pb.DeleteByFilterResponse{
+		Result: &pb.DeleteByFilterResponse_Success{
+			Success: &pb.DeleteByFilterResult{DeletedCount: int32(count)},
 		},
 	}, nil
 }

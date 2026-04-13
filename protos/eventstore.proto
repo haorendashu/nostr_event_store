@@ -20,6 +20,9 @@ service EventStore {
   
   // Delete multiple events
   rpc DeleteEvents(DeleteEventsRequest) returns (DeleteEventsResponse);
+
+  // Delete all events matching a filter (e.g. all events by an author)
+  rpc DeleteByFilter(DeleteByFilterRequest) returns (DeleteByFilterResponse);
   
   // Query events with filters (streaming response for large result sets)
   rpc Query(QueryRequest) returns (stream QueryResponse);
@@ -160,6 +163,24 @@ message DeleteEventsResponse {
 }
 
 message DeleteEventsResult {
+  int32 deleted_count = 1;
+}
+
+// DeleteByFilterRequest
+message DeleteByFilterRequest {
+  string api_key = 1;
+  QueryFilter filter = 2;
+}
+
+// DeleteByFilterResponse
+message DeleteByFilterResponse {
+  oneof result {
+    DeleteByFilterResult success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+message DeleteByFilterResult {
   int32 deleted_count = 1;
 }
 

@@ -1231,6 +1231,186 @@ func (x *DeleteEventsResult) GetDeletedCount() int32 {
 	return 0
 }
 
+// DeleteByFilterRequest
+type DeleteByFilterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ApiKey        string                 `protobuf:"bytes,1,opt,name=api_key,json=apiKey,proto3" json:"api_key,omitempty"`
+	Filter        *QueryFilter           `protobuf:"bytes,2,opt,name=filter,proto3" json:"filter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteByFilterRequest) Reset() {
+	*x = DeleteByFilterRequest{}
+	mi := &file_protos_eventstore_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteByFilterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteByFilterRequest) ProtoMessage() {}
+
+func (x *DeleteByFilterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_protos_eventstore_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteByFilterRequest.ProtoReflect.Descriptor instead.
+func (*DeleteByFilterRequest) Descriptor() ([]byte, []int) {
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *DeleteByFilterRequest) GetApiKey() string {
+	if x != nil {
+		return x.ApiKey
+	}
+	return ""
+}
+
+func (x *DeleteByFilterRequest) GetFilter() *QueryFilter {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+// DeleteByFilterResponse
+type DeleteByFilterResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Result:
+	//
+	//	*DeleteByFilterResponse_Success
+	//	*DeleteByFilterResponse_Error
+	Result        isDeleteByFilterResponse_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteByFilterResponse) Reset() {
+	*x = DeleteByFilterResponse{}
+	mi := &file_protos_eventstore_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteByFilterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteByFilterResponse) ProtoMessage() {}
+
+func (x *DeleteByFilterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_protos_eventstore_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteByFilterResponse.ProtoReflect.Descriptor instead.
+func (*DeleteByFilterResponse) Descriptor() ([]byte, []int) {
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DeleteByFilterResponse) GetResult() isDeleteByFilterResponse_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *DeleteByFilterResponse) GetSuccess() *DeleteByFilterResult {
+	if x != nil {
+		if x, ok := x.Result.(*DeleteByFilterResponse_Success); ok {
+			return x.Success
+		}
+	}
+	return nil
+}
+
+func (x *DeleteByFilterResponse) GetError() *ErrorResponse {
+	if x != nil {
+		if x, ok := x.Result.(*DeleteByFilterResponse_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
+type isDeleteByFilterResponse_Result interface {
+	isDeleteByFilterResponse_Result()
+}
+
+type DeleteByFilterResponse_Success struct {
+	Success *DeleteByFilterResult `protobuf:"bytes,1,opt,name=success,proto3,oneof"`
+}
+
+type DeleteByFilterResponse_Error struct {
+	Error *ErrorResponse `protobuf:"bytes,2,opt,name=error,proto3,oneof"`
+}
+
+func (*DeleteByFilterResponse_Success) isDeleteByFilterResponse_Result() {}
+
+func (*DeleteByFilterResponse_Error) isDeleteByFilterResponse_Result() {}
+
+type DeleteByFilterResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeletedCount  int32                  `protobuf:"varint,1,opt,name=deleted_count,json=deletedCount,proto3" json:"deleted_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteByFilterResult) Reset() {
+	*x = DeleteByFilterResult{}
+	mi := &file_protos_eventstore_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteByFilterResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteByFilterResult) ProtoMessage() {}
+
+func (x *DeleteByFilterResult) ProtoReflect() protoreflect.Message {
+	mi := &file_protos_eventstore_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteByFilterResult.ProtoReflect.Descriptor instead.
+func (*DeleteByFilterResult) Descriptor() ([]byte, []int) {
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DeleteByFilterResult) GetDeletedCount() int32 {
+	if x != nil {
+		return x.DeletedCount
+	}
+	return 0
+}
+
 // QueryRequest
 type QueryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1242,7 +1422,7 @@ type QueryRequest struct {
 
 func (x *QueryRequest) Reset() {
 	*x = QueryRequest{}
-	mi := &file_protos_eventstore_proto_msgTypes[18]
+	mi := &file_protos_eventstore_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1254,7 +1434,7 @@ func (x *QueryRequest) String() string {
 func (*QueryRequest) ProtoMessage() {}
 
 func (x *QueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[18]
+	mi := &file_protos_eventstore_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1267,7 +1447,7 @@ func (x *QueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryRequest.ProtoReflect.Descriptor instead.
 func (*QueryRequest) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{18}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *QueryRequest) GetApiKey() string {
@@ -1298,7 +1478,7 @@ type QueryResponse struct {
 
 func (x *QueryResponse) Reset() {
 	*x = QueryResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[19]
+	mi := &file_protos_eventstore_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1310,7 +1490,7 @@ func (x *QueryResponse) String() string {
 func (*QueryResponse) ProtoMessage() {}
 
 func (x *QueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[19]
+	mi := &file_protos_eventstore_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1323,7 +1503,7 @@ func (x *QueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryResponse.ProtoReflect.Descriptor instead.
 func (*QueryResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{19}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *QueryResponse) GetResult() isQueryResponse_Result {
@@ -1378,7 +1558,7 @@ type QueryCountRequest struct {
 
 func (x *QueryCountRequest) Reset() {
 	*x = QueryCountRequest{}
-	mi := &file_protos_eventstore_proto_msgTypes[20]
+	mi := &file_protos_eventstore_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1390,7 +1570,7 @@ func (x *QueryCountRequest) String() string {
 func (*QueryCountRequest) ProtoMessage() {}
 
 func (x *QueryCountRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[20]
+	mi := &file_protos_eventstore_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1403,7 +1583,7 @@ func (x *QueryCountRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryCountRequest.ProtoReflect.Descriptor instead.
 func (*QueryCountRequest) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{20}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *QueryCountRequest) GetApiKey() string {
@@ -1434,7 +1614,7 @@ type QueryCountResponse struct {
 
 func (x *QueryCountResponse) Reset() {
 	*x = QueryCountResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[21]
+	mi := &file_protos_eventstore_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1446,7 +1626,7 @@ func (x *QueryCountResponse) String() string {
 func (*QueryCountResponse) ProtoMessage() {}
 
 func (x *QueryCountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[21]
+	mi := &file_protos_eventstore_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1459,7 +1639,7 @@ func (x *QueryCountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryCountResponse.ProtoReflect.Descriptor instead.
 func (*QueryCountResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{21}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *QueryCountResponse) GetResult() isQueryCountResponse_Result {
@@ -1512,7 +1692,7 @@ type QueryCountResult struct {
 
 func (x *QueryCountResult) Reset() {
 	*x = QueryCountResult{}
-	mi := &file_protos_eventstore_proto_msgTypes[22]
+	mi := &file_protos_eventstore_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1524,7 +1704,7 @@ func (x *QueryCountResult) String() string {
 func (*QueryCountResult) ProtoMessage() {}
 
 func (x *QueryCountResult) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[22]
+	mi := &file_protos_eventstore_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1537,7 +1717,7 @@ func (x *QueryCountResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryCountResult.ProtoReflect.Descriptor instead.
 func (*QueryCountResult) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{22}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *QueryCountResult) GetCount() int64 {
@@ -1557,7 +1737,7 @@ type StatsRequest struct {
 
 func (x *StatsRequest) Reset() {
 	*x = StatsRequest{}
-	mi := &file_protos_eventstore_proto_msgTypes[23]
+	mi := &file_protos_eventstore_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1569,7 +1749,7 @@ func (x *StatsRequest) String() string {
 func (*StatsRequest) ProtoMessage() {}
 
 func (x *StatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[23]
+	mi := &file_protos_eventstore_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1582,7 +1762,7 @@ func (x *StatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsRequest.ProtoReflect.Descriptor instead.
 func (*StatsRequest) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{23}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *StatsRequest) GetApiKey() string {
@@ -1606,7 +1786,7 @@ type StatsResponse struct {
 
 func (x *StatsResponse) Reset() {
 	*x = StatsResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[24]
+	mi := &file_protos_eventstore_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1618,7 +1798,7 @@ func (x *StatsResponse) String() string {
 func (*StatsResponse) ProtoMessage() {}
 
 func (x *StatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[24]
+	mi := &file_protos_eventstore_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1631,7 +1811,7 @@ func (x *StatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatsResponse.ProtoReflect.Descriptor instead.
 func (*StatsResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{24}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *StatsResponse) GetResult() isStatsResponse_Result {
@@ -1689,7 +1869,7 @@ type StorageStats struct {
 
 func (x *StorageStats) Reset() {
 	*x = StorageStats{}
-	mi := &file_protos_eventstore_proto_msgTypes[25]
+	mi := &file_protos_eventstore_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1701,7 +1881,7 @@ func (x *StorageStats) String() string {
 func (*StorageStats) ProtoMessage() {}
 
 func (x *StorageStats) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[25]
+	mi := &file_protos_eventstore_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1714,7 +1894,7 @@ func (x *StorageStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageStats.ProtoReflect.Descriptor instead.
 func (*StorageStats) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{25}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *StorageStats) GetEventCount() uint64 {
@@ -1769,7 +1949,7 @@ type FlushRequest struct {
 
 func (x *FlushRequest) Reset() {
 	*x = FlushRequest{}
-	mi := &file_protos_eventstore_proto_msgTypes[26]
+	mi := &file_protos_eventstore_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1781,7 +1961,7 @@ func (x *FlushRequest) String() string {
 func (*FlushRequest) ProtoMessage() {}
 
 func (x *FlushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[26]
+	mi := &file_protos_eventstore_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1794,7 +1974,7 @@ func (x *FlushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushRequest.ProtoReflect.Descriptor instead.
 func (*FlushRequest) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{26}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *FlushRequest) GetApiKey() string {
@@ -1818,7 +1998,7 @@ type FlushResponse struct {
 
 func (x *FlushResponse) Reset() {
 	*x = FlushResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[27]
+	mi := &file_protos_eventstore_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1830,7 +2010,7 @@ func (x *FlushResponse) String() string {
 func (*FlushResponse) ProtoMessage() {}
 
 func (x *FlushResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[27]
+	mi := &file_protos_eventstore_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1843,7 +2023,7 @@ func (x *FlushResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushResponse.ProtoReflect.Descriptor instead.
 func (*FlushResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{27}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *FlushResponse) GetResult() isFlushResponse_Result {
@@ -1896,7 +2076,7 @@ type FlushResult struct {
 
 func (x *FlushResult) Reset() {
 	*x = FlushResult{}
-	mi := &file_protos_eventstore_proto_msgTypes[28]
+	mi := &file_protos_eventstore_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1908,7 +2088,7 @@ func (x *FlushResult) String() string {
 func (*FlushResult) ProtoMessage() {}
 
 func (x *FlushResult) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[28]
+	mi := &file_protos_eventstore_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1921,7 +2101,7 @@ func (x *FlushResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushResult.ProtoReflect.Descriptor instead.
 func (*FlushResult) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{28}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *FlushResult) GetFlushed() bool {
@@ -1941,7 +2121,7 @@ type HealthCheckRequest struct {
 
 func (x *HealthCheckRequest) Reset() {
 	*x = HealthCheckRequest{}
-	mi := &file_protos_eventstore_proto_msgTypes[29]
+	mi := &file_protos_eventstore_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1953,7 +2133,7 @@ func (x *HealthCheckRequest) String() string {
 func (*HealthCheckRequest) ProtoMessage() {}
 
 func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[29]
+	mi := &file_protos_eventstore_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1966,7 +2146,7 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{29}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *HealthCheckRequest) GetApiKey() string {
@@ -1987,7 +2167,7 @@ type HealthCheckResponse struct {
 
 func (x *HealthCheckResponse) Reset() {
 	*x = HealthCheckResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[30]
+	mi := &file_protos_eventstore_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1999,7 +2179,7 @@ func (x *HealthCheckResponse) String() string {
 func (*HealthCheckResponse) ProtoMessage() {}
 
 func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[30]
+	mi := &file_protos_eventstore_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2012,7 +2192,7 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{30}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *HealthCheckResponse) GetHealthy() bool {
@@ -2043,7 +2223,7 @@ type AggregationEntry struct {
 
 func (x *AggregationEntry) Reset() {
 	*x = AggregationEntry{}
-	mi := &file_protos_eventstore_proto_msgTypes[31]
+	mi := &file_protos_eventstore_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2055,7 +2235,7 @@ func (x *AggregationEntry) String() string {
 func (*AggregationEntry) ProtoMessage() {}
 
 func (x *AggregationEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[31]
+	mi := &file_protos_eventstore_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2068,7 +2248,7 @@ func (x *AggregationEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AggregationEntry.ProtoReflect.Descriptor instead.
 func (*AggregationEntry) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{31}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AggregationEntry) GetPubkey() []byte {
@@ -2129,7 +2309,7 @@ type QueryAggregationRequest struct {
 
 func (x *QueryAggregationRequest) Reset() {
 	*x = QueryAggregationRequest{}
-	mi := &file_protos_eventstore_proto_msgTypes[32]
+	mi := &file_protos_eventstore_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2141,7 +2321,7 @@ func (x *QueryAggregationRequest) String() string {
 func (*QueryAggregationRequest) ProtoMessage() {}
 
 func (x *QueryAggregationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[32]
+	mi := &file_protos_eventstore_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2154,7 +2334,7 @@ func (x *QueryAggregationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAggregationRequest.ProtoReflect.Descriptor instead.
 func (*QueryAggregationRequest) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{32}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *QueryAggregationRequest) GetApiKey() string {
@@ -2220,7 +2400,7 @@ type QueryAggregationResponse struct {
 
 func (x *QueryAggregationResponse) Reset() {
 	*x = QueryAggregationResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[33]
+	mi := &file_protos_eventstore_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2232,7 +2412,7 @@ func (x *QueryAggregationResponse) String() string {
 func (*QueryAggregationResponse) ProtoMessage() {}
 
 func (x *QueryAggregationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[33]
+	mi := &file_protos_eventstore_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2245,7 +2425,7 @@ func (x *QueryAggregationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAggregationResponse.ProtoReflect.Descriptor instead.
 func (*QueryAggregationResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{33}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *QueryAggregationResponse) GetResult() isQueryAggregationResponse_Result {
@@ -2298,7 +2478,7 @@ type QueryAggregationResult struct {
 
 func (x *QueryAggregationResult) Reset() {
 	*x = QueryAggregationResult{}
-	mi := &file_protos_eventstore_proto_msgTypes[34]
+	mi := &file_protos_eventstore_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2310,7 +2490,7 @@ func (x *QueryAggregationResult) String() string {
 func (*QueryAggregationResult) ProtoMessage() {}
 
 func (x *QueryAggregationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[34]
+	mi := &file_protos_eventstore_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2323,7 +2503,7 @@ func (x *QueryAggregationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAggregationResult.ProtoReflect.Descriptor instead.
 func (*QueryAggregationResult) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{34}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *QueryAggregationResult) GetEntries() []*AggregationEntry {
@@ -2345,7 +2525,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_protos_eventstore_proto_msgTypes[35]
+	mi := &file_protos_eventstore_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2357,7 +2537,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_protos_eventstore_proto_msgTypes[35]
+	mi := &file_protos_eventstore_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2370,7 +2550,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_protos_eventstore_proto_rawDescGZIP(), []int{35}
+	return file_protos_eventstore_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ErrorResponse) GetCode() string {
@@ -2470,6 +2650,15 @@ const file_protos_eventstore_proto_rawDesc = "" +
 	"\x05error\x18\x02 \x01(\v2\x19.eventstore.ErrorResponseH\x00R\x05errorB\b\n" +
 	"\x06result\"9\n" +
 	"\x12DeleteEventsResult\x12#\n" +
+	"\rdeleted_count\x18\x01 \x01(\x05R\fdeletedCount\"a\n" +
+	"\x15DeleteByFilterRequest\x12\x17\n" +
+	"\aapi_key\x18\x01 \x01(\tR\x06apiKey\x12/\n" +
+	"\x06filter\x18\x02 \x01(\v2\x17.eventstore.QueryFilterR\x06filter\"\x93\x01\n" +
+	"\x16DeleteByFilterResponse\x12<\n" +
+	"\asuccess\x18\x01 \x01(\v2 .eventstore.DeleteByFilterResultH\x00R\asuccess\x121\n" +
+	"\x05error\x18\x02 \x01(\v2\x19.eventstore.ErrorResponseH\x00R\x05errorB\b\n" +
+	"\x06result\";\n" +
+	"\x14DeleteByFilterResult\x12#\n" +
 	"\rdeleted_count\x18\x01 \x01(\x05R\fdeletedCount\"X\n" +
 	"\fQueryRequest\x12\x17\n" +
 	"\aapi_key\x18\x01 \x01(\tR\x06apiKey\x12/\n" +
@@ -2549,7 +2738,7 @@ const file_protos_eventstore_proto_rawDesc = "" +
 	"\x0fGROUP_BY_AUTHOR\x10\x00\x12\x11\n" +
 	"\rGROUP_BY_KIND\x10\x01\x12\x18\n" +
 	"\x14GROUP_BY_TIME_BUCKET\x10\x02\x12\x16\n" +
-	"\x12GROUP_BY_TAG_VALUE\x10\x032\xcb\x06\n" +
+	"\x12GROUP_BY_TAG_VALUE\x10\x032\xa4\a\n" +
 	"\n" +
 	"EventStore\x12K\n" +
 	"\n" +
@@ -2557,7 +2746,8 @@ const file_protos_eventstore_proto_rawDesc = "" +
 	"\vWriteEvents\x12\x1e.eventstore.WriteEventsRequest\x1a\x1f.eventstore.WriteEventsResponse\x12E\n" +
 	"\bGetEvent\x12\x1b.eventstore.GetEventRequest\x1a\x1c.eventstore.GetEventResponse\x12N\n" +
 	"\vDeleteEvent\x12\x1e.eventstore.DeleteEventRequest\x1a\x1f.eventstore.DeleteEventResponse\x12Q\n" +
-	"\fDeleteEvents\x12\x1f.eventstore.DeleteEventsRequest\x1a .eventstore.DeleteEventsResponse\x12>\n" +
+	"\fDeleteEvents\x12\x1f.eventstore.DeleteEventsRequest\x1a .eventstore.DeleteEventsResponse\x12W\n" +
+	"\x0eDeleteByFilter\x12!.eventstore.DeleteByFilterRequest\x1a\".eventstore.DeleteByFilterResponse\x12>\n" +
 	"\x05Query\x12\x18.eventstore.QueryRequest\x1a\x19.eventstore.QueryResponse0\x01\x12K\n" +
 	"\n" +
 	"QueryCount\x12\x1d.eventstore.QueryCountRequest\x1a\x1e.eventstore.QueryCountResponse\x12<\n" +
@@ -2579,7 +2769,7 @@ func file_protos_eventstore_proto_rawDescGZIP() []byte {
 }
 
 var file_protos_eventstore_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_protos_eventstore_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_protos_eventstore_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_protos_eventstore_proto_goTypes = []any{
 	(GroupByField)(0),                // 0: eventstore.GroupByField
 	(*Event)(nil),                    // 1: eventstore.Event
@@ -2600,87 +2790,95 @@ var file_protos_eventstore_proto_goTypes = []any{
 	(*DeleteEventsRequest)(nil),      // 16: eventstore.DeleteEventsRequest
 	(*DeleteEventsResponse)(nil),     // 17: eventstore.DeleteEventsResponse
 	(*DeleteEventsResult)(nil),       // 18: eventstore.DeleteEventsResult
-	(*QueryRequest)(nil),             // 19: eventstore.QueryRequest
-	(*QueryResponse)(nil),            // 20: eventstore.QueryResponse
-	(*QueryCountRequest)(nil),        // 21: eventstore.QueryCountRequest
-	(*QueryCountResponse)(nil),       // 22: eventstore.QueryCountResponse
-	(*QueryCountResult)(nil),         // 23: eventstore.QueryCountResult
-	(*StatsRequest)(nil),             // 24: eventstore.StatsRequest
-	(*StatsResponse)(nil),            // 25: eventstore.StatsResponse
-	(*StorageStats)(nil),             // 26: eventstore.StorageStats
-	(*FlushRequest)(nil),             // 27: eventstore.FlushRequest
-	(*FlushResponse)(nil),            // 28: eventstore.FlushResponse
-	(*FlushResult)(nil),              // 29: eventstore.FlushResult
-	(*HealthCheckRequest)(nil),       // 30: eventstore.HealthCheckRequest
-	(*HealthCheckResponse)(nil),      // 31: eventstore.HealthCheckResponse
-	(*AggregationEntry)(nil),         // 32: eventstore.AggregationEntry
-	(*QueryAggregationRequest)(nil),  // 33: eventstore.QueryAggregationRequest
-	(*QueryAggregationResponse)(nil), // 34: eventstore.QueryAggregationResponse
-	(*QueryAggregationResult)(nil),   // 35: eventstore.QueryAggregationResult
-	(*ErrorResponse)(nil),            // 36: eventstore.ErrorResponse
-	nil,                              // 37: eventstore.QueryFilter.TagsEntry
-	nil,                              // 38: eventstore.StorageStats.CustomStatsEntry
+	(*DeleteByFilterRequest)(nil),    // 19: eventstore.DeleteByFilterRequest
+	(*DeleteByFilterResponse)(nil),   // 20: eventstore.DeleteByFilterResponse
+	(*DeleteByFilterResult)(nil),     // 21: eventstore.DeleteByFilterResult
+	(*QueryRequest)(nil),             // 22: eventstore.QueryRequest
+	(*QueryResponse)(nil),            // 23: eventstore.QueryResponse
+	(*QueryCountRequest)(nil),        // 24: eventstore.QueryCountRequest
+	(*QueryCountResponse)(nil),       // 25: eventstore.QueryCountResponse
+	(*QueryCountResult)(nil),         // 26: eventstore.QueryCountResult
+	(*StatsRequest)(nil),             // 27: eventstore.StatsRequest
+	(*StatsResponse)(nil),            // 28: eventstore.StatsResponse
+	(*StorageStats)(nil),             // 29: eventstore.StorageStats
+	(*FlushRequest)(nil),             // 30: eventstore.FlushRequest
+	(*FlushResponse)(nil),            // 31: eventstore.FlushResponse
+	(*FlushResult)(nil),              // 32: eventstore.FlushResult
+	(*HealthCheckRequest)(nil),       // 33: eventstore.HealthCheckRequest
+	(*HealthCheckResponse)(nil),      // 34: eventstore.HealthCheckResponse
+	(*AggregationEntry)(nil),         // 35: eventstore.AggregationEntry
+	(*QueryAggregationRequest)(nil),  // 36: eventstore.QueryAggregationRequest
+	(*QueryAggregationResponse)(nil), // 37: eventstore.QueryAggregationResponse
+	(*QueryAggregationResult)(nil),   // 38: eventstore.QueryAggregationResult
+	(*ErrorResponse)(nil),            // 39: eventstore.ErrorResponse
+	nil,                              // 40: eventstore.QueryFilter.TagsEntry
+	nil,                              // 41: eventstore.StorageStats.CustomStatsEntry
 }
 var file_protos_eventstore_proto_depIdxs = []int32{
 	2,  // 0: eventstore.Event.tags:type_name -> eventstore.Tag
-	37, // 1: eventstore.QueryFilter.tags:type_name -> eventstore.QueryFilter.TagsEntry
+	40, // 1: eventstore.QueryFilter.tags:type_name -> eventstore.QueryFilter.TagsEntry
 	1,  // 2: eventstore.WriteEventRequest.event:type_name -> eventstore.Event
 	5,  // 3: eventstore.WriteEventResponse.location:type_name -> eventstore.RecordLocation
-	36, // 4: eventstore.WriteEventResponse.error:type_name -> eventstore.ErrorResponse
+	39, // 4: eventstore.WriteEventResponse.error:type_name -> eventstore.ErrorResponse
 	1,  // 5: eventstore.WriteEventsRequest.events:type_name -> eventstore.Event
 	10, // 6: eventstore.WriteEventsResponse.success:type_name -> eventstore.WriteEventsResult
-	36, // 7: eventstore.WriteEventsResponse.error:type_name -> eventstore.ErrorResponse
+	39, // 7: eventstore.WriteEventsResponse.error:type_name -> eventstore.ErrorResponse
 	5,  // 8: eventstore.WriteEventsResult.locations:type_name -> eventstore.RecordLocation
 	1,  // 9: eventstore.GetEventResponse.event:type_name -> eventstore.Event
-	36, // 10: eventstore.GetEventResponse.error:type_name -> eventstore.ErrorResponse
+	39, // 10: eventstore.GetEventResponse.error:type_name -> eventstore.ErrorResponse
 	15, // 11: eventstore.DeleteEventResponse.success:type_name -> eventstore.DeleteEventResult
-	36, // 12: eventstore.DeleteEventResponse.error:type_name -> eventstore.ErrorResponse
+	39, // 12: eventstore.DeleteEventResponse.error:type_name -> eventstore.ErrorResponse
 	18, // 13: eventstore.DeleteEventsResponse.success:type_name -> eventstore.DeleteEventsResult
-	36, // 14: eventstore.DeleteEventsResponse.error:type_name -> eventstore.ErrorResponse
-	3,  // 15: eventstore.QueryRequest.filter:type_name -> eventstore.QueryFilter
-	1,  // 16: eventstore.QueryResponse.event:type_name -> eventstore.Event
-	36, // 17: eventstore.QueryResponse.error:type_name -> eventstore.ErrorResponse
-	3,  // 18: eventstore.QueryCountRequest.filter:type_name -> eventstore.QueryFilter
-	23, // 19: eventstore.QueryCountResponse.success:type_name -> eventstore.QueryCountResult
-	36, // 20: eventstore.QueryCountResponse.error:type_name -> eventstore.ErrorResponse
-	26, // 21: eventstore.StatsResponse.stats:type_name -> eventstore.StorageStats
-	36, // 22: eventstore.StatsResponse.error:type_name -> eventstore.ErrorResponse
-	38, // 23: eventstore.StorageStats.custom_stats:type_name -> eventstore.StorageStats.CustomStatsEntry
-	29, // 24: eventstore.FlushResponse.success:type_name -> eventstore.FlushResult
-	36, // 25: eventstore.FlushResponse.error:type_name -> eventstore.ErrorResponse
-	3,  // 26: eventstore.QueryAggregationRequest.filter:type_name -> eventstore.QueryFilter
-	0,  // 27: eventstore.QueryAggregationRequest.group_by:type_name -> eventstore.GroupByField
-	35, // 28: eventstore.QueryAggregationResponse.success:type_name -> eventstore.QueryAggregationResult
-	36, // 29: eventstore.QueryAggregationResponse.error:type_name -> eventstore.ErrorResponse
-	32, // 30: eventstore.QueryAggregationResult.entries:type_name -> eventstore.AggregationEntry
-	4,  // 31: eventstore.QueryFilter.TagsEntry.value:type_name -> eventstore.TagFilter
-	6,  // 32: eventstore.EventStore.WriteEvent:input_type -> eventstore.WriteEventRequest
-	8,  // 33: eventstore.EventStore.WriteEvents:input_type -> eventstore.WriteEventsRequest
-	11, // 34: eventstore.EventStore.GetEvent:input_type -> eventstore.GetEventRequest
-	13, // 35: eventstore.EventStore.DeleteEvent:input_type -> eventstore.DeleteEventRequest
-	16, // 36: eventstore.EventStore.DeleteEvents:input_type -> eventstore.DeleteEventsRequest
-	19, // 37: eventstore.EventStore.Query:input_type -> eventstore.QueryRequest
-	21, // 38: eventstore.EventStore.QueryCount:input_type -> eventstore.QueryCountRequest
-	24, // 39: eventstore.EventStore.Stats:input_type -> eventstore.StatsRequest
-	27, // 40: eventstore.EventStore.Flush:input_type -> eventstore.FlushRequest
-	30, // 41: eventstore.EventStore.HealthCheck:input_type -> eventstore.HealthCheckRequest
-	33, // 42: eventstore.EventStore.QueryAggregation:input_type -> eventstore.QueryAggregationRequest
-	7,  // 43: eventstore.EventStore.WriteEvent:output_type -> eventstore.WriteEventResponse
-	9,  // 44: eventstore.EventStore.WriteEvents:output_type -> eventstore.WriteEventsResponse
-	12, // 45: eventstore.EventStore.GetEvent:output_type -> eventstore.GetEventResponse
-	14, // 46: eventstore.EventStore.DeleteEvent:output_type -> eventstore.DeleteEventResponse
-	17, // 47: eventstore.EventStore.DeleteEvents:output_type -> eventstore.DeleteEventsResponse
-	20, // 48: eventstore.EventStore.Query:output_type -> eventstore.QueryResponse
-	22, // 49: eventstore.EventStore.QueryCount:output_type -> eventstore.QueryCountResponse
-	25, // 50: eventstore.EventStore.Stats:output_type -> eventstore.StatsResponse
-	28, // 51: eventstore.EventStore.Flush:output_type -> eventstore.FlushResponse
-	31, // 52: eventstore.EventStore.HealthCheck:output_type -> eventstore.HealthCheckResponse
-	34, // 53: eventstore.EventStore.QueryAggregation:output_type -> eventstore.QueryAggregationResponse
-	43, // [43:54] is the sub-list for method output_type
-	32, // [32:43] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	39, // 14: eventstore.DeleteEventsResponse.error:type_name -> eventstore.ErrorResponse
+	3,  // 15: eventstore.DeleteByFilterRequest.filter:type_name -> eventstore.QueryFilter
+	21, // 16: eventstore.DeleteByFilterResponse.success:type_name -> eventstore.DeleteByFilterResult
+	39, // 17: eventstore.DeleteByFilterResponse.error:type_name -> eventstore.ErrorResponse
+	3,  // 18: eventstore.QueryRequest.filter:type_name -> eventstore.QueryFilter
+	1,  // 19: eventstore.QueryResponse.event:type_name -> eventstore.Event
+	39, // 20: eventstore.QueryResponse.error:type_name -> eventstore.ErrorResponse
+	3,  // 21: eventstore.QueryCountRequest.filter:type_name -> eventstore.QueryFilter
+	26, // 22: eventstore.QueryCountResponse.success:type_name -> eventstore.QueryCountResult
+	39, // 23: eventstore.QueryCountResponse.error:type_name -> eventstore.ErrorResponse
+	29, // 24: eventstore.StatsResponse.stats:type_name -> eventstore.StorageStats
+	39, // 25: eventstore.StatsResponse.error:type_name -> eventstore.ErrorResponse
+	41, // 26: eventstore.StorageStats.custom_stats:type_name -> eventstore.StorageStats.CustomStatsEntry
+	32, // 27: eventstore.FlushResponse.success:type_name -> eventstore.FlushResult
+	39, // 28: eventstore.FlushResponse.error:type_name -> eventstore.ErrorResponse
+	3,  // 29: eventstore.QueryAggregationRequest.filter:type_name -> eventstore.QueryFilter
+	0,  // 30: eventstore.QueryAggregationRequest.group_by:type_name -> eventstore.GroupByField
+	38, // 31: eventstore.QueryAggregationResponse.success:type_name -> eventstore.QueryAggregationResult
+	39, // 32: eventstore.QueryAggregationResponse.error:type_name -> eventstore.ErrorResponse
+	35, // 33: eventstore.QueryAggregationResult.entries:type_name -> eventstore.AggregationEntry
+	4,  // 34: eventstore.QueryFilter.TagsEntry.value:type_name -> eventstore.TagFilter
+	6,  // 35: eventstore.EventStore.WriteEvent:input_type -> eventstore.WriteEventRequest
+	8,  // 36: eventstore.EventStore.WriteEvents:input_type -> eventstore.WriteEventsRequest
+	11, // 37: eventstore.EventStore.GetEvent:input_type -> eventstore.GetEventRequest
+	13, // 38: eventstore.EventStore.DeleteEvent:input_type -> eventstore.DeleteEventRequest
+	16, // 39: eventstore.EventStore.DeleteEvents:input_type -> eventstore.DeleteEventsRequest
+	19, // 40: eventstore.EventStore.DeleteByFilter:input_type -> eventstore.DeleteByFilterRequest
+	22, // 41: eventstore.EventStore.Query:input_type -> eventstore.QueryRequest
+	24, // 42: eventstore.EventStore.QueryCount:input_type -> eventstore.QueryCountRequest
+	27, // 43: eventstore.EventStore.Stats:input_type -> eventstore.StatsRequest
+	30, // 44: eventstore.EventStore.Flush:input_type -> eventstore.FlushRequest
+	33, // 45: eventstore.EventStore.HealthCheck:input_type -> eventstore.HealthCheckRequest
+	36, // 46: eventstore.EventStore.QueryAggregation:input_type -> eventstore.QueryAggregationRequest
+	7,  // 47: eventstore.EventStore.WriteEvent:output_type -> eventstore.WriteEventResponse
+	9,  // 48: eventstore.EventStore.WriteEvents:output_type -> eventstore.WriteEventsResponse
+	12, // 49: eventstore.EventStore.GetEvent:output_type -> eventstore.GetEventResponse
+	14, // 50: eventstore.EventStore.DeleteEvent:output_type -> eventstore.DeleteEventResponse
+	17, // 51: eventstore.EventStore.DeleteEvents:output_type -> eventstore.DeleteEventsResponse
+	20, // 52: eventstore.EventStore.DeleteByFilter:output_type -> eventstore.DeleteByFilterResponse
+	23, // 53: eventstore.EventStore.Query:output_type -> eventstore.QueryResponse
+	25, // 54: eventstore.EventStore.QueryCount:output_type -> eventstore.QueryCountResponse
+	28, // 55: eventstore.EventStore.Stats:output_type -> eventstore.StatsResponse
+	31, // 56: eventstore.EventStore.Flush:output_type -> eventstore.FlushResponse
+	34, // 57: eventstore.EventStore.HealthCheck:output_type -> eventstore.HealthCheckResponse
+	37, // 58: eventstore.EventStore.QueryAggregation:output_type -> eventstore.QueryAggregationResponse
+	47, // [47:59] is the sub-list for method output_type
+	35, // [35:47] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_protos_eventstore_proto_init() }
@@ -2709,22 +2907,26 @@ func file_protos_eventstore_proto_init() {
 		(*DeleteEventsResponse_Error)(nil),
 	}
 	file_protos_eventstore_proto_msgTypes[19].OneofWrappers = []any{
+		(*DeleteByFilterResponse_Success)(nil),
+		(*DeleteByFilterResponse_Error)(nil),
+	}
+	file_protos_eventstore_proto_msgTypes[22].OneofWrappers = []any{
 		(*QueryResponse_Event)(nil),
 		(*QueryResponse_Error)(nil),
 	}
-	file_protos_eventstore_proto_msgTypes[21].OneofWrappers = []any{
+	file_protos_eventstore_proto_msgTypes[24].OneofWrappers = []any{
 		(*QueryCountResponse_Success)(nil),
 		(*QueryCountResponse_Error)(nil),
 	}
-	file_protos_eventstore_proto_msgTypes[24].OneofWrappers = []any{
+	file_protos_eventstore_proto_msgTypes[27].OneofWrappers = []any{
 		(*StatsResponse_Stats)(nil),
 		(*StatsResponse_Error)(nil),
 	}
-	file_protos_eventstore_proto_msgTypes[27].OneofWrappers = []any{
+	file_protos_eventstore_proto_msgTypes[30].OneofWrappers = []any{
 		(*FlushResponse_Success)(nil),
 		(*FlushResponse_Error)(nil),
 	}
-	file_protos_eventstore_proto_msgTypes[33].OneofWrappers = []any{
+	file_protos_eventstore_proto_msgTypes[36].OneofWrappers = []any{
 		(*QueryAggregationResponse_Success)(nil),
 		(*QueryAggregationResponse_Error)(nil),
 	}
@@ -2734,7 +2936,7 @@ func file_protos_eventstore_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_protos_eventstore_proto_rawDesc), len(file_protos_eventstore_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   38,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

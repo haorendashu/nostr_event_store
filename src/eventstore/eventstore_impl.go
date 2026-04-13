@@ -1191,6 +1191,100 @@ func (e *eventStoreImpl) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 	return nil
 }
 
+// DeleteByFilter deletes all events matching the given filter.
+// The filter must specify at least one of Authors or IDs to prevent accidental full-store deletion.
+func (e *eventStoreImpl) DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error) {
+	e.mu.RLock()
+	if !e.opened {
+		e.mu.RUnlock()
+		return 0, fmt.Errorf("store not opened")
+	}
+	e.mu.RUnlock()
+
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	// Safety guard: require at least one scoping condition to prevent wiping the entire store.
+	if len(filter.Authors) == 0 && len(filter.Tags) == 0 {
+		return 0, fmt.Errorf("DeleteByFilter requires at least one Authors or Tags entry in the filter")
+	}
+
+	// Determine the kinds to query.
+	// If the caller specified kinds explicitly, use them as-is.
+	// Otherwise, use e.getKnownKinds() — the full set of distinct kinds observed in this
+	// store, populated at startup via a KindTime skip-scan and maintained incrementally on
+	// every write via addKindIfNew. This avoids going through e.queryEngine whose
+	// normalizeFilter injects config.DefaultKinds when Kinds is empty, which would
+	// silently miss events whose kind is not in the configured default list.
+	kindsToQuery := filter.Kinds
+	if len(kindsToQuery) == 0 {
+		kindsToQuery = e.getKnownKinds()
+	}
+
+	// Return early if the store has no known kinds (empty store).
+	if len(kindsToQuery) == 0 {
+		return 0, nil
+	}
+
+	// ValidateFilter enforces len(Kinds) <= 100, so query in batches of 100.
+	// By providing a non-empty Kinds slice we ensure normalizeFilter never
+	// replaces it with the engine's default kinds list.
+	const maxKindsPerBatch = 100
+
+	ctx = query.WithOperationMetadata(ctx, query.OpTypeBatchDelete, map[string]interface{}{
+		"operation":   "DeleteByFilter",
+		"num_authors": len(filter.Authors),
+		"num_kinds":   len(kindsToQuery),
+	})
+
+	var ids [][32]byte
+
+	collectBatch := func(kinds []uint16) error {
+		batchFilter := *filter
+		batchFilter.Kinds = kinds
+		batchFilter.Limit = 0 // Unlimited
+
+		iter, err := e.queryEngine.Query(ctx, &batchFilter)
+		if err != nil {
+			return fmt.Errorf("query for DeleteByFilter (kinds batch): %w", err)
+		}
+		for iter.Valid() {
+			if err := ctx.Err(); err != nil {
+				iter.Close()
+				return err
+			}
+			ids = append(ids, iter.Event().ID)
+			if err := iter.Next(ctx); err != nil {
+				iter.Close()
+				return fmt.Errorf("iterator error in DeleteByFilter: %w", err)
+			}
+		}
+		iter.Close()
+		return nil
+	}
+
+	for i := 0; i < len(kindsToQuery); i += maxKindsPerBatch {
+		end := i + maxKindsPerBatch
+		if end > len(kindsToQuery) {
+			end = len(kindsToQuery)
+		}
+		if err := collectBatch(kindsToQuery[i:end]); err != nil {
+			return 0, err
+		}
+	}
+
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	if err := e.DeleteEvents(ctx, ids); err != nil {
+		return 0, fmt.Errorf("DeleteByFilter batch delete: %w", err)
+	}
+
+	return len(ids), nil
+}
+
 // Query executes a query and returns an iterator.
 func (e *eventStoreImpl) Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error) {
 	e.mu.RLock()

@@ -39,6 +39,10 @@ func (m *mockStatsStore) DeleteEvents(ctx context.Context, eventIDs [][32]byte) 
 	return nil
 }
 
+func (m *mockStatsStore) DeleteByFilter(ctx context.Context, filter *types.QueryFilter) (int, error) {
+	return 0, nil
+}
+
 func (m *mockStatsStore) Query(ctx context.Context, filter *types.QueryFilter) (query.ResultIterator, error) {
 	return nil, nil
 }
