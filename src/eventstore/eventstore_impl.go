@@ -370,7 +370,6 @@ func (e *eventStoreImpl) Close(ctx context.Context) error {
 	}
 
 	e.stopCheckpointScheduler()
-	_ = e.clearIndexDirtyMarker()
 
 	// Flush pending data directly without locking (already holding write lock)
 	// Flush checks opened status but doesn't need the lock for its internal operations
@@ -386,10 +385,20 @@ func (e *eventStoreImpl) Close(ctx context.Context) error {
 		}
 	}
 
+	indexFlushOK := true
 	if e.indexMgr != nil {
 		if err := e.indexMgr.Flush(ctx); err != nil {
 			e.logger.Printf("Warning: index flush failed: %v", err)
+			indexFlushOK = false
 		}
+	}
+
+	// Only clear the dirty marker after index flush succeeds.
+	// If flush failed, leave .dirty on disk so the next startup triggers WAL recovery.
+	if indexFlushOK {
+		_ = e.clearIndexDirtyMarker()
+	} else {
+		e.logger.Printf("Warning: index flush failed during close, keeping dirty marker for recovery on next start")
 	}
 
 	// Close components

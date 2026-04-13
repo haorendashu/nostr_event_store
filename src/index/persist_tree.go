@@ -648,8 +648,20 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		return child, false, nil
 	}
 
-	// Merge with left sibling if available, otherwise with right
-	if left != nil {
+	// Merge with left sibling if available, otherwise with right.
+	// For internal nodes, verify the merged result fits in a single page before merging.
+	// Merged internal size = left.size + child.size + len(sepKey) - 10 (shared 20-byte header
+	// is counted twice; net cost of adding the separator entry is 10 + len(sepKey)).
+	canMergeLeft := left != nil
+	if canMergeLeft && !child.isLeaf() {
+		sepKey := parent.keys[childIndex-1]
+		mergedSize := left.internalSize(t.pageSize) + child.internalSize(t.pageSize) + len(sepKey) - 10
+		if mergedSize > int(t.pageSize) {
+			canMergeLeft = false // merged node would overflow; skip this merge
+		}
+	}
+
+	if canMergeLeft {
 		if child.isLeaf() {
 			// Use atomic updates for merge
 			newLeftKeys := make([][]byte, len(left.keys)+len(child.keys))
@@ -699,7 +711,16 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		return parent, true, nil
 	}
 
-	if right != nil && childIndex < len(parent.keys) {
+	canMergeRight := right != nil && childIndex < len(parent.keys)
+	if canMergeRight && !child.isLeaf() {
+		sepKey := parent.keys[childIndex]
+		mergedSize := child.internalSize(t.pageSize) + right.internalSize(t.pageSize) + len(sepKey) - 10
+		if mergedSize > int(t.pageSize) {
+			canMergeRight = false // merged node would overflow; skip this merge
+		}
+	}
+
+	if canMergeRight {
 		if child.isLeaf() {
 			// Use atomic updates for merge
 			newChildKeys := make([][]byte, len(child.keys)+len(right.keys))
