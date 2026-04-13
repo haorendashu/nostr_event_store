@@ -2461,6 +2461,13 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 		return fmt.Errorf("primary index is nil during recovery")
 	}
 	eventKeyBytes := r.keyBuilder.BuildPrimaryKey(event.ID)
+
+	// Dedup: skip events already present in primary to prevent duplicate
+	// secondary index entries across repeated WAL replays.
+	if _, exists, err := primaryIdx.Get(ctx, eventKeyBytes); err == nil && exists {
+		return nil
+	}
+
 	if err := primaryIdx.Insert(ctx, eventKeyBytes, location); err != nil {
 		return fmt.Errorf("primary index insert: %w", err)
 	}
