@@ -1272,6 +1272,7 @@ func (e *eventStoreImpl) DeleteByFilter(ctx context.Context, filter *types.Query
 		"num_kinds":   len(kindsToQuery),
 	})
 
+	seenIDs := make(map[[32]byte]struct{})
 	var ids [][32]byte
 
 	collectBatch := func(kinds []uint16) error {
@@ -1288,7 +1289,11 @@ func (e *eventStoreImpl) DeleteByFilter(ctx context.Context, filter *types.Query
 				iter.Close()
 				return err
 			}
-			ids = append(ids, iter.Event().ID)
+			id := iter.Event().ID
+			if _, dup := seenIDs[id]; !dup {
+				seenIDs[id] = struct{}{}
+				ids = append(ids, id)
+			}
 			if err := iter.Next(ctx); err != nil {
 				iter.Close()
 				return fmt.Errorf("iterator error in DeleteByFilter: %w", err)
