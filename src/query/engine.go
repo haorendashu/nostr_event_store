@@ -144,7 +144,6 @@ type engineImpl struct {
 
 // CompilerDefaults defines default filter values injected during query compilation.
 type CompilerDefaults struct {
-	DefaultLimit int
 	DefaultKinds []uint16
 
 	// DefaultKindsFunc, when non-nil, is called at compile time to obtain the
@@ -249,7 +248,7 @@ func NewCompiler(indexMgr index.Manager) Compiler {
 func NewCompilerWithDefaults(indexMgr index.Manager, defaults CompilerDefaults) Compiler {
 	return &compilerImpl{
 		indexMgr: indexMgr,
-		defaults: buildCompilerDefaults(defaults.DefaultLimit, defaults.DefaultKinds, defaults.DefaultKindsFunc),
+		defaults: buildCompilerDefaults(defaults.DefaultKinds, defaults.DefaultKindsFunc),
 	}
 }
 

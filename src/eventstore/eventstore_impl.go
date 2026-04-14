@@ -335,7 +335,6 @@ func (e *eventStoreImpl) Open(ctx context.Context, dir string, createIfMissing b
 
 	// Initialize query engine with static default kinds from configuration
 	e.queryEngine = query.NewEngineWithDefaults(e.indexMgr, e.storage, query.CompilerDefaults{
-		DefaultLimit: cfg.QueryConfig.DefaultLimit,
 		DefaultKinds: cfg.QueryConfig.DefaultKinds,
 	})
 
@@ -2230,7 +2229,6 @@ func (e *eventStoreImpl) rebuildIndexesFromSegments(ctx context.Context) error {
 	}
 	e.indexMgr = indexMgrImpl
 	e.queryEngine = query.NewEngineWithDefaults(e.indexMgr, e.storage, query.CompilerDefaults{
-		DefaultLimit: cfg.QueryConfig.DefaultLimit,
 		DefaultKinds: cfg.QueryConfig.DefaultKinds,
 	})
 	e.logger.Printf("Index manager recreated, starting optimized batch recovery from %d segments...", len(segmentIDs))

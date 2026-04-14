@@ -53,10 +53,6 @@ type Config struct {
 
 // QueryConfig defines default query filter values injected by the query compiler.
 type QueryConfig struct {
-	// DefaultLimit is applied when filter limit is omitted (0).
-	// Default: 100
-	DefaultLimit int `json:"default_limit,omitempty" yaml:"default_limit,omitempty"`
-
 	// DefaultKinds are applied when kinds are omitted for search/tag queries.
 	// Default: [0,1,3,6,16,20,30023,9041,1111]
 	DefaultKinds []uint16 `json:"default_kinds,omitempty" yaml:"default_kinds,omitempty"`
@@ -606,9 +602,6 @@ func (m *ManagerImpl) LoadFromEnv(ctx context.Context) error {
 		m.config.CompactionConfig.PreserveOldSegments = v
 	}
 
-	if v, ok := getEnvInt("NOSTR_STORE_QUERY_DEFAULT_LIMIT"); ok {
-		m.config.QueryConfig.DefaultLimit = v
-	}
 	if v, ok := getEnvUint16List("NOSTR_STORE_QUERY_DEFAULT_KINDS"); ok {
 		m.config.QueryConfig.DefaultKinds = v
 	}
@@ -732,9 +725,6 @@ func (m *ManagerImpl) SetDefaults() {
 		m.config.ShardingConfig.QueryTimeoutSeconds = defaults.ShardingConfig.QueryTimeoutSeconds
 	}
 
-	if m.config.QueryConfig.DefaultLimit == 0 {
-		m.config.QueryConfig.DefaultLimit = defaults.QueryConfig.DefaultLimit
-	}
 	if len(m.config.QueryConfig.DefaultKinds) == 0 {
 		m.config.QueryConfig.DefaultKinds = append([]uint16(nil), defaults.QueryConfig.DefaultKinds...)
 	}
@@ -965,7 +955,6 @@ func DefaultConfig() *Config {
 			EnableDeduplication:  true,
 		},
 		QueryConfig: QueryConfig{
-			DefaultLimit:            100,
 			DefaultKinds:            []uint16{0, 1, 3, 6, 16, 20, 30023, 9041, 1111},
 			ExecutionTimeoutSeconds: 30,
 		},
@@ -1177,9 +1166,6 @@ func mergeConfig(dst *Config, src *Config) {
 		dst.CompactionConfig.PreserveOldSegments = src.CompactionConfig.PreserveOldSegments
 	}
 
-	if src.QueryConfig.DefaultLimit != 0 {
-		dst.QueryConfig.DefaultLimit = src.QueryConfig.DefaultLimit
-	}
 	if len(src.QueryConfig.DefaultKinds) > 0 {
 		dst.QueryConfig.DefaultKinds = append([]uint16(nil), src.QueryConfig.DefaultKinds...)
 	}

@@ -418,8 +418,8 @@ func TestCompiler(t *testing.T) {
 			strategy: "search",
 		},
 		{
-			name:     "Empty filter - use default limit and scan",
-			filter:   &types.QueryFilter{},
+			name:     "Empty filter with explicit limit - scan",
+			filter:   &types.QueryFilter{Limit: 100},
 			strategy: "scan",
 		},
 		{
@@ -453,20 +453,6 @@ func TestCompiler(t *testing.T) {
 func TestCompilerNormalizeDefaults(t *testing.T) {
 	mgr := newMockIndexManager()
 	compiler := NewCompiler(mgr)
-
-	t.Run("Default limit applied when missing", func(t *testing.T) {
-		plan, err := compiler.Compile(&types.QueryFilter{
-			Kinds: []uint16{1},
-		})
-		if err != nil {
-			t.Fatalf("Compile() error = %v", err)
-		}
-
-		impl := plan.(*planImpl)
-		if impl.filter.Limit != builtinDefaultQueryLimit {
-			t.Fatalf("normalized limit = %d, want %d", impl.filter.Limit, builtinDefaultQueryLimit)
-		}
-	})
 
 	t.Run("No kinds injected when no DefaultKindsFunc for tag query", func(t *testing.T) {
 		plan, err := compiler.Compile(&types.QueryFilter{
@@ -520,7 +506,6 @@ func TestCompilerNormalizeDefaults(t *testing.T) {
 
 	t.Run("Compiler uses configurable defaults", func(t *testing.T) {
 		customCompiler := NewCompilerWithDefaults(mgr, CompilerDefaults{
-			DefaultLimit: 7,
 			DefaultKinds: []uint16{1, 6, 1111},
 		})
 
@@ -534,9 +519,6 @@ func TestCompilerNormalizeDefaults(t *testing.T) {
 		}
 
 		impl := plan.(*planImpl)
-		if impl.filter.Limit != 7 {
-			t.Fatalf("normalized limit = %d, want 7", impl.filter.Limit)
-		}
 		if len(impl.filter.Kinds) != 3 {
 			t.Fatalf("normalized kinds len = %d, want 3", len(impl.filter.Kinds))
 		}

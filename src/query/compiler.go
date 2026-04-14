@@ -8,10 +8,7 @@ import (
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
 
-const builtinDefaultQueryLimit = 100
-
 type compilerDefaults struct {
-	defaultLimit     int
 	defaultKindsFunc func() []uint16
 }
 
@@ -145,10 +142,6 @@ func (c *compilerImpl) normalizeFilter(filter *types.QueryFilter) *types.QueryFi
 	normalized := cloneFilter(filter)
 	normalized.Tags = normalizeTagFilters(normalized.Tags)
 
-	if normalized.Limit == 0 {
-		normalized.Limit = c.defaults.defaultLimit
-	}
-
 	if len(normalized.Kinds) == 0 && shouldApplyDefaultKinds(normalized) {
 		if c.defaults.defaultKindsFunc != nil {
 			normalized.Kinds = c.defaults.defaultKindsFunc()
@@ -197,12 +190,7 @@ func normalizeTagFilters(tags map[string][]string) map[string][]string {
 	return normalized
 }
 
-func buildCompilerDefaults(defaultLimit int, defaultKinds []uint16, defaultKindsFunc func() []uint16) compilerDefaults {
-	resolvedLimit := defaultLimit
-	if resolvedLimit <= 0 {
-		resolvedLimit = builtinDefaultQueryLimit
-	}
-
+func buildCompilerDefaults(defaultKinds []uint16, defaultKindsFunc func() []uint16) compilerDefaults {
 	var resolvedFunc func() []uint16
 	if defaultKindsFunc != nil {
 		resolvedFunc = defaultKindsFunc
@@ -213,7 +201,6 @@ func buildCompilerDefaults(defaultLimit int, defaultKinds []uint16, defaultKinds
 	}
 
 	return compilerDefaults{
-		defaultLimit:     resolvedLimit,
 		defaultKindsFunc: resolvedFunc,
 	}
 }
