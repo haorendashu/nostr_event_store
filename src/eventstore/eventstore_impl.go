@@ -899,17 +899,43 @@ func (e *eventStoreImpl) writeEventsBatch(ctx context.Context, events []*types.E
 		}
 	}
 
+	// Post-insert ghost cleanup: if a concurrent DeleteEvent/DeleteEvents call
+	// removed an event from primary BETWEEN our primary InsertBatch and the
+	// secondary index inserts above, the secondary indexes now contain ghost
+	// entries (event gone from primary but present in authorTime/kindTime).
+	// Detect and remove such entries immediately to prevent drift accumulation.
+	//
+	// Note: this check still has a narrow race window, but prevents the
+	// steady-state accumulation observed when batch deletes overlap with writes.
+	for i, event := range indexEvents {
+		eventKey := e.keyBuilder.BuildPrimaryKey(event.ID)
+		if _, still, checkErr := primaryIdx.Get(ctx, eventKey); checkErr == nil && !still {
+			loc := indexLocs[i]
+			e.logger.Printf("[GHOST-CLEANUP] event %x concurrently deleted; removing secondary ghosts", event.ID[:4])
+			if err := authorTimeIdx.Delete(ctx, authorTimeKeys[i], &loc); err != nil {
+				e.logger.Printf("Warning: ghost cleanup authorTime failed for event %x: %v", event.ID[:4], err)
+			}
+			if err := kindTimeIdx.Delete(ctx, kindTimeKeys[i], &loc); err != nil {
+				e.logger.Printf("Warning: ghost cleanup kindTime failed for event %x: %v", event.ID[:4], err)
+			}
+			// Search ghosts are not tracked per-event at this point; they
+			// are rare and will be reclaimed at the next full rebuild.
+		}
+	}
+
 	for _, event := range indexEvents {
 		e.addKindIfNew(event.Kind)
 	}
 
 	// Drift detection: compare deltas across indexes.
+	// Use int64 arithmetic to detect both over- and under-counting caused by
+	// concurrent deletes/replacements between the pre/post snapshots.
 	postPrimary := primaryIdx.Stats().EntryCount
 	postAuthorTime := authorTimeIdx.Stats().EntryCount
 	postKindTime := kindTimeIdx.Stats().EntryCount
-	dPrimary := postPrimary - prePrimary
-	dAuthorTime := postAuthorTime - preAuthorTime
-	dKindTime := postKindTime - preKindTime
+	dPrimary := int64(postPrimary) - int64(prePrimary)
+	dAuthorTime := int64(postAuthorTime) - int64(preAuthorTime)
+	dKindTime := int64(postKindTime) - int64(preKindTime)
 	if dAuthorTime != dPrimary || dKindTime != dPrimary {
 		e.logger.Printf("[INDEX-DRIFT] batch delta mismatch: primary=%d authorTime=%d kindTime=%d (expected %d), batch_size=%d unique=%d",
 			dPrimary, dAuthorTime, dKindTime, dPrimary, len(events), len(indexEvents))
