@@ -13,7 +13,13 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip11"
+	"gopkg.in/yaml.v3"
 )
+
+// RelayLocalConfig holds relay-specific config fields not present in the store's config struct.
+type RelayLocalConfig struct {
+	ReplaceableKinds []int `yaml:"replaceable_kinds"`
+}
 
 type Relay struct {
 	storage *NostrEventStorage
@@ -95,7 +101,13 @@ func main() {
 		return
 	}
 
-	eventStore, err := initStore(cfg)
+	relayLocalCfg, err := loadRelayLocalConfig(flags.ConfigPath)
+	if err != nil {
+		log.Printf("failed to load relay local config, using defaults: %v", err)
+		relayLocalCfg = &RelayLocalConfig{}
+	}
+
+	eventStore, err := initStore(cfg, relayLocalCfg.ReplaceableKinds)
 	if err != nil {
 		log.Fatalf("failed to create eventStore: %v\n", err)
 	}
@@ -114,6 +126,19 @@ func main() {
 	if err := server.Start("0.0.0.0", flags.Port); err != nil {
 		log.Fatalf("server terminated: %v", err)
 	}
+}
+
+// loadRelayLocalConfig parses relay-specific fields (e.g. replaceable_kinds) from config.yaml.
+func loadRelayLocalConfig(configPath string) (*RelayLocalConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+	var cfg RelayLocalConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse relay local config: %w", err)
+	}
+	return &cfg, nil
 }
 
 // loadConfig loads configuration from a YAML file

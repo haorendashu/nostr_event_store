@@ -12,15 +12,63 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-func initStore(cfg *config.Config) (*NostrEventStorage, error) {
-	return &NostrEventStorage{
-		cfg: cfg,
-	}, nil
+func initStore(cfg *config.Config, replaceableKinds []int) (*NostrEventStorage, error) {
+	if len(replaceableKinds) == 0 {
+		replaceableKinds = []int{0, 3}
+	}
+	storage := &NostrEventStorage{cfg: cfg}
+	storage.setReplaceableKinds(replaceableKinds)
+	return storage, nil
 }
 
 type NostrEventStorage struct {
-	cfg   *config.Config
-	store eventstore.EventStore
+	cfg              *config.Config
+	store            eventstore.EventStore
+	replaceableKinds map[int]bool
+}
+
+func (s *NostrEventStorage) setReplaceableKinds(kinds []int) {
+	s.replaceableKinds = make(map[int]bool, len(kinds))
+	for _, k := range kinds {
+		s.replaceableKinds[k] = true
+	}
+}
+
+// isReplaceableKind returns true if this kind requires replace-before-save semantics.
+// Per Nostr protocol: 10000 <= kind < 20000, plus configurable kinds (e.g. 0, 3).
+func (s *NostrEventStorage) isReplaceableKind(kind int) bool {
+	if kind >= 10000 && kind < 20000 {
+		return true
+	}
+	return s.replaceableKinds[kind]
+}
+
+// deleteOldReplaceableEvents deletes all stored events of the same pubkey+kind that are
+// older than the incoming event. Returns skip=true if an equal-or-newer event already
+// exists, meaning the incoming event should NOT be saved.
+func (s *NostrEventStorage) deleteOldReplaceableEvents(ctx context.Context, event *nostr.Event) (skip bool, err error) {
+	pubkey, err := hexToBytes(event.PubKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert pubkey to bytes: %w", err)
+	}
+	storeFilter := &types.QueryFilter{
+		Kinds:   []uint16{uint16(event.Kind)},
+		Authors: [][32]byte{pubkey},
+		Limit:   10000,
+	}
+	existingEvents, err := s.store.QueryAll(ctx, storeFilter)
+	if err != nil {
+		return false, fmt.Errorf("failed to query existing events: %w", err)
+	}
+	for _, oldEvent := range existingEvents {
+		if oldEvent.CreatedAt >= uint32(event.CreatedAt) {
+			return true, nil // existing event is newer or equal, skip saving
+		}
+		if deleteErr := s.store.DeleteEvent(ctx, oldEvent.ID); deleteErr != nil {
+			return false, fmt.Errorf("failed to delete old replaceable event: %w", deleteErr)
+		}
+	}
+	return false, nil
 }
 
 func (s *NostrEventStorage) Init() error {
@@ -183,29 +231,13 @@ func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) e
 		return fmt.Errorf("failed to convert event: %w", err)
 	}
 
-	if event.Kind == 3 {
-		// kind 3 event, need to delete old event if exists
-		pubkey, err := hexToBytes(event.PubKey)
+	if s.isReplaceableKind(event.Kind) {
+		skip, err := s.deleteOldReplaceableEvents(context, event)
 		if err != nil {
-			fmt.Printf("failed to convert pubkey to bytes: %v\n", err)
-		} else {
-			// delete old event if exists
-			storeFilter := &types.QueryFilter{
-				Kinds:   []uint16{uint16(event.Kind)},
-				Authors: [][32]byte{pubkey},
-				Limit:   10000,
-			}
-			storeEvents, err := s.store.QueryAll(context, storeFilter)
-			if err != nil {
-				fmt.Printf("failed to query events: %v\n", err)
-			} else {
-				for _, storeEvent := range storeEvents {
-					err := s.store.DeleteEvent(context, storeEvent.ID)
-					if err != nil {
-						fmt.Printf("failed to delete event: %v\n", err)
-					}
-				}
-			}
+			return err
+		}
+		if skip {
+			return nil
 		}
 	}
 

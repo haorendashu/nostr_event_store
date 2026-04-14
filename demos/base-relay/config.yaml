@@ -8,6 +8,11 @@
 
 debug: false
 
+# Replaceable kinds: events of these kinds will replace older events from the same author.
+# Kind 10000-19999 are always replaceable per protocol; list additional kinds here.
+# Defaults to [0, 3] if omitted.
+replaceable_kinds: [0, 3]
+
 # Storage configuration
 storage:
   # Base directory - eventstore.Open() uses this as baseDir
