@@ -13,7 +13,13 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip11"
+	"gopkg.in/yaml.v3"
 )
+
+// RelayLocalConfig holds relay-specific config fields not present in the store's config struct.
+type RelayLocalConfig struct {
+	ReplaceableKinds []int `yaml:"replaceable_kinds"`
+}
 
 type Relay struct {
 	storage *NostrEventStorage
@@ -38,6 +44,20 @@ func (r *Relay) Init() error {
 
 func (r *Relay) AcceptEvent(ctx context.Context, evt *nostr.Event) (bool, string) {
 	return true, ""
+}
+
+func (r *Relay) AcceptReq(ctx context.Context, id string, filters nostr.Filters, authedPubkey string) bool {
+	for _, filter := range filters {
+		if (filter.IDs == nil || len(filter.IDs) == 0) &&
+			(filter.Kinds == nil || len(filter.Kinds) == 0) &&
+			(filter.Authors == nil || len(filter.Authors) == 0) &&
+			(filter.Tags == nil || len(filter.Tags) == 0) && filter.Search == "" {
+			log.Printf("Rejecting req %s: filter can't be empty %s\n", id, filter.String())
+			return false
+		}
+	}
+
+	return true
 }
 
 func (r *Relay) GetNIP11InformationDocument() nip11.RelayInformationDocument {
@@ -67,6 +87,7 @@ func main() {
 
 	ctx := context.Background()
 
+	// Load configuration from file
 	cfg, err := loadConfig(ctx, flags.ConfigPath)
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
@@ -78,12 +99,19 @@ func main() {
 		return
 	}
 
-	storage, err := initStore(cfg)
+	relayLocalCfg, err := loadRelayLocalConfig(flags.ConfigPath)
+	if err != nil {
+		log.Printf("failed to load relay local config, using defaults: %v", err)
+		relayLocalCfg = &RelayLocalConfig{}
+	}
+
+	storage, err := initStore(cfg, relayLocalCfg.ReplaceableKinds)
 	if err != nil {
 		log.Fatalf("failed to create remote storage adapter: %v", err)
 	}
 	r.storage = storage
 
+	// Create and start relay server
 	server, err := relayer.NewServer(&r)
 	if err != nil {
 		log.Fatalf("failed to create server: %v", err)
@@ -94,6 +122,19 @@ func main() {
 	if err := server.Start("0.0.0.0", flags.Port); err != nil {
 		log.Fatalf("server terminated: %v", err)
 	}
+}
+
+// loadRelayLocalConfig parses relay-specific fields (e.g. replaceable_kinds) from config.yaml.
+func loadRelayLocalConfig(configPath string) (*RelayLocalConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+	var cfg RelayLocalConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse relay local config: %w", err)
+	}
+	return &cfg, nil
 }
 
 func loadConfig(ctx context.Context, configPath string) (*config.Config, error) {

@@ -11,3 +11,10 @@ remote:
 query:
   default_limit: 100
   execution_timeout_seconds: 30
+
+# Replaceable kinds for pubkey+kind deduplication (per Nostr protocol).
+# kind 10000-19999 are always replaceable (hardcoded).
+# Add 0 and/or 3 here to enable replaceable semantics for them.
+replaceable_kinds:
+  - 0
+  - 3

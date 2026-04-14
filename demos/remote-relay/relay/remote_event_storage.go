@@ -14,8 +14,9 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 )
 
-func initStore(cfg *config.Config) (*NostrEventStorage, error) {
+func initStore(cfg *config.Config, replaceableKinds []int) (*NostrEventStorage, error) {
 	storage := &NostrEventStorage{cfg: cfg}
+	storage.setReplaceableKinds(replaceableKinds)
 	if err := storage.Init(); err != nil {
 		return nil, err
 	}
@@ -23,9 +24,26 @@ func initStore(cfg *config.Config) (*NostrEventStorage, error) {
 }
 
 type NostrEventStorage struct {
-	cfg            *config.Config
-	client         *client.Client
-	requestTimeout time.Duration
+	cfg              *config.Config
+	client           *client.Client
+	requestTimeout   time.Duration
+	replaceableKinds map[int]bool
+}
+
+func (s *NostrEventStorage) setReplaceableKinds(kinds []int) {
+	s.replaceableKinds = make(map[int]bool, len(kinds))
+	for _, k := range kinds {
+		s.replaceableKinds[k] = true
+	}
+}
+
+// isReplaceableKind returns true if this kind requires replace-before-save semantics.
+// Per Nostr protocol: 10000 <= kind < 20000, plus configurable kinds (e.g. 0, 3).
+func (s *NostrEventStorage) isReplaceableKind(kind int) bool {
+	if kind >= 10000 && kind < 20000 {
+		return true
+	}
+	return s.replaceableKinds[kind]
 }
 
 func (s *NostrEventStorage) Init() error {
@@ -190,46 +208,65 @@ func genEventChan(storeEvents []*types.Event) chan *nostr.Event {
 	return eventChan
 }
 
+// deleteOldReplaceableEvents deletes all stored events of the same pubkey+kind that are
+// older than the incoming event. Returns skip=true if an equal-or-newer event already
+// exists, meaning the incoming event should NOT be saved.
+func (s *NostrEventStorage) deleteOldReplaceableEvents(ctx context.Context, event *nostr.Event) (skip bool, err error) {
+	pubkey, err := hexToBytes(event.PubKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert pubkey to bytes: %w", err)
+	}
+	storeFilter := &types.QueryFilter{
+		Kinds:   []uint16{uint16(event.Kind)},
+		Authors: [][32]byte{pubkey},
+		Limit:   10000,
+	}
+	existingEvents, err := s.client.QueryAll(ctx, storeFilter)
+	if err != nil {
+		return false, fmt.Errorf("failed to query existing events: %w", err)
+	}
+	for _, oldEvent := range existingEvents {
+		if oldEvent.CreatedAt >= uint32(event.CreatedAt) {
+			return true, nil // existing event is newer or equal, skip saving
+		}
+		if deleteErr := s.client.DeleteEvent(ctx, oldEvent.ID); deleteErr != nil {
+			return false, fmt.Errorf("failed to delete old replaceable event: %w", deleteErr)
+		}
+	}
+	return false, nil
+}
+
 func (s *NostrEventStorage) DeleteEvent(ctx context.Context, event *nostr.Event) error {
 	// using background context for save operation to ensure it goes through even if original context is canceled
-	context := context.Background()
+	bgCtx := context.Background()
 
 	id, err := hexToBytes(event.ID)
 	if err != nil {
 		return fmt.Errorf("failed to convert event ID to bytes: %w", err)
 	}
-	return s.client.DeleteEvent(context, id)
+	return s.client.DeleteEvent(bgCtx, id)
 }
 
 func (s *NostrEventStorage) SaveEvent(ctx context.Context, event *nostr.Event) error {
 	// using background context for save operation to ensure it goes through even if original context is canceled
-	context := context.Background()
+	bgCtx := context.Background()
 
 	storeEvent, err := convertEvent(event)
 	if err != nil {
 		return fmt.Errorf("failed to convert event: %w", err)
 	}
 
-	if event.Kind == 3 {
-		pubkey, err := hexToBytes(event.PubKey)
-		if err == nil {
-			storeFilter := &types.QueryFilter{
-				Kinds:   []uint16{uint16(event.Kind)},
-				Authors: [][32]byte{pubkey},
-				Limit:   10000,
-			}
-			storeEvents, err := s.client.QueryAll(context, storeFilter)
-			if err == nil {
-				for _, oldEvent := range storeEvents {
-					if deleteErr := s.client.DeleteEvent(context, oldEvent.ID); deleteErr != nil {
-						return fmt.Errorf("failed to delete old kind-3 event: %w", deleteErr)
-					}
-				}
-			}
+	if s.isReplaceableKind(event.Kind) {
+		skip, err := s.deleteOldReplaceableEvents(bgCtx, event)
+		if err != nil {
+			return err
+		}
+		if skip {
+			return nil
 		}
 	}
 
-	_, err = s.client.WriteEvent(context, storeEvent)
+	_, err = s.client.WriteEvent(bgCtx, storeEvent)
 	if err != nil {
 		return fmt.Errorf("failed to write event via remote store: %w", err)
 	}
@@ -242,43 +279,28 @@ func (s *NostrEventStorage) SaveEvents(ctx context.Context, events []*nostr.Even
 		return nil
 	}
 
-	context := context.Background()
+	bgCtx := context.Background()
 
-	// Handle kind 3 events first - delete old events if exists
-	for _, event := range events {
-		if event.Kind == 3 {
-			pubkey, err := hexToBytes(event.PubKey)
+	// Handle replaceable events: delete old events before saving, skip stale ones
+	skipSet := make(map[int]bool)
+	for i, event := range events {
+		if s.isReplaceableKind(event.Kind) {
+			skip, err := s.deleteOldReplaceableEvents(bgCtx, event)
 			if err != nil {
-				fmt.Printf("failed to convert pubkey to bytes: %v\n", err)
-			} else {
-				// delete old event if exists
-				storeFilter := &types.QueryFilter{
-					Kinds:   []uint16{uint16(event.Kind)},
-					Authors: [][32]byte{pubkey},
-					Limit:   10000,
-				}
-				storeEvents, err := s.client.QueryAll(context, storeFilter)
-				if err != nil {
-					fmt.Printf("failed to query events: %v\n", err)
-				} else {
-					for _, storeEvent := range storeEvents {
-						if storeEvent.CreatedAt >= uint32(event.CreatedAt) {
-							continue
-						}
-
-						err := s.client.DeleteEvent(context, storeEvent.ID)
-						if err != nil {
-							fmt.Printf("failed to delete event: %v\n", err)
-						}
-					}
-				}
+				fmt.Printf("failed to delete old replaceable events for kind %d (event %s), will still save: %v\n", event.Kind, event.ID, err)
+			}
+			if skip {
+				skipSet[i] = true
 			}
 		}
 	}
 
-	// Convert all events to store events
+	// Convert all non-skipped events to store events
 	storeEvents := make([]*types.Event, 0, len(events))
-	for _, event := range events {
+	for i, event := range events {
+		if skipSet[i] {
+			continue
+		}
 		storeEvent, err := convertEvent(event)
 		if err != nil {
 			fmt.Printf("failed to convert event: %v\n", err)
@@ -289,7 +311,7 @@ func (s *NostrEventStorage) SaveEvents(ctx context.Context, events []*nostr.Even
 
 	// Batch write all events
 	if len(storeEvents) > 0 {
-		s.client.WriteEvents(context, storeEvents)
+		s.client.WriteEvents(bgCtx, storeEvents)
 	}
 
 	return nil
@@ -297,7 +319,7 @@ func (s *NostrEventStorage) SaveEvents(ctx context.Context, events []*nostr.Even
 
 func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event) error {
 	// using background context for save operation to ensure it goes through even if original context is canceled
-	context := context.Background()
+	bgCtx := context.Background()
 
 	dTag := event.Tags.GetD()
 	if dTag == "" {
@@ -309,7 +331,7 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 		Tags:  map[string][]string{"d": {dTag}},
 		Limit: 10000,
 	}
-	storeEvents, err := s.client.QueryAll(context, storeFilter)
+	storeEvents, err := s.client.QueryAll(bgCtx, storeFilter)
 	if err != nil {
 		return fmt.Errorf("failed to query events: %w", err)
 	}
@@ -318,12 +340,12 @@ func (s *NostrEventStorage) ReplaceEvent(ctx context.Context, event *nostr.Event
 			continue
 		}
 
-		if err := s.client.DeleteEvent(context, storeEvent.ID); err != nil {
+		if err := s.client.DeleteEvent(bgCtx, storeEvent.ID); err != nil {
 			return fmt.Errorf("failed to delete event: %w", err)
 		}
 	}
 
-	return s.SaveEvent(context, event)
+	return s.SaveEvent(bgCtx, event)
 }
 
 func (s *NostrEventStorage) CountEvents(ctx context.Context, filter nostr.Filter) (int64, error) {
