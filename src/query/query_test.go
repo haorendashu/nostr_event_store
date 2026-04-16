@@ -58,7 +58,7 @@ func (m *mockIndexManager) AllStats() map[string]index.Stats {
 	return nil
 }
 
-func (m *mockIndexManager) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
+func (m *mockIndexManager) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation, skipRepair bool) error {
 	return nil
 }
 

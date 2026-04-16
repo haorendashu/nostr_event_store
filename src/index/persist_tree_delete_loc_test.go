@@ -83,6 +83,93 @@ func TestPersistentIndexDeleteByLocationAcrossDuplicateLeaves(t *testing.T) {
 	}
 }
 
+func TestPersistentIndexDeleteBatchAcrossDuplicateLeaves(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "kindtime_batch.idx")
+
+	cfg := Config{
+		PageSize:             4096,
+		KindTimeIndexCacheMB: 10,
+	}
+
+	idx, err := NewPersistentBTreeIndexWithType(indexPath, cfg, indexTypeKindTime)
+	if err != nil {
+		t.Fatalf("failed to create index: %v", err)
+	}
+	defer idx.Close()
+
+	kb := &KeyBuilderImpl{}
+	keyA := kb.BuildKindTimeKey(1, 1700000000)
+	keyB := kb.BuildKindTimeKey(1, 1700000001)
+
+	const perKey = 900
+	locsA := make([]types.RecordLocation, 0, perKey)
+	locsB := make([]types.RecordLocation, 0, perKey)
+	for i := 0; i < perKey; i++ {
+		locA := types.RecordLocation{SegmentID: 1, Offset: uint32(i + 1)}
+		locB := types.RecordLocation{SegmentID: 2, Offset: uint32(i + 1)}
+		locsA = append(locsA, locA)
+		locsB = append(locsB, locB)
+		if err := idx.Insert(ctx, keyA, locA); err != nil {
+			t.Fatalf("insert keyA[%d] failed: %v", i, err)
+		}
+		if err := idx.Insert(ctx, keyB, locB); err != nil {
+			t.Fatalf("insert keyB[%d] failed: %v", i, err)
+		}
+	}
+
+	statsAfterInsert := idx.Stats()
+	if statsAfterInsert.EntryCount != uint64(perKey*2) {
+		t.Fatalf("unexpected entry count after insert: got %d want %d", statsAfterInsert.EntryCount, perKey*2)
+	}
+	if statsAfterInsert.LeafCount < 2 {
+		t.Fatalf("test setup failed: expected duplicates to span multiple leaves, got leafCount=%d", statsAfterInsert.LeafCount)
+	}
+
+	deleteKeys := make([][]byte, 0, perKey+(perKey/2))
+	deleteLocs := make([]*types.RecordLocation, 0, perKey+(perKey/2))
+
+	for i := 0; i < perKey; i++ {
+		loc := locsA[i]
+		deleteKeys = append(deleteKeys, keyA)
+		deleteLocs = append(deleteLocs, &loc)
+	}
+	for i := 0; i < perKey; i += 2 {
+		loc := locsB[i]
+		deleteKeys = append(deleteKeys, keyB)
+		deleteLocs = append(deleteLocs, &loc)
+	}
+
+	if err := idx.DeleteBatch(ctx, deleteKeys, deleteLocs); err != nil {
+		t.Fatalf("DeleteBatch failed: %v", err)
+	}
+
+	expectedRemaining := uint64(perKey / 2)
+	if got := idx.Stats().EntryCount; got != expectedRemaining {
+		t.Fatalf("entry count after batch delete: got %d want %d", got, expectedRemaining)
+	}
+
+	seenA := collectLocationsForKey(t, idx.tree, keyA)
+	if len(seenA) != 0 {
+		t.Fatalf("leaf scan still found %d keyA entries after batch delete", len(seenA))
+	}
+
+	seenB := collectLocationsForKey(t, idx.tree, keyB)
+	if len(seenB) != perKey/2 {
+		t.Fatalf("leaf scan found %d keyB entries, want %d", len(seenB), perKey/2)
+	}
+	for i := 0; i < perKey; i++ {
+		_, shouldRemain := seenB[locsB[i]]
+		if i%2 == 0 && shouldRemain {
+			t.Fatalf("deleted keyB location still present: %+v", locsB[i])
+		}
+		if i%2 == 1 && !shouldRemain {
+			t.Fatalf("expected surviving keyB location missing: %+v", locsB[i])
+		}
+	}
+}
+
 // TestBorrowFromRightSeparatorFix is a regression test for the borrow-from-right
 // separator bug in rebalanceAfterDelete.
 //

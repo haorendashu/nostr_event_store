@@ -207,7 +207,7 @@ func (m *mockIndexManagerForMerge) VerifyIndexIntegrity() map[string][]index.Ind
 	return nil
 }
 
-func (m *mockIndexManagerForMerge) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
+func (m *mockIndexManagerForMerge) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation, skipRepair bool) error {
 	return nil
 }
 

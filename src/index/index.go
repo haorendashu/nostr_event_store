@@ -199,8 +199,10 @@ type Manager interface {
 	// InsertRecoveryBatch efficiently inserts multiple events into all indexes during recovery.
 	// This is optimized for bulk recovery and batches updates to all three indexes.
 	// events and locations must have the same length.
+	// skipRepair disables the secondary-index self-healing pass (repairSecondaryIndexes);
+	// set to true during full rebuilds where indexes start empty and repair is unnecessary.
 	// Returns error if any index insert fails.
-	InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error
+	InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation, skipRepair bool) error
 
 	// Flush flushes all indexes to disk.
 	// After Flush, all index operations are durable.

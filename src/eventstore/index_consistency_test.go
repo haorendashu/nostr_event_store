@@ -299,3 +299,238 @@ func TestIndexCountConsistency_MultipleOperations(t *testing.T) {
 	}
 	assertIndexCountsEqual(t, store, "phase 4: final state after mixed ops")
 }
+
+func TestDeleteByFilterMaintainsIndexCountsUnderSecondaryKeyCollisions(t *testing.T) {
+	store, ctx := openTestStoreForIndexTest(t)
+	defer store.Close(ctx)
+
+	now := uint32(time.Now().Unix())
+	targetAuthor := [32]byte{0xAA}
+	keepAuthor := [32]byte{0xBB}
+	const perAuthor = 160
+
+	events := make([]*types.Event, 0, perAuthor*2)
+	for i := 0; i < perAuthor; i++ {
+		events = append(events,
+			&types.Event{
+				ID:        [32]byte{0x10, byte(i), byte(i >> 8)},
+				Pubkey:    targetAuthor,
+				CreatedAt: now,
+				Kind:      1,
+				Content:   fmt.Sprintf("target-%d", i),
+				Tags:      [][]string{{"p", "shared"}, {"e", fmt.Sprintf("target-ref-%d", i)}},
+			},
+			&types.Event{
+				ID:        [32]byte{0x20, byte(i), byte(i >> 8)},
+				Pubkey:    keepAuthor,
+				CreatedAt: now,
+				Kind:      1,
+				Content:   fmt.Sprintf("keep-%d", i),
+				Tags:      [][]string{{"p", "shared"}, {"e", fmt.Sprintf("keep-ref-%d", i)}},
+			},
+		)
+	}
+
+	if _, err := store.WriteEvents(ctx, events); err != nil {
+		t.Fatalf("WriteEvents() failed: %v", err)
+	}
+	assertIndexCountsEqual(t, store, "after colliding writes")
+
+	deleted, err := store.DeleteByFilter(ctx, &types.QueryFilter{Authors: [][32]byte{targetAuthor}})
+	if err != nil {
+		t.Fatalf("DeleteByFilter() failed: %v", err)
+	}
+	if deleted != perAuthor {
+		t.Fatalf("DeleteByFilter() deleted %d events, want %d", deleted, perAuthor)
+	}
+
+	assertIndexCountsEqual(t, store, "after DeleteByFilter on colliding secondary keys")
+
+	impl := store.(*eventStoreImpl)
+	stats := impl.indexMgr.AllStats()
+	if stats["primary"].EntryCount != perAuthor {
+		t.Fatalf("Expected %d primary entries remaining, got %d", perAuthor, stats["primary"].EntryCount)
+	}
+
+	if err := store.Close(ctx); err != nil {
+		t.Fatalf("Close() failed: %v", err)
+	}
+
+	reopened := New(&Options{
+		Config:       impl.config.Get(),
+		RecoveryMode: "auto",
+	})
+	if err := reopened.Open(ctx, filepath.Dir(impl.indexDir), false); err != nil {
+		t.Fatalf("Re-open failed: %v", err)
+	}
+	defer reopened.Close(ctx)
+	assertIndexCountsEqual(t, reopened, "after reopen following DeleteByFilter")
+
+	reopenedStats := reopened.(*eventStoreImpl).indexMgr.AllStats()
+	if reopenedStats["primary"].EntryCount != perAuthor {
+		t.Fatalf("Expected %d primary entries after reopen, got %d", perAuthor, reopenedStats["primary"].EntryCount)
+	}
+}
+
+func TestInsertRecoveryBatchSkipsExistingPrimaryEntries(t *testing.T) {
+	store, ctx := openTestStoreForIndexTest(t)
+	defer store.Close(ctx)
+
+	now := uint32(time.Now().Unix())
+	events := make([]*types.Event, 40)
+	for i := range events {
+		events[i] = makeTestEvent(byte(i+1), uint16(i%3+1), now+uint32(i))
+	}
+
+	locs, err := store.WriteEvents(ctx, events)
+	if err != nil {
+		t.Fatalf("WriteEvents() failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "before InsertRecoveryBatch replay")
+
+	impl := store.(*eventStoreImpl)
+	if err := impl.indexMgr.InsertRecoveryBatch(ctx, events, locs, false); err != nil {
+	}
+
+	assertIndexCountsEqual(t, store, "after InsertRecoveryBatch replay of existing events")
+
+	stats := impl.indexMgr.AllStats()
+	if stats["primary"].EntryCount != uint64(len(events)) {
+		t.Fatalf("Expected %d primary entries after replay dedup, got %d", len(events), stats["primary"].EntryCount)
+	}
+
+	dupEvents := []*types.Event{events[0], events[1], events[0], events[2]}
+	dupLocs := []types.RecordLocation{locs[0], locs[1], locs[0], locs[2]}
+	if err := impl.indexMgr.InsertRecoveryBatch(ctx, dupEvents, dupLocs, false); err != nil {
+		t.Fatalf("InsertRecoveryBatch() with duplicate IDs failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "after InsertRecoveryBatch with duplicate IDs")
+	stats = impl.indexMgr.AllStats()
+	if stats["primary"].EntryCount != uint64(len(events)) {
+		t.Fatalf("Expected %d primary entries after duplicate replay, got %d", len(events), stats["primary"].EntryCount)
+	}
+
+	// A changed location for the same event ID should replace the old location
+	// rather than creating a second primary/secondary entry.
+	relocated := *events[0]
+	relocatedLoc := types.RecordLocation{SegmentID: locs[0].SegmentID + 99, Offset: locs[0].Offset + 123}
+	if err := impl.indexMgr.InsertRecoveryBatch(ctx, []*types.Event{&relocated}, []types.RecordLocation{relocatedLoc}, false); err != nil {
+		t.Fatalf("InsertRecoveryBatch() with relocated event failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "after InsertRecoveryBatch relocation upsert")
+	storedLoc, exists, err := impl.indexMgr.PrimaryIndex().Get(ctx, impl.keyBuilder.BuildPrimaryKey(relocated.ID))
+	if err != nil {
+		t.Fatalf("PrimaryIndex().Get() failed: %v", err)
+	}
+	if !exists {
+		t.Fatal("Expected relocated event to exist in primary index")
+	}
+	if storedLoc != relocatedLoc {
+		t.Fatalf("Expected relocated location %+v, got %+v", relocatedLoc, storedLoc)
+	}
+}
+
+// TestInsertRecoveryBatch_RepairsKindTimeGaps verifies that InsertRecoveryBatch
+// detects and repairs kind_time entries that are missing despite the primary
+// index having the correct location (sameLocationSkip self-healing fix).
+// This reproduces the production scenario where kind_time.count > primary.count
+// was observed after DeleteByFilter: some events had their kind_time entries
+// silently never inserted due to a non-fatal write failure.
+func TestInsertRecoveryBatch_RepairsKindTimeGaps(t *testing.T) {
+	store, ctx := openTestStoreForIndexTest(t)
+	defer store.Close(ctx)
+
+	impl := store.(*eventStoreImpl)
+	now := uint32(time.Now().Unix())
+
+	// Two events share the same kind_time key (kind=1, created_at=now).
+	// A third event uses a distinct key to ensure the repair is scoped correctly.
+	events := []*types.Event{
+		makeTestEvent(1, 1, now),
+		makeTestEvent(2, 1, now),   // same kind+time → shares kind_time key
+		makeTestEvent(3, 1, now+1), // distinct kind_time key
+	}
+
+	locs, err := store.WriteEvents(ctx, events)
+	if err != nil {
+		t.Fatalf("WriteEvents failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "before gap creation")
+
+	// Artificially delete kind_time entries for events[0] and events[1] to simulate
+	// a prior silent write failure that left permanent gaps.
+	kb := impl.indexMgr.KeyBuilder()
+	kindTimeIdx := impl.indexMgr.KindTimeIndex()
+	sharedKey := kb.BuildKindTimeKey(events[0].Kind, events[0].CreatedAt)
+	for i := 0; i < 2; i++ {
+		if err := kindTimeIdx.Delete(ctx, sharedKey, &locs[i]); err != nil {
+			t.Fatalf("Delete kind_time[%d] failed: %v", i, err)
+		}
+	}
+
+	statsGap := impl.indexMgr.AllStats()
+	primaryCount := statsGap["primary"].EntryCount
+	kindTimeCount := statsGap["kind_time"].EntryCount
+	if kindTimeCount != primaryCount-2 {
+		t.Fatalf("expected kind_time gap of 2 (primary=%d kind_time=%d)", primaryCount, kindTimeCount)
+	}
+
+	// InsertRecoveryBatch must detect the missing kind_time entries (via range scan
+	// over the exact key) and insert them, restoring consistency.
+	if err := impl.indexMgr.InsertRecoveryBatch(ctx, events, locs, false); err != nil {
+		t.Fatalf("InsertRecoveryBatch failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "after InsertRecoveryBatch repairs kind_time gaps")
+
+	// Ensure no duplicate entries were created by the repair (count must not exceed primary).
+	statsRepaired := impl.indexMgr.AllStats()
+	if statsRepaired["kind_time"].EntryCount != statsRepaired["primary"].EntryCount {
+		t.Errorf("kind_time count (%d) != primary count (%d) after repair",
+			statsRepaired["kind_time"].EntryCount, statsRepaired["primary"].EntryCount)
+	}
+}
+
+// TestInsertRecoveryBatch_RepairsAuthorTimeGaps verifies that InsertRecoveryBatch
+// repairs author_time entries that are missing despite the primary index having
+// the correct location.
+func TestInsertRecoveryBatch_RepairsAuthorTimeGaps(t *testing.T) {
+	store, ctx := openTestStoreForIndexTest(t)
+	defer store.Close(ctx)
+
+	impl := store.(*eventStoreImpl)
+	now := uint32(time.Now().Unix())
+
+	event := makeTestEvent(7, 3, now)
+	loc, err := store.WriteEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("WriteEvent failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "before gap creation")
+
+	// Delete the author_time entry to simulate a prior silent write failure.
+	kb := impl.indexMgr.KeyBuilder()
+	authorTimeIdx := impl.indexMgr.AuthorTimeIndex()
+	atKey := kb.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
+	if err := authorTimeIdx.Delete(ctx, atKey, &loc); err != nil {
+		t.Fatalf("Delete author_time failed: %v", err)
+	}
+
+	statsGap := impl.indexMgr.AllStats()
+	if statsGap["author_time"].EntryCount >= statsGap["primary"].EntryCount {
+		t.Fatalf("expected author_time gap, primary=%d author_time=%d",
+			statsGap["primary"].EntryCount, statsGap["author_time"].EntryCount)
+	}
+
+	// InsertRecoveryBatch must repair the author_time gap.
+	if err := impl.indexMgr.InsertRecoveryBatch(ctx, []*types.Event{event}, []types.RecordLocation{loc}, false); err != nil {
+		t.Fatalf("InsertRecoveryBatch failed: %v", err)
+	}
+
+	assertIndexCountsEqual(t, store, "after InsertRecoveryBatch repairs author_time gap")
+}

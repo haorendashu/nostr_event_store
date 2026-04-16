@@ -114,7 +114,7 @@ func (m *mockIndexMgr) AuthorTimeIndex() index.Index                           {
 func (m *mockIndexMgr) SearchIndex() index.Index                               { return m.search }
 func (m *mockIndexMgr) KindTimeIndex() index.Index                             { return m.kindTime }
 func (m *mockIndexMgr) KeyBuilder() index.KeyBuilder                           { return m.kb }
-func (m *mockIndexMgr) InsertRecoveryBatch(_ context.Context, _ []*types.Event, _ []types.RecordLocation) error {
+func (m *mockIndexMgr) InsertRecoveryBatch(_ context.Context, _ []*types.Event, _ []types.RecordLocation, _ bool) error {
 	return nil
 }
 func (m *mockIndexMgr) Flush(_ context.Context) error    { return nil }

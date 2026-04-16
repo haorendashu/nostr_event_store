@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -295,9 +296,96 @@ func (m *manager) Close() error {
 
 // InsertRecoveryBatch efficiently inserts multiple events into all indexes during recovery.
 // This batches all three index updates together and uses batch insert APIs.
-func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation) error {
+// skipRepair disables the secondary-index self-healing pass; set to true during full
+// rebuilds where indexes start empty and same-location-skips cannot occur.
+func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event, locations []types.RecordLocation, skipRepair bool) error {
 	if len(events) != len(locations) {
 		return fmt.Errorf("events and locations length mismatch: %d vs %d", len(events), len(locations))
+	}
+
+	if len(events) == 0 {
+		return nil
+	}
+
+	filteredEvents := make([]*types.Event, 0, len(events))
+	filteredLocations := make([]types.RecordLocation, 0, len(locations))
+	selectedIndices := make([]int, 0, len(events))
+	seenIDs := make(map[[32]byte]struct{}, len(events))
+
+	// Keep the LAST occurrence of a duplicated event ID in the incoming recovery batch.
+	// This favors the newest location when the same event is observed multiple times,
+	// such as after compaction migration or duplicate segment scans.
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if _, seen := seenIDs[event.ID]; seen {
+			continue
+		}
+		seenIDs[event.ID] = struct{}{}
+		selectedIndices = append(selectedIndices, i)
+	}
+	for i := len(selectedIndices) - 1; i >= 0; i-- {
+		idx := selectedIndices[i]
+		filteredEvents = append(filteredEvents, events[idx])
+		filteredLocations = append(filteredLocations, locations[idx])
+	}
+
+	if len(filteredEvents) == 0 {
+		return nil
+	}
+
+	events = filteredEvents
+	locations = filteredLocations
+
+	// repairEvents collects events whose primary entry is already at the correct
+	// location but whose secondary indexes (author_time, kind_time, search) may
+	// have silent gaps from a prior write failure that was non-fatal at write time.
+	repairEvents := make([]*types.Event, 0)
+	repairLocations := make([]types.RecordLocation, 0)
+	if m.primary != nil {
+		primaryKeys := make([][]byte, len(events))
+		for i, event := range events {
+			primaryKeys[i] = m.keyBuilder.BuildPrimaryKey(event.ID)
+		}
+		existingLocs, existsFlags, err := m.primary.GetBatch(ctx, primaryKeys)
+		if err != nil {
+			return fmt.Errorf("primary recovery lookup: %w", err)
+		}
+
+		upsertEvents := make([]*types.Event, 0, len(events))
+		upsertLocations := make([]types.RecordLocation, 0, len(events))
+		for i, event := range events {
+			if !existsFlags[i] {
+				upsertEvents = append(upsertEvents, event)
+				upsertLocations = append(upsertLocations, locations[i])
+				continue
+			}
+
+			if existingLocs[i] == locations[i] {
+				// Collect for secondary index repair: primary is correct but
+				// author_time / kind_time may have been silently skipped on the
+				// original write path (non-fatal silent failures).
+				repairEvents = append(repairEvents, event)
+				repairLocations = append(repairLocations, locations[i])
+				continue
+			}
+
+			if err := m.removeRecoveryIndexEntries(ctx, event, existingLocs[i]); err != nil {
+				return fmt.Errorf("remove stale recovery entry %x: %w", event.ID[:4], err)
+			}
+			upsertEvents = append(upsertEvents, event)
+			upsertLocations = append(upsertLocations, locations[i])
+		}
+
+		events = upsertEvents
+		locations = upsertLocations
+	}
+
+	// Verify and repair secondary indexes for same-location-skip events.
+	// This is the self-healing pass: if kind_time or author_time was never
+	// inserted for a previously recovered event, we detect and fix it here.
+	// Skipped during full rebuilds (skipRepair=true) where indexes are always empty.
+	if !skipRepair {
+		m.repairSecondaryIndexes(ctx, repairEvents, repairLocations)
 	}
 
 	if len(events) == 0 {
@@ -385,6 +473,199 @@ func (m *manager) InsertRecoveryBatch(ctx context.Context, events []*types.Event
 		}
 	}
 
+	return nil
+}
+
+// repairSecondaryIndexes verifies and repairs secondary index entries (author_time,
+// kind_time, search) for events whose primary entry is already at the correct location
+// (same-location-skip cases in InsertRecoveryBatch). This is the self-healing pass
+// that corrects gaps caused by prior non-fatal silent write failures.
+//
+// author_time: key includes pubkey so it is effectively unique per event – a
+// GetBatch check is sufficient to detect missing entries.
+//
+// kind_time / search: keys are collision-prone (many events share the same key).
+// A range scan over the exact key is required to confirm whether our specific
+// location is already present before inserting, preventing duplicate entries.
+func (m *manager) repairSecondaryIndexes(ctx context.Context, events []*types.Event, locations []types.RecordLocation) (atRepaired, ktRepaired, searchRepaired int) {
+	if len(events) == 0 {
+		return 0, 0, 0
+	}
+
+	// --- author_time repair ---
+	// key = pubkey(32) + kind(2) + created_at(4) → effectively unique per event.
+	// GetBatch returns first match; if the location differs or entry is absent, repair.
+	if m.authorTime != nil {
+		authorTimeKeys := make([][]byte, len(events))
+		for i, event := range events {
+			authorTimeKeys[i] = m.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
+		}
+		existingLocs, existsFlags, err := m.authorTime.GetBatch(ctx, authorTimeKeys)
+		if err != nil {
+			log.Printf("[RECOVERY-REPAIR] author_time GetBatch error: %v", err)
+		} else {
+			var repairKeys [][]byte
+			var repairLocs []types.RecordLocation
+			for i := range events {
+				if !existsFlags[i] || existingLocs[i] != locations[i] {
+					repairKeys = append(repairKeys, authorTimeKeys[i])
+					repairLocs = append(repairLocs, locations[i])
+				}
+			}
+			if len(repairKeys) > 0 {
+				if err := m.authorTime.InsertBatch(ctx, repairKeys, repairLocs); err != nil {
+					log.Printf("[RECOVERY-REPAIR] author_time InsertBatch error: %v", err)
+				} else {
+					atRepaired = len(repairKeys)
+				}
+			}
+		}
+	}
+
+	// --- kind_time repair ---
+	// key = kind(2) + created_at(4) → collision-prone; multiple events share the same key.
+	// Range-scan the exact key to check whether our specific location is already indexed
+	// before inserting, to avoid inflating the count with duplicate entries.
+	if m.kindTime != nil {
+		var repairKeys [][]byte
+		var repairLocs []types.RecordLocation
+		for i, event := range events {
+			key := m.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+			iter, err := m.kindTime.Range(ctx, key, key)
+			if err != nil {
+				log.Printf("[RECOVERY-REPAIR] kind_time Range error: %v", err)
+				continue
+			}
+			found := false
+			for iter.Valid() {
+				if iter.Value() == locations[i] {
+					found = true
+					break
+				}
+				if err := iter.Next(); err != nil {
+					break
+				}
+			}
+			_ = iter.Close()
+			if !found {
+				repairKeys = append(repairKeys, key)
+				repairLocs = append(repairLocs, locations[i])
+			}
+		}
+		if len(repairKeys) > 0 {
+			if err := m.kindTime.InsertBatch(ctx, repairKeys, repairLocs); err != nil {
+				log.Printf("[RECOVERY-REPAIR] kind_time InsertBatch error: %v", err)
+			} else {
+				ktRepaired = len(repairKeys)
+			}
+		}
+	}
+
+	// --- search index repair ---
+	// Range-scan each (searchKey, location) pair to avoid duplicate insertions.
+	if m.search != nil {
+		tagMapping := m.keyBuilder.TagNameToSearchTypeCode()
+		var repairKeys [][]byte
+		var repairLocs []types.RecordLocation
+		for i, event := range events {
+			seenTags := make(map[string]struct{})
+			for _, tag := range event.Tags {
+				if len(tag) < 2 {
+					continue
+				}
+				tagName := tag[0]
+				tagValue := tag[1]
+				dedupeKey := tagName + "\x00" + tagValue
+				if _, seen := seenTags[dedupeKey]; seen {
+					continue
+				}
+				seenTags[dedupeKey] = struct{}{}
+				searchTypeCode, ok := tagMapping[tagName]
+				if !ok {
+					continue
+				}
+				searchKey := m.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+				iter, err := m.search.Range(ctx, searchKey, searchKey)
+				if err != nil {
+					log.Printf("[RECOVERY-REPAIR] search Range error: %v", err)
+					continue
+				}
+				found := false
+				for iter.Valid() {
+					if iter.Value() == locations[i] {
+						found = true
+						break
+					}
+					if err := iter.Next(); err != nil {
+						break
+					}
+				}
+				_ = iter.Close()
+				if !found {
+					repairKeys = append(repairKeys, searchKey)
+					repairLocs = append(repairLocs, locations[i])
+				}
+			}
+		}
+		if len(repairKeys) > 0 {
+			if err := m.search.InsertBatch(ctx, repairKeys, repairLocs); err != nil {
+				log.Printf("[RECOVERY-REPAIR] search InsertBatch error: %v", err)
+			} else {
+				searchRepaired = len(repairKeys)
+			}
+		}
+	}
+
+	if atRepaired > 0 || ktRepaired > 0 || searchRepaired > 0 {
+		log.Printf("[RECOVERY-REPAIR] repaired from %d same-location events: author_time=%d kind_time=%d search=%d",
+			len(events), atRepaired, ktRepaired, searchRepaired)
+	}
+
+	return atRepaired, ktRepaired, searchRepaired
+}
+
+func (m *manager) removeRecoveryIndexEntries(ctx context.Context, event *types.Event, location types.RecordLocation) error {
+	if m.primary != nil {
+		if err := m.primary.Delete(ctx, m.keyBuilder.BuildPrimaryKey(event.ID), nil); err != nil {
+			return fmt.Errorf("primary delete: %w", err)
+		}
+	}
+	if m.authorTime != nil {
+		authorTimeKey := m.keyBuilder.BuildAuthorTimeKey(event.Pubkey, event.Kind, event.CreatedAt)
+		if err := m.authorTime.Delete(ctx, authorTimeKey, &location); err != nil {
+			return fmt.Errorf("author-time delete: %w", err)
+		}
+	}
+	if m.kindTime != nil {
+		kindTimeKey := m.keyBuilder.BuildKindTimeKey(event.Kind, event.CreatedAt)
+		if err := m.kindTime.Delete(ctx, kindTimeKey, &location); err != nil {
+			return fmt.Errorf("kind-time delete: %w", err)
+		}
+	}
+	if m.search != nil {
+		tagMapping := m.keyBuilder.TagNameToSearchTypeCode()
+		seenTags := make(map[string]struct{})
+		for _, tag := range event.Tags {
+			if len(tag) < 2 {
+				continue
+			}
+			tagName := tag[0]
+			tagValue := tag[1]
+			tagKey := tagName + "\x00" + tagValue
+			if _, seen := seenTags[tagKey]; seen {
+				continue
+			}
+			seenTags[tagKey] = struct{}{}
+			searchTypeCode, ok := tagMapping[tagName]
+			if !ok {
+				continue
+			}
+			searchKey := m.keyBuilder.BuildSearchKey(event.Kind, searchTypeCode, []byte(tagValue), event.CreatedAt)
+			if err := m.search.Delete(ctx, searchKey, &location); err != nil {
+				return fmt.Errorf("search delete: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
