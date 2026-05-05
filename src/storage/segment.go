@@ -281,7 +281,17 @@ func (s *FileSegment) UpdateRecordFlags(offset uint32, flags types.EventFlags) e
 	}
 
 	flagOffset := int64(offset) + 4
-	if _, err := s.file.WriteAt([]byte{byte(flags)}, flagOffset); err != nil {
+
+	// Read the existing flags byte so that structural bits (e.g. FlagContinued)
+	// are never silently clobbered by a caller that only supplies mutable state bits
+	// (FlagDeleted, FlagReplaced). Losing FlagContinued corrupts multi-page records:
+	// subsequent reads treat them as single-page, causing "tags_len exceeds data bounds".
+	var existing [1]byte
+	if _, err := s.file.ReadAt(existing[:], flagOffset); err != nil {
+		return fmt.Errorf("read existing record flags: %w", err)
+	}
+	merged := existing[0] | byte(flags)
+	if _, err := s.file.WriteAt([]byte{merged}, flagOffset); err != nil {
 		return fmt.Errorf("write record flags: %w", err)
 	}
 

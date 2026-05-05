@@ -1952,7 +1952,29 @@ func insertIntoInternal(node *btreeNode, key []byte, childOffset uint64, insertP
 }
 
 func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
-	mid := len(node.keys) / 2
+	n := len(node.keys)
+	// leafPageLimit is the maximum total key-entry bytes that fit in one leaf page.
+	// Leaf layout overhead: header(4) + next(8) + prev(8) + CRC(8) = 28 bytes.
+	leafPageLimit := int(t.pageSize) - 28
+
+	// Compute prefix sums of per-key entry sizes: keyLen(2) + key + value(8)
+	prefixSum := make([]int, n+1)
+	for i, k := range node.keys {
+		prefixSum[i+1] = prefixSum[i] + 2 + len(k) + 8
+	}
+
+	// Size-aware split: left=keys[0:mid], right=keys[mid:].
+	// Start from n/2 and scan rightward until the right half fits within a page.
+	// This handles variable-size keys (e.g. search index) where the naive n/2 split
+	// can leave one half too large to serialize.
+	mid := n / 2
+	for mid < n-1 && prefixSum[n]-prefixSum[mid] > leafPageLimit {
+		mid++
+	}
+	if prefixSum[mid] > leafPageLimit || prefixSum[n]-prefixSum[mid] > leafPageLimit {
+		return nil, nil, fmt.Errorf("leaf node cannot be split: total key data %d exceeds page limit %d (page size %d)", prefixSum[n], leafPageLimit, t.pageSize)
+	}
+
 	right := &btreeNode{nodeType: nodeTypeLeaf}
 	right.offset = t.file.allocateNodeOffset()
 
@@ -1995,7 +2017,29 @@ func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
 }
 
 func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
-	mid := len(node.keys) / 2
+	n := len(node.keys)
+	// pageLimit is the maximum total key-entry bytes that fit in one internal node page.
+	// Internal layout overhead: header(4) + firstChild(8) + CRC(8) = 20 bytes.
+	pageLimit := int(t.pageSize) - 20
+
+	// Compute prefix sums of per-key entry sizes: keyLen(2) + key + childPtr(8)
+	prefixSum := make([]int, n+1)
+	for i, k := range node.keys {
+		prefixSum[i+1] = prefixSum[i] + 2 + len(k) + 8
+	}
+
+	// Size-aware split: left=keys[0:mid], promoted=keys[mid], right=keys[mid+1:].
+	// Start from n/2 and scan rightward until the right half fits within a page.
+	// This handles variable-size keys (e.g. search index) where the naive n/2 split
+	// can leave one half too large to serialize.
+	mid := n / 2
+	for mid < n-1 && prefixSum[n]-prefixSum[mid+1] > pageLimit {
+		mid++
+	}
+	if prefixSum[mid] > pageLimit || prefixSum[n]-prefixSum[mid+1] > pageLimit {
+		return nil, nil, fmt.Errorf("internal node cannot be split: total key data %d exceeds page limit %d (page size %d)", prefixSum[n], pageLimit, t.pageSize)
+	}
+
 	splitKey := make([]byte, len(node.keys[mid]))
 	copy(splitKey, node.keys[mid])
 
