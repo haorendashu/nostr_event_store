@@ -2399,6 +2399,8 @@ func (e *eventStoreImpl) rebuildIndexesFromSegmentsParallel(ctx context.Context,
 		// Flush batch when full
 		if len(eventBatch) >= batchSize {
 			if err := e.indexMgr.InsertRecoveryBatch(ctx, eventBatch, locationBatch, true); err != nil {
+				e.logger.Printf("Rebuild batch insert error at event %d: %v", processedCount, err)
+				return fmt.Errorf("batch insert failed at event %d during rebuild: %w", processedCount, err)
 			}
 
 			// Clear batches
