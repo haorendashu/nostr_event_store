@@ -1972,16 +1972,29 @@ func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
 		mid++
 	}
 	if prefixSum[mid] > leafPageLimit || prefixSum[n]-prefixSum[mid] > leafPageLimit {
-		return nil, nil, fmt.Errorf("leaf node cannot be split: total key data %d exceeds page limit %d (page size %d)", prefixSum[n], leafPageLimit, t.pageSize)
+		return nil, nil, fmt.Errorf("leaf node cannot be split (offset=%d, keys=%d, totalData=%d, pageLimit=%d, pageSize=%d)", node.offset, n, prefixSum[n], leafPageLimit, t.pageSize)
 	}
 
 	right := &btreeNode{nodeType: nodeTypeLeaf}
 	right.offset = t.file.allocateNodeOffset()
 
+	// Step 1: Populate right node (DOES NOT modify the original node yet)
 	right.keys = append(right.keys, node.keys[mid:]...)
 	right.values = append(right.values, node.values[mid:]...)
-	// CRITICAL: Create new slices to avoid concurrent access issues
-	// when other goroutines might be reading the node
+
+	// Step 2: Set right's linked list pointers (still does not modify original node)
+	right.next = node.next
+	right.prev = node.offset
+
+	// Step 3: Cache the right node FIRST, before modifying the original node.
+	// If cache.Put fails (e.g., evicting another dirty node triggers serialization error),
+	// the original node is still intact and no data is lost.
+	right.dirty = true
+	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
+		return nil, nil, err
+	}
+
+	// Step 4: NOW truncate the original node (safe because right is already in cache)
 	newNodeKeys := make([][]byte, mid)
 	newNodeValues := make([]types.RecordLocation, mid)
 	copy(newNodeKeys, node.keys[:mid])
@@ -1989,8 +2002,7 @@ func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
 	node.keys = newNodeKeys
 	node.values = newNodeValues
 
-	right.next = node.next
-	right.prev = node.offset
+	// Step 5: Update linked list — adjust next node's prev pointer
 	if node.next != 0 {
 		nextNode, err := t.loadNode(node.next)
 		if err != nil {
@@ -2002,11 +2014,8 @@ func (t *btree) splitLeaf(node *btreeNode) ([]byte, *btreeNode, error) {
 	}
 	node.next = right.offset
 
+	// Step 6: Cache the truncated original node
 	node.dirty = true
-	right.dirty = true
-	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
-		return nil, nil, err
-	}
 	if err := t.cache.Put(newBTreeNodeAdapter(node)); err != nil {
 		return nil, nil, err
 	}
@@ -2037,7 +2046,7 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 		mid++
 	}
 	if prefixSum[mid] > pageLimit || prefixSum[n]-prefixSum[mid+1] > pageLimit {
-		return nil, nil, fmt.Errorf("internal node cannot be split: total key data %d exceeds page limit %d (page size %d)", prefixSum[n], pageLimit, t.pageSize)
+		return nil, nil, fmt.Errorf("internal node cannot be split (offset=%d, keys=%d, totalData=%d, pageLimit=%d, pageSize=%d)", node.offset, n, prefixSum[n], pageLimit, t.pageSize)
 	}
 
 	splitKey := make([]byte, len(node.keys[mid]))
@@ -2045,10 +2054,19 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 
 	right := &btreeNode{nodeType: nodeTypeInternal}
 	right.offset = t.file.allocateNodeOffset()
+
+	// Step 1: Populate right node (DOES NOT modify the original node yet)
 	right.keys = append(right.keys, node.keys[mid+1:]...)
 	right.children = append(right.children, node.children[mid+1:]...)
 
-	// CRITICAL: Create new slices to avoid concurrent access issues
+	// Step 2: Cache the right node FIRST, before modifying the original node.
+	// If cache.Put fails, the original node is still intact and no child pointers are lost.
+	right.dirty = true
+	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
+		return nil, nil, err
+	}
+
+	// Step 3: NOW truncate the original node (safe because right is already in cache)
 	newNodeKeys := make([][]byte, mid)
 	copy(newNodeKeys, node.keys[:mid])
 	newNodeChildren := make([]uint64, mid+1)
@@ -2056,11 +2074,8 @@ func (t *btree) splitInternal(node *btreeNode) ([]byte, *btreeNode, error) {
 	node.keys = newNodeKeys
 	node.children = newNodeChildren
 
+	// Step 4: Cache the truncated original node
 	node.dirty = true
-	right.dirty = true
-	if err := t.cache.Put(newBTreeNodeAdapter(right)); err != nil {
-		return nil, nil, err
-	}
 	if err := t.cache.Put(newBTreeNodeAdapter(node)); err != nil {
 		return nil, nil, err
 	}

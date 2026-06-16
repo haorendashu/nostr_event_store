@@ -568,6 +568,7 @@ func newMergeLocationIterator(ctx context.Context, idx index.Index, ranges []key
 	for _, r := range ranges {
 		iter, err := idx.RangeDesc(ctx, r.start, r.end)
 		if err != nil {
+			log.Printf("[WARNING] newMergeLocationIterator RangeDesc error (start=%s end=%s): %v", hex.EncodeToString(r.start), hex.EncodeToString(r.end), err)
 			continue
 		}
 		iterators = append(iterators, iter)
@@ -1389,6 +1390,7 @@ func (e *executorImpl) queryIndexRanges(ctx context.Context, idx index.Index, ra
 	for _, r := range ranges {
 		iter, err := idx.RangeDesc(ctx, r.start, r.end)
 		if err != nil {
+			log.Printf("[WARNING] queryIndexRanges RangeDesc error (start=%s end=%s): %v", hex.EncodeToString(r.start), hex.EncodeToString(r.end), err)
 			continue
 		}
 
@@ -1439,6 +1441,7 @@ func (e *executorImpl) queryIndexRangesMerge(ctx context.Context, idx index.Inde
 	for _, r := range ranges {
 		iter, err := idx.RangeDesc(ctx, r.start, r.end)
 		if err != nil {
+			log.Printf("[WARNING] queryIndexRangesMerge RangeDesc error (start=%s end=%s): %v", hex.EncodeToString(r.start), hex.EncodeToString(r.end), err)
 			continue
 		}
 		iterators = append(iterators, iter)

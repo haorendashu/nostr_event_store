@@ -71,7 +71,7 @@ func serializeNode(n *btreeNode, pageSize uint32) ([]byte, error) {
 		}
 		for i, key := range n.keys {
 			if pos+2+len(key)+8 > int(pageSize)-24 {
-				return nil, fmt.Errorf("leaf node overflow")
+				return nil, fmt.Errorf("leaf node overflow (offset=%d, keys=%d, keyIndex=%d)", n.offset, len(n.keys), i)
 			}
 			binary.BigEndian.PutUint16(buf[pos:pos+2], uint16(len(key)))
 			pos += 2
@@ -97,7 +97,7 @@ func serializeNode(n *btreeNode, pageSize uint32) ([]byte, error) {
 	pos += 8
 	for i, key := range n.keys {
 		if pos+2+len(key)+8 > int(pageSize)-8 {
-			return nil, fmt.Errorf("internal node overflow")
+			return nil, fmt.Errorf("internal node overflow (offset=%d, keys=%d, keyIndex=%d)", n.offset, len(n.keys), i)
 		}
 		binary.BigEndian.PutUint16(buf[pos:pos+2], uint16(len(key)))
 		pos += 2
