@@ -1801,6 +1801,21 @@ func insertIntoLeaf(node *btreeNode, key []byte, value types.RecordLocation) (in
 			node.offset, len(node.keys), len(node.values), idx, len(key))
 	}
 
+	// Dedup: check if the exact (key, location) pair already exists in this leaf node.
+	// This makes WAL recovery idempotent: re-inserting the same (key,location) is safe
+	// and won't create duplicate B-tree entries.
+	for i := idx; i < len(node.keys); i++ {
+		if cmp := compareKeys(node.keys[i], key); cmp != 0 {
+			break
+		}
+		if node.values[i] == value {
+			if debugBTreeInsert {
+				log.Printf("[DEBUG] insertIntoLeaf: duplicate (key,value) at idx=%d, skipping", i)
+			}
+			return false, nil
+		}
+	}
+
 	// CRITICAL FIX: For search index, we MUST allow duplicate keys.
 	// Multiple different events can have the same (kind, tag, createdAt) but different event IDs.
 	// The old code would overwrite, causing data loss. Now we always insert.

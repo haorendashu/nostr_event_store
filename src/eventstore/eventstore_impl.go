@@ -1904,6 +1904,12 @@ func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
 		e.logger.Printf("WAL recovery: no checkpoint found, replaying from beginning")
 	}
 
+	replayStartTime := time.Now()
+	e.logger.Printf("WAL recovery: creating replayer and calling ReplayFromReader (startLSN=%d)...", startLSN)
+
+	// Connect eventstore logger to WAL replay for progress tracking
+	wal.SetReplayLogger(e.logger)
+
 	collector := &walRecoveryReplayer{
 		storage: e.storage,
 		logger:  e.logger,
@@ -1917,19 +1923,25 @@ func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
 	}
 
 	stats, err := wal.ReplayFromReader(ctx, e.walDir, collector, opts)
+	replayDuration := time.Since(replayStartTime)
 	if err != nil {
-		return fmt.Errorf("replay WAL from LSN %d: %w", startLSN, err)
+		return fmt.Errorf("replay WAL from LSN %d (after %.1fs): %w", startLSN, replayDuration.Seconds(), err)
 	}
+	e.logger.Printf("WAL recovery: ReplayFromReader completed in %.1fs: entries=%d inserts=%d updates=%d checkpoints=%d lastLSN=%d",
+		replayDuration.Seconds(), stats.EntriesProcessed, stats.InsertsReplayed, stats.UpdatesReplayed, stats.CheckpointsReplayed, stats.LastLSN)
 
 	if len(collector.events) == 0 && len(collector.deletions) == 0 {
-		e.logger.Printf("WAL recovery: no entries to replay")
+		e.logger.Printf("WAL recovery: no entries to replay (took %.1fs)", replayDuration.Seconds())
 		return nil
 	}
 
+	e.logger.Printf("WAL recovery: resolving locations for %d events + %d deletions...", len(collector.events), len(collector.deletions))
+	locStartTime := time.Now()
 	locations, err := e.findLocationsForEvents(ctx, collector.events)
 	if err != nil {
-		return fmt.Errorf("resolve locations for WAL entries: %w", err)
+		return fmt.Errorf("resolve locations for WAL entries (after %.1fs): %w", time.Since(locStartTime).Seconds(), err)
 	}
+	e.logger.Printf("WAL recovery: resolved %d locations in %.1fs", len(locations), time.Since(locStartTime).Seconds())
 
 	indexer := &indexReplayer{
 		storage:    e.storage,
@@ -1939,32 +1951,48 @@ func (e *eventStoreImpl) replayWALFromCheckpoint(ctx context.Context) error {
 		logger:     e.logger,
 	}
 
+	insertStartTime := time.Now()
+	insertedCount := 0
 	for eventID, event := range collector.events {
 		location, ok := locations[eventID]
 		if !ok {
-			e.logger.Printf("WAL recovery warning: location not found for event %x", eventID[:4])
+			// Events already in primary index are skipped by findLocationsForEvents,
+			// so they won't have a location here. That's fine — indexer.OnInsert
+			// will skip them via its own dedup check too.
 			continue
 		}
 		if err := indexer.OnInsert(ctx, event, location); err != nil {
-			return fmt.Errorf("apply WAL insert %x: %w", eventID[:4], err)
+			return fmt.Errorf("apply WAL insert %x (after %d inserts, %.1fs): %w", eventID[:4], insertedCount, time.Since(insertStartTime).Seconds(), err)
+		}
+		insertedCount++
+		if insertedCount%5000 == 0 {
+			e.logger.Printf("WAL recovery: %d events inserted into indexes (%.0f/sec, %.1fs elapsed)",
+				insertedCount, float64(insertedCount)/time.Since(insertStartTime).Seconds(), time.Since(insertStartTime).Seconds())
 		}
 	}
+	e.logger.Printf("WAL recovery: inserted %d events into indexes in %.1fs", insertedCount, time.Since(insertStartTime).Seconds())
 
 	// Replay index deletions for events whose DeleteEvent call crashed between
 	// primary-index removal and secondary-index (AuthorTime/KindTime/Search)
 	// removal.  Without this step, secondary indexes retain stale entries
 	// causing their EntryCount to exceed the primary index.
-	for _, d := range collector.deletions {
+	deleteStartTime := time.Now()
+	for i, d := range collector.deletions {
 		if err := indexer.replayDelete(ctx, d.event, d.loc); err != nil {
 			e.logger.Printf("WAL recovery warning: failed to replay delete for event %x: %v", d.event.ID[:4], err)
 			// Non-fatal: keep going so one bad event doesn't block all deletions
 		}
+		if (i+1)%1000 == 0 {
+			e.logger.Printf("WAL recovery: %d/%d deletes replayed (%.1fs)", i+1, len(collector.deletions), time.Since(deleteStartTime).Seconds())
+		}
 	}
 	if len(collector.deletions) > 0 {
-		e.logger.Printf("WAL recovery: replayed %d deletes from LSN %d", len(collector.deletions), startLSN)
+		e.logger.Printf("WAL recovery: replayed %d deletes from LSN %d in %.1fs", len(collector.deletions), startLSN, time.Since(deleteStartTime).Seconds())
 	}
 
-	e.logger.Printf("WAL recovery: applied %d inserts from LSN %d", stats.InsertsReplayed, startLSN)
+	totalDuration := time.Since(replayStartTime)
+	e.logger.Printf("WAL recovery: completed in %.1fs total (inserts=%d deletes=%d lastLSN=%d)",
+		totalDuration.Seconds(), stats.InsertsReplayed, len(collector.deletions), stats.LastLSN)
 	return nil
 }
 
@@ -1979,76 +2007,70 @@ func (e *eventStoreImpl) findLocationsForEvents(ctx context.Context, events map[
 		pending[id] = struct{}{}
 	}
 
-	segmentIDs, err := e.storage.SegmentManager().ListSegments(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list segments: %w", err)
+	// Fast path: look up locations from the primary index.
+	// Each (event ID → location) lookup is O(log n) in the B-tree.
+	primaryIdx := e.indexMgr.PrimaryIndex()
+	if primaryIdx != nil {
+		primaryFound := 0
+		for id := range pending {
+			key := e.keyBuilder.BuildPrimaryKey(id)
+			loc, exists, err := primaryIdx.Get(ctx, key)
+			if err != nil {
+				e.logger.Printf("WAL location resolution: primary index lookup error for %x: %v", id[:4], err)
+				continue
+			}
+			if exists {
+				locations[id] = loc
+				delete(pending, id)
+				primaryFound++
+			}
+		}
+		e.logger.Printf("WAL location resolution: primary index resolved %d/%d events",
+			primaryFound, len(events))
+		if len(pending) == 0 {
+			return locations, nil
+		}
 	}
 
-	sort.Slice(segmentIDs, func(i, j int) bool {
-		return segmentIDs[i] > segmentIDs[j]
-	})
-
+	// Fallback: re-write events not found in primary index to storage.
+	// These events were written to storage before the crash, but their
+	// index entries (including primary) were never completed. Rather than
+	// scanning 295+ segments to find the original storage location (which
+	// takes hours), we re-serialize and re-write the event to get a fresh
+	// location. The old copy in storage is unreferenced garbage and will
+	// be cleaned up by compaction.
+	e.logger.Printf("WAL location resolution: re-writing %d events not in primary...", len(pending))
+	writeStart := time.Now()
 	serializer := e.storage.Serializer()
-	var totalSkippedDeleted uint64
+	rewrittenCount := 0
 
-	for _, segmentID := range segmentIDs {
-		segment, err := e.storage.SegmentManager().GetSegment(ctx, segmentID)
+	for id := range pending {
+		event, ok := events[id]
+		if !ok || event == nil {
+			e.logger.Printf("WAL recovery warning: event %x not found in WAL events map", id[:4])
+			continue
+		}
+
+		record, err := serializer.Serialize(event)
 		if err != nil {
-			e.logger.Printf("WAL recovery warning: open segment %d failed: %v", segmentID, err)
-			continue
-		}
-		fileSeg, ok := segment.(*storage.FileSegment)
-		if !ok {
-			e.logger.Printf("WAL recovery warning: segment %d is not file-based", segmentID)
+			e.logger.Printf("WAL recovery warning: serialize event %x failed: %v", id[:4], err)
 			continue
 		}
 
-		reverse := storage.NewReverseScanner(fileSeg)
-		var segmentSkippedDeleted uint64
-
-		for {
-			record, location, err := reverse.Prev(ctx)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				e.logger.Printf("WAL recovery warning: segment %d reverse scan error: %v", segmentID, err)
-				continue
-			}
-
-			// Skip deleted or replaced records
-			if record.Flags.IsDeleted() || record.Flags.IsReplaced() {
-				segmentSkippedDeleted++
-				continue
-			}
-
-			event, err := serializer.Deserialize(record)
-			if err != nil {
-				e.logger.Printf("WAL recovery warning: segment %d deserialize error: %v", segmentID, err)
-				continue
-			}
-
-			if _, ok := pending[event.ID]; !ok {
-				continue
-			}
-			locations[event.ID] = location
-			delete(pending, event.ID)
-			if len(pending) == 0 {
-				if totalSkippedDeleted > 0 {
-					e.logger.Printf("WAL location resolution: skipped %d deleted/replaced records", totalSkippedDeleted)
-				}
-				return locations, nil
-			}
+		loc, err := e.storage.WriteRecord(ctx, record)
+		if err != nil {
+			return nil, fmt.Errorf("re-write event %x to storage: %w", id[:4], err)
 		}
 
-		totalSkippedDeleted += segmentSkippedDeleted
+		locations[id] = loc
+		delete(pending, id)
+		rewrittenCount++
 	}
 
-	if totalSkippedDeleted > 0 {
-		e.logger.Printf("WAL location resolution: skipped %d deleted/replaced records", totalSkippedDeleted)
-	}
+	e.logger.Printf("WAL location resolution: re-wrote %d events in %.1fs", rewrittenCount, time.Since(writeStart).Seconds())
+
 	if len(pending) > 0 {
-		e.logger.Printf("WAL recovery warning: %d events not found in segments", len(pending))
+		e.logger.Printf("WAL recovery warning: %d events could not be re-written", len(pending))
 	}
 
 	return locations, nil
@@ -2490,6 +2512,11 @@ type walRecoveryReplayer struct {
 }
 
 // OnInsert handles WAL insert entries by updating indexes.
+// Dedup is handled at B-tree level by insertIntoLeaf: inserting the same
+// (key, location) pair twice is a no-op. This is critical for crash recovery:
+// the process may have crashed partway through updating secondary indexes,
+// so we must try to insert into every index — skipping based on primary
+// existence alone would miss secondary indexes that weren't written yet.
 func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, location types.RecordLocation) error {
 	// Update primary index
 	primaryIdx := r.indexMgr.PrimaryIndex()
@@ -2497,12 +2524,6 @@ func (r *indexReplayer) OnInsert(ctx context.Context, event *types.Event, locati
 		return fmt.Errorf("primary index is nil during recovery")
 	}
 	eventKeyBytes := r.keyBuilder.BuildPrimaryKey(event.ID)
-
-	// Dedup: skip events already present in primary to prevent duplicate
-	// secondary index entries across repeated WAL replays.
-	if _, exists, err := primaryIdx.Get(ctx, eventKeyBytes); err == nil && exists {
-		return nil
-	}
 
 	if err := primaryIdx.Insert(ctx, eventKeyBytes, location); err != nil {
 		return fmt.Errorf("primary index insert: %w", err)
@@ -2642,6 +2663,10 @@ func (r *walRecoveryReplayer) OnInsert(ctx context.Context, event *types.Event, 
 		return fmt.Errorf("nil event in WAL insert")
 	}
 	r.events[event.ID] = event
+	// Log every 10000th event to show progress without flooding
+	if len(r.events)%10000 == 0 {
+		r.logger.Printf("WAL replayer: collected %d events so far (last: id=%x kind=%d)", len(r.events), event.ID[:4], event.Kind)
+	}
 	return nil
 }
 
@@ -2655,6 +2680,9 @@ func (r *walRecoveryReplayer) OnUpdateFlags(ctx context.Context, location types.
 	if flags.IsDeleted() {
 		if event, err := r.storage.ReadEvent(ctx, location); err == nil && event != nil {
 			r.deletions = append(r.deletions, walDeletion{event: event, loc: location})
+			if len(r.deletions)%1000 == 0 {
+				r.logger.Printf("WAL replayer: collected %d deletions so far", len(r.deletions))
+			}
 		} else if err != nil && r.logger != nil {
 			r.logger.Printf("WAL recovery: could not read event at loc=%v for delete replay: %v", location, err)
 		}

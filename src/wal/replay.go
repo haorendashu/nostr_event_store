@@ -5,10 +5,23 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
+	"time"
 
 	"github.com/haorendashu/nostr_event_store/src/storage"
 	"github.com/haorendashu/nostr_event_store/src/types"
 )
+
+// replayLogger is a package-level logger for WAL replay progress.
+// Set via SetReplayLogger; defaults to a no-op discard logger.
+var replayLogger = log.New(io.Discard, "[WAL-REPLAY] ", log.LstdFlags)
+
+// SetReplayLogger sets the logger used for WAL replay progress messages.
+func SetReplayLogger(l *log.Logger) {
+	if l != nil {
+		replayLogger = l
+	}
+}
 
 // ReplayOptions configures the replay behavior.
 type ReplayOptions struct {
@@ -70,6 +83,11 @@ func ReplayWAL(ctx context.Context, reader Reader, replayer Replayer, opts Repla
 		serializer = storage.NewTLVSerializer(4096)
 	}
 
+	startTime := time.Now()
+	progressInterval := int64(10000) // Log every 10k entries
+
+	replayLogger.Printf("ReplayWAL started")
+
 	for {
 		// Read next WAL entry
 		entry, err := reader.Read(ctx)
@@ -87,6 +105,16 @@ func ReplayWAL(ctx context.Context, reader Reader, replayer Replayer, opts Repla
 
 		stats.EntriesProcessed++
 		stats.LastLSN = entry.LSN
+
+		// Periodic progress log
+		if stats.EntriesProcessed%progressInterval == 0 {
+			now := time.Now()
+			elapsed := now.Sub(startTime).Seconds()
+			replayLogger.Printf("WAL replay progress: %d entries processed (LSN=%d, %.0f entries/sec, %.1fs elapsed)",
+				stats.EntriesProcessed, stats.LastLSN,
+				float64(stats.EntriesProcessed)/elapsed, elapsed)
+			_ = now // silence unused
+		}
 
 		// Process entry based on type
 		var processErr error
@@ -127,6 +155,13 @@ func ReplayWAL(ctx context.Context, reader Reader, replayer Replayer, opts Repla
 			stats.Errors = append(stats.Errors, fmt.Errorf("LSN %d: %w", entry.LSN, processErr))
 		}
 	}
+
+	elapsed := time.Since(startTime).Seconds()
+	replayLogger.Printf("WAL replay finished: %d entries in %.1fs (%.0f entries/sec), inserts=%d updates=%d indexUpdates=%d checkpoints=%d lastLSN=%d",
+		stats.EntriesProcessed, elapsed,
+		float64(stats.EntriesProcessed)/elapsed,
+		stats.InsertsReplayed, stats.UpdatesReplayed,
+		stats.IndexUpdatesReplayed, stats.CheckpointsReplayed, stats.LastLSN)
 
 	return stats, nil
 }
