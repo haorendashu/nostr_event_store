@@ -169,11 +169,12 @@ func (c *nodeCache) stats() cache.Stats {
 	defer c.mu.Unlock()
 
 	return cache.Stats{
-		Hits:      c.hits,
-		Misses:    c.misses,
-		Evictions: c.evictions,
-		Size:      len(c.entries),
-		Capacity:  c.capacity,
+		Hits:        c.hits,
+		Misses:      c.misses,
+		Evictions:   c.evictions,
+		Size:        len(c.entries),
+		Capacity:    c.capacity,
+		MemoryBytes: uint64(len(c.entries)) * uint64(c.pageSize),
 	}
 }
 

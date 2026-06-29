@@ -822,6 +822,7 @@ func (pi *PartitionedIndex) Stats() Stats {
 		totalStats.CacheStats.Hits += stats.CacheStats.Hits
 		totalStats.CacheStats.Misses += stats.CacheStats.Misses
 		totalStats.CacheStats.Evictions += stats.CacheStats.Evictions
+			totalStats.CacheStats.MemoryBytes += stats.CacheStats.MemoryBytes
 	}
 
 	return totalStats

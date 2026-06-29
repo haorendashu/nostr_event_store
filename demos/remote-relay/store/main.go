@@ -56,17 +56,38 @@ func main() {
 	fmt.Printf("[STORE] gRPC listening on %s\n", cfg.RemoteConfig.GRPCListenAddr)
 	fmt.Printf("[STORE] data dir: %s\n", cfg.StorageConfig.DataDir)
 
-	// After startup, stats will be printed every 5 minutes.
+	// After startup, stats and memory usage will be printed every 5 minutes.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
+		// Print first stats snapshot after 10 seconds for early diagnosis.
+		firstTick := time.After(10 * time.Second)
+
 		for {
 			select {
+			case <-firstTick:
 			case <-ticker.C:
-				stats := store.Stats()
-				log.Printf("[STORE] stats: %+v", stats)
 			}
+
+			stats := store.Stats()
+			log.Printf("[STORE] stats: %+v", stats)
+
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			log.Printf("[STORE] mem alloc=%d MB totalAlloc=%d MB sys=%d MB "+
+				"heapInuse=%d MB heapObjects=%d stackInuse=%d MB "+
+				"gcCycles=%d gcPauseTotalMs=%.1f nextGC=%d MB goroutines=%d",
+				m.Alloc/1024/1024, m.TotalAlloc/1024/1024, m.Sys/1024/1024,
+				m.HeapInuse/1024/1024, m.HeapObjects, m.StackInuse/1024/1024,
+				m.NumGC, float64(m.PauseTotalNs)/1e6, m.NextGC/1024/1024,
+				runtime.NumGoroutine())
+
+			log.Printf("[STORE] cache-hit primary=%.1f%%(%d/%d) authorTime=%.1f%%(%d/%d) kindTime=%.1f%%(%d/%d) search=%.1f%%(%d/%d)",
+				stats.PrimaryIndexCacheStats.HitRate(), stats.PrimaryIndexCacheStats.Size, stats.PrimaryIndexCacheStats.Capacity,
+				stats.AuthorTimeIndexCacheStats.HitRate(), stats.AuthorTimeIndexCacheStats.Size, stats.AuthorTimeIndexCacheStats.Capacity,
+				stats.KindTimeIndexCacheStats.HitRate(), stats.KindTimeIndexCacheStats.Size, stats.KindTimeIndexCacheStats.Capacity,
+				stats.SearchIndexCacheStats.HitRate(), stats.SearchIndexCacheStats.Size, stats.SearchIndexCacheStats.Capacity)
 		}
 	}()
 

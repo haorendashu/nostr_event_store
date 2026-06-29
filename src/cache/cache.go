@@ -56,6 +56,11 @@ type Stats struct {
 
 	// Capacity is the maximum number of items the cache can hold.
 	Capacity int
+
+	// MemoryBytes is the estimated memory used by cached items in bytes.
+	// For B+Tree node caches this is (entryCount * pageSize), which under-counts
+	// in-memory Go object overhead (key copies, slice headers).
+	MemoryBytes uint64
 }
 
 // HitRate returns the cache hit rate as a percentage (0-100).
@@ -761,10 +766,11 @@ func (a *memoryCacheAdapter) Capacity() int {
 func (a *memoryCacheAdapter) Stats() Stats {
 	ms := a.cache.Stats()
 	return Stats{
-		Hits:      ms.Hits,
-		Misses:    ms.Misses,
-		Evictions: ms.Evictions,
-		Size:      ms.NodeCount,
-		Capacity:  int(ms.MaxMemory),
+		Hits:        ms.Hits,
+		Misses:      ms.Misses,
+		Evictions:   ms.Evictions,
+		Size:        ms.NodeCount,
+		Capacity:    int(ms.MaxMemory),
+		MemoryBytes: ms.CurrentMemory,
 	}
 }
