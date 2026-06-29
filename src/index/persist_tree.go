@@ -521,6 +521,14 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 	// Borrow from left sibling
 	if left != nil && t.nodeSize(left) > minSize && len(left.keys) > 1 {
 		if child.isLeaf() {
+			// Guard: replacing parent separator key (child.keys[0] -> left last key) would overflow parent.
+			// If so, skip borrow and fall through to merge (which has overflow check).
+			if len(child.keys) > 0 {
+				borrowedKey := left.keys[len(left.keys)-1]
+				if parent.internalSize(t.pageSize)-len(child.keys[0])+len(borrowedKey) > int(t.pageSize) {
+					goto skipLeftBorrow
+				}
+			}
 			if len(left.values) < len(left.keys) {
 				return nil, false, fmt.Errorf("invalid left leaf state before borrow: %d keys but %d values (offset=%d)",
 					len(left.keys), len(left.values), left.offset)
@@ -548,6 +556,15 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			child.values = newChildValues
 			parent.keys[childIndex-1] = child.cloneKey(child.keys[0])
 		} else {
+			// Guard: replacing parent separator key (sepKey -> left last key) would overflow parent.
+			// If so, skip borrow and fall through to merge (which has overflow check).
+			{
+				borrowedKey := left.keys[len(left.keys)-1]
+				sepKeyLen := len(parent.keys[childIndex-1])
+				if parent.internalSize(t.pageSize)-sepKeyLen+len(borrowedKey) > int(t.pageSize) {
+					goto skipLeftBorrow
+				}
+			}
 			if len(left.children) == 0 {
 				return nil, false, fmt.Errorf("invalid left internal state before borrow: no children to borrow (offset=%d)", left.offset)
 			}
@@ -580,10 +597,19 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		return child, false, nil
 	}
+	skipLeftBorrow:
 
 	// Borrow from right sibling
 	if right != nil && t.nodeSize(right) > minSize && len(right.keys) > 1 && childIndex < len(parent.keys) {
 		if child.isLeaf() {
+			// Guard: replacing parent separator key (right.keys[0] -> right.keys[1]) would overflow parent.
+			// If so, skip borrow and fall through to merge (which has overflow check).
+			{
+				newSepKeyLen := len(right.keys[1])
+				if parent.internalSize(t.pageSize)-len(right.keys[0])+newSepKeyLen > int(t.pageSize) {
+					goto skipRightBorrow
+				}
+			}
 			if len(right.values) < len(right.keys) {
 				return nil, false, fmt.Errorf("invalid right leaf state before borrow: %d keys but %d values (offset=%d)",
 					len(right.keys), len(right.values), right.offset)
@@ -627,6 +653,15 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 			// and leaking stale entries in secondary indexes (AuthorTime/KindTime).
 			parent.keys[childIndex] = right.cloneKey(right.keys[0])
 		} else {
+			// Guard: replacing parent separator key (sepKey -> right first key) would overflow parent.
+			// If so, skip borrow and fall through to merge (which has overflow check).
+			{
+				firstKey := right.keys[0]
+				sepKeyLen := len(parent.keys[childIndex])
+				if parent.internalSize(t.pageSize)-sepKeyLen+len(firstKey) > int(t.pageSize) {
+					goto skipRightBorrow
+				}
+			}
 			if len(right.children) == 0 {
 				return nil, false, fmt.Errorf("invalid right internal state before borrow: no children to borrow (offset=%d)", right.offset)
 			}
@@ -659,6 +694,7 @@ func (t *btree) rebalanceAfterDelete(parent *btreeNode, child *btreeNode, childI
 		t.cache.MarkDirty(newBTreeNodeAdapter(parent))
 		return child, false, nil
 	}
+	skipRightBorrow:
 
 	// Merge with left sibling if available, otherwise with right.
 	// For internal nodes, verify the merged result fits in a single page before merging.
