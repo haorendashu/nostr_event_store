@@ -134,12 +134,6 @@ type PartitionedIndex struct {
 	// cacheCoordinator manages cache allocation across partitions with dynamic rebalancing.
 	// Nil if partitioning is disabled or coordinator is not enabled.
 	cacheCoordinator *cache.PartitionCacheCoordinator
-
-	// rebalanceTimer controls the background cache rebalancing goroutine.
-	rebalanceTimer *time.Ticker
-
-	// done signals the background goroutine to stop.
-	done chan struct{}
 }
 
 // NewPartitionedIndex creates a new time-partitioned index.
@@ -211,13 +205,11 @@ func NewPartitionedIndex(
 				recentPct,
 			)
 
-			// Wire up the callback so that coordinator rebalance applies to actual caches
-			pi.cacheCoordinator.SetOnAfterRebalance(pi.applyCacheAllocations)
-
-			// Start background cache rebalancer (every 5 minutes)
-			pi.done = make(chan struct{})
-			pi.cacheCoordinator.StartRebalancer(5 * time.Minute)
-			fmt.Printf("[partition] Cache coordinator enabled for %s (total: %d MB, tiered allocation)\n", pi.basePath, totalCacheMB)
+			// Cache allocation is done once at startup via allocateCacheToPartitions.
+			// Background rebalancing is disabled — in a workload where since=0 queries
+			// scan all partitions equally, periodic rebalance provides no benefit and
+			// may trigger eviction I/O under load.
+			fmt.Printf("[partition] Cache coordinator enabled for %s (total: %d MB, tiered allocation, static)\n", pi.basePath, totalCacheMB)
 		} else {
 			// No coordinator: all partitions share cache directly for maximum utilization
 			fmt.Printf("[partition] Cache coordinator disabled for %s (total: %d MB, direct sharing)\n", pi.basePath, totalCacheMB)
