@@ -295,15 +295,15 @@ type Config struct {
 	PartitionGranularity string
 
 	// PartitionCacheStrategy defines how cache is allocated to different partitions.
-	// "tiered" (default): Active=60%, Recent=30%, Historical=10%
+	// "tiered" (default): Active=50%, Recent=25%, Historical=25%
 	PartitionCacheStrategy string
 
 	// PartitionCacheActivePct is the percentage of cache allocated to active partitions.
-	// Default: 60
+	// Default: 50
 	PartitionCacheActivePct int
 
 	// PartitionCacheRecentPct is the percentage of cache allocated to recent partitions.
-	// Default: 30
+	// Default: 25
 	PartitionCacheRecentPct int
 
 	// PartitionActiveCount defines how many partitions are considered "active".

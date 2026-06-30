@@ -45,7 +45,7 @@ The package supports:
 | **Concurrency** | RWMutex per cache | Safe concurrent access with optimal read performance |
 | **Multi-writer Support** | Per-entry writer tracking | Enables partitioned indexes with multiple files |
 | **Dynamic Allocation** | 70% size + 30% access | Balances static capacity with dynamic workload |
-| **Partition Tiers** | 60% active + 30% recent + 10% historical | Optimizes for time-series data patterns |
+| **Partition Tiers** | 50% active + 25% recent + 25% historical | Optimizes for time-series data patterns |
 | **Dirty Tracking** | Per-node dirty flags | Enables deferred write-back for better throughput |
 | **Resize Support** | Dynamic capacity adjustment | Adapts to changing memory availability |
 
@@ -225,8 +225,8 @@ type PartitionCacheCoordinator struct {
     cache          *BTreeCache
     partitions     map[string]*PartitionAllocation
     totalMB        int
-    activePct      int  // e.g., 60%
-    recentPct      int  // e.g., 30%
+    activePct      int  // e.g., 50%
+    recentPct      int  // e.g., 25%
     lastRebalance  time.Time
     rebalanceTimer *time.Ticker
     done           chan struct{}
@@ -243,9 +243,9 @@ type PartitionAllocation struct {
 ```
 
 **Tiered Strategy:**
-- **Active partitions (priority=2):** 60% of total cache
-- **Recent partitions (priority=1):** 30% of total cache
-- **Historical partitions (priority=0):** 10% of total cache
+- **Active partitions (priority=2):** 50% of total cache
+- **Recent partitions (priority=1):** 25% of total cache
+- **Historical partitions (priority=0):** 25% of total cache
 
 ---
 
@@ -575,9 +575,9 @@ fmt.Printf("Primary index: %d MB (size: %d bytes, accesses: %d)\n",
 
 The `PartitionCacheCoordinator` implements a tiered caching strategy for time-partitioned data:
 
-- **Active partitions:** Current month, high access rate → 60% of cache
-- **Recent partitions:** Last 1-3 months, moderate access → 30% of cache
-- **Historical partitions:** Older than 3 months, rare access → 10% of cache
+- **Active partitions:** Current month, high access rate → 50% of cache
+- **Recent partitions:** Last 1-3 months, moderate access → 25% of cache
+- **Historical partitions:** Older than 3 months, rare access → 25% of cache
 
 ### Tiered Allocation Strategy
 
@@ -588,9 +588,9 @@ Step 1: Classify partitions by priority
   - Priority 0: Historical (>3 months old)
 
 Step 2: Calculate tier budgets
-  - activeBudget = totalMB × 60%
-  - recentBudget = totalMB × 30%
-  - historicalBudget = totalMB × 10%
+  - activeBudget = totalMB × 50%
+  - recentBudget = totalMB × 25%
+  - historicalBudget = totalMB × 25%
 
 Step 3: Distribute within each tier
   - If access count > 0:
@@ -603,7 +603,7 @@ Step 3: Distribute within each tier
 ### Usage Example
 
 ```go
-coordinator := NewPartitionCacheCoordinator(sharedCache, 100, 60, 30)
+coordinator := NewPartitionCacheCoordinator(sharedCache, 100, 50, 25)
 
 // Register partitions with priorities
 coordinator.RegisterPartition("2026-02", 2)  // Active
@@ -756,9 +756,9 @@ Every 5 minutes:
          ↓
 ┌───────────────────────────┐
 │ Calculate tier budgets    │
-│ - Active: 60%             │
-│ - Recent: 30%             │
-│ - Historical: 10%         │
+│ - Active: 50%             │
+│ - Recent: 25%             │
+│ - Historical: 25%         │
 └────────┬──────────────────┘
          ↓
 ┌───────────────────────────┐
@@ -871,12 +871,12 @@ Every 5 minutes:
 
 ### Decision 6: Tiered Partition Caching
 
-**Decision:** Allocate 60% active / 30% recent / 10% historical
+**Decision:** Allocate 50% active / 25% recent / 25% historical
 
 **Rationale:**
 - Time-series data exhibits strong recency bias (80% queries hit current month)
-- Historical partitions rarely accessed, minimal cache is sufficient
-- 60/30/10 split balances current performance with historical support
+- Historical partitions are accessed during broad queries and need adequate cache
+- 50/25/25 split balances current performance with historical query support
 - Access-proportional allocation within tiers handles hotspots
 
 ---
@@ -1112,7 +1112,7 @@ if !allocator.ShouldReallocate() {
 ### Problem 5: Partition Coordinator Not Adjusting
 
 **Symptoms:**
-- Active partition not getting 60% cache
+- Active partition not getting 50% cache
 - Historical partitions consuming too much memory
 
 **Diagnosis:**
@@ -1164,7 +1164,7 @@ btreeCache.SetWriter(writer)
 allocator := cache.NewDynamicCacheAllocator(200, 20)  // 200 MB total, 20 MB min
 
 // Partition coordinator
-coordinator := cache.NewPartitionCacheCoordinator(btreeCache, 100, 60, 30)
+coordinator := cache.NewPartitionCacheCoordinator(btreeCache, 100, 50, 25)
 ```
 
 ### Basic Operations

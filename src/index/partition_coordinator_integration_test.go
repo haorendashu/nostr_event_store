@@ -20,8 +20,8 @@ func TestPartitionCacheCoordinatorInitialization(t *testing.T) {
 		TotalCacheMB:                    totalCacheMB,
 		PrimaryIndexCacheMB:             totalCacheMB, // Set cache for primary index
 		EnablePartitionCacheCoordinator: true,
-		PartitionCacheActivePct:         60,
-		PartitionCacheRecentPct:         30,
+		PartitionCacheActivePct:         50,
+		PartitionCacheRecentPct:         25,
 		PageSize:                        4096,
 	}
 
@@ -104,8 +104,8 @@ func TestPartitionCacheCoordinatorGetOperations(t *testing.T) {
 		Dir:                     t.TempDir(),
 		TotalCacheMB:            totalCacheMB,
 		PrimaryIndexCacheMB:     totalCacheMB,
-		PartitionCacheActivePct: 60,
-		PartitionCacheRecentPct: 30,
+		PartitionCacheActivePct: 50,
+		PartitionCacheRecentPct: 25,
 		PageSize:                4096,
 	}
 

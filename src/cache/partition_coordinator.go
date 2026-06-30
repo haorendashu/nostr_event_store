@@ -41,8 +41,8 @@ type PartitionCacheCoordinator struct {
 // Parameters:
 //   - cache: The shared BTreeCache instance used by all partitions
 //   - totalMB: Total memory budget for all partitions
-//   - activePct: Percentage of cache allocated to active partitions (e.g., 60)
-//   - recentPct: Percentage of cache allocated to recent partitions (e.g., 30)
+//   - activePct: Percentage of cache allocated to active partitions (e.g., 50)
+//   - recentPct: Percentage of cache allocated to recent partitions (e.g., 25)
 //
 // Returns: A new PartitionCacheCoordinator
 func NewPartitionCacheCoordinator(cache *BTreeCache, totalMB, activePct, recentPct int) *PartitionCacheCoordinator {

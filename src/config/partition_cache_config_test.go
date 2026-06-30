@@ -20,8 +20,8 @@ func TestPartitionCacheCoordinatorConfig(t *testing.T) {
 			name:                       "Direct Cache (Coordinator Disabled)",
 			configPath:                 "testdata/config.example.partition_direct_cache.json",
 			expectedCoordinatorEnabled: false,
-			expectedActivePct:          60,
-			expectedRecentPct:          30,
+			expectedActivePct:          50,
+			expectedRecentPct:          25,
 			expectedActiveCount:        2,
 			expectedRecentCount:        4,
 		},
@@ -29,8 +29,8 @@ func TestPartitionCacheCoordinatorConfig(t *testing.T) {
 			name:                       "With Coordinator Enabled",
 			configPath:                 "testdata/config.example.partition_with_coordinator.json",
 			expectedCoordinatorEnabled: true,
-			expectedActivePct:          60,
-			expectedRecentPct:          30,
+			expectedActivePct:          50,
+			expectedRecentPct:          25,
 			expectedActiveCount:        2,
 			expectedRecentCount:        4,
 		},
@@ -106,12 +106,12 @@ func TestDefaultPartitionCacheCoordinator(t *testing.T) {
 		t.Error("Expected default EnablePartitionCacheCoordinator=true")
 	}
 
-	if cfg.IndexConfig.PartitionCacheActivePct != 60 {
-		t.Errorf("Expected default PartitionCacheActivePct=60, got %d", cfg.IndexConfig.PartitionCacheActivePct)
+	if cfg.IndexConfig.PartitionCacheActivePct != 50 {
+		t.Errorf("Expected default PartitionCacheActivePct=50, got %d", cfg.IndexConfig.PartitionCacheActivePct)
 	}
 
-	if cfg.IndexConfig.PartitionCacheRecentPct != 30 {
-		t.Errorf("Expected default PartitionCacheRecentPct=30, got %d", cfg.IndexConfig.PartitionCacheRecentPct)
+	if cfg.IndexConfig.PartitionCacheRecentPct != 25 {
+		t.Errorf("Expected default PartitionCacheRecentPct=25, got %d", cfg.IndexConfig.PartitionCacheRecentPct)
 	}
 
 	t.Log("Default config has correct partition cache coordinator settings")

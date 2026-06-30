@@ -137,16 +137,16 @@ type IndexConfig struct {
 
 	// PartitionCacheStrategy defines how cache is allocated to different partitions.
 	// Options: "tiered" (default)
-	// - tiered: Active=60%, Recent=30%, Historical=10%
+	// - tiered: Active=50%, Recent=25%, Historical=25%
 	// Default: "tiered"
 	PartitionCacheStrategy string `json:"partition_cache_strategy,omitempty" yaml:"partition_cache_strategy,omitempty"`
 
 	// PartitionCacheActivePct is the percentage of cache allocated to active partitions.
-	// Default: 60
+	// Default: 50
 	PartitionCacheActivePct int `json:"partition_cache_active_pct,omitempty" yaml:"partition_cache_active_pct,omitempty"`
 
 	// PartitionCacheRecentPct is the percentage of cache allocated to recent partitions.
-	// Default: 30
+	// Default: 25
 	PartitionCacheRecentPct int `json:"partition_cache_recent_pct,omitempty" yaml:"partition_cache_recent_pct,omitempty"`
 
 	// PartitionActiveCount defines how many partitions are considered "active".
@@ -921,8 +921,8 @@ func DefaultConfig() *Config {
 			PartitionGranularity:            "monthly",
 			EnablePartitionCacheCoordinator: true,
 			PartitionCacheStrategy:          "tiered",
-			PartitionCacheActivePct:         60,
-			PartitionCacheRecentPct:         30,
+			PartitionCacheActivePct:         50,
+			PartitionCacheRecentPct:         25,
 			PartitionActiveCount:            2,
 			PartitionRecentCount:            4,
 		},

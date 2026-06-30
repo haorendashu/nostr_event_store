@@ -197,11 +197,11 @@ func NewPartitionedIndex(
 			// Use coordinator for dynamic cache rebalancing across partitions
 			activePct := pi.config.PartitionCacheActivePct
 			if activePct <= 0 || activePct > 100 {
-				activePct = 60
+				activePct = 50
 			}
 			recentPct := pi.config.PartitionCacheRecentPct
 			if recentPct <= 0 {
-				recentPct = 30
+				recentPct = 25
 			}
 
 			pi.cacheCoordinator = cache.NewPartitionCacheCoordinator(
@@ -288,12 +288,12 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 
 	activePct := pi.config.PartitionCacheActivePct
 	if activePct <= 0 || activePct > 100 {
-		activePct = 60 // Default: 60% for active
+		activePct = 50 // Default: 50% for active
 	}
 
 	recentPct := pi.config.PartitionCacheRecentPct
 	if recentPct <= 0 || activePct+recentPct > 100 {
-		recentPct = 30 // Default: 30% for recent
+		recentPct = 25 // Default: 25% for recent
 	}
 
 	activeCacheMB := totalCacheMB * activePct / 100
@@ -639,7 +639,7 @@ func (pi *PartitionedIndex) createPartitionForTime(t time.Time) error {
 	}
 	activePct := pi.config.PartitionCacheActivePct
 	if activePct <= 0 || activePct > 100 {
-		activePct = 60 // Changed default from 33 to 60 for better active partition performance
+		activePct = 50 // Default: 50% for active
 	}
 	activeCount := pi.config.PartitionActiveCount
 	if activeCount <= 0 {

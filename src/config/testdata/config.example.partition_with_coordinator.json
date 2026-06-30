@@ -33,8 +33,8 @@
         "dirty_threshold": 128,
         "enable_partition_cache_coordinator": true,
         "partition_cache_strategy": "tiered",
-        "partition_cache_active_pct": 60,
-        "partition_cache_recent_pct": 30,
+        "partition_cache_active_pct": 50,
+        "partition_cache_recent_pct": 25,
         "partition_active_count": 2,
         "partition_recent_count": 4
     },

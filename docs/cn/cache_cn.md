@@ -45,7 +45,7 @@
 | **并发性** | 每个缓存一个 RWMutex | 安全的并发访问与最优的读性能 |
 | **多写入器支持** | 每个条目跟踪写入器 | 支持具有多个文件的分区索引 |
 | **动态分配** | 70% 大小 + 30% 访问 | 平衡静态容量与动态工作负载 |
-| **分区层级** | 60% 活跃 + 30% 最近 + 10% 历史 | 针对时间序列数据模式优化 |
+| **分区层级** | 50% 活跃 + 25% 最近 + 25% 历史 | 针对时间序列数据模式优化 |
 | **脏标记跟踪** | 每个节点的脏标志 | 支持延迟写回以提高吞吐量 |
 | **调整大小支持** | 动态容量调整 | 适应变化的内存可用性 |
 
@@ -225,8 +225,8 @@ type PartitionCacheCoordinator struct {
     cache          *BTreeCache
     partitions     map[string]*PartitionAllocation
     totalMB        int
-    activePct      int  // 例如 60%
-    recentPct      int  // 例如 30%
+    activePct      int  // 例如 50%
+    recentPct      int  // 例如 25%
     lastRebalance  time.Time
     rebalanceTimer *time.Ticker
     done           chan struct{}
@@ -243,9 +243,9 @@ type PartitionAllocation struct {
 ```
 
 **分层策略:**
-- **活跃分区 (priority=2):** 总缓存的 60%
-- **最近分区 (priority=1):** 总缓存的 30%
-- **历史分区 (priority=0):** 总缓存的 10%
+- **活跃分区 (priority=2):** 总缓存的 50%
+- **最近分区 (priority=1):** 总缓存的 25%
+- **历史分区 (priority=0):** 总缓存的 25%
 
 ---
 
@@ -575,9 +575,9 @@ fmt.Printf("主索引: %d MB (大小: %d 字节, 访问: %d)\n",
 
 `PartitionCacheCoordinator` 为时间分区数据实现分层缓存策略:
 
-- **活跃分区:** 当前月份,高访问率 → 60% 的缓存
-- **最近分区:** 最近 1-3 个月,中等访问 → 30% 的缓存
-- **历史分区:** 超过 3 个月,罕见访问 → 10% 的缓存
+- **活跃分区:** 当前月份,高访问率 → 50% 的缓存
+- **最近分区:** 最近 1-3 个月,中等访问 → 25% 的缓存
+- **历史分区:** 超过 3 个月,罕见访问 → 25% 的缓存
 
 ### 分层分配策略
 
@@ -588,9 +588,9 @@ fmt.Printf("主索引: %d MB (大小: %d 字节, 访问: %d)\n",
   - 优先级 0: 历史 (>3 个月前)
 
 步骤 2: 计算层级预算
-  - activeBudget = totalMB × 60%
-  - recentBudget = totalMB × 30%
-  - historicalBudget = totalMB × 10%
+  - activeBudget = totalMB × 50%
+  - recentBudget = totalMB × 25%
+  - historicalBudget = totalMB × 25%
 
 步骤 3: 在每个层级内分配
   - 如果 access count > 0:
@@ -603,7 +603,7 @@ fmt.Printf("主索引: %d MB (大小: %d 字节, 访问: %d)\n",
 ### 使用示例
 
 ```go
-coordinator := NewPartitionCacheCoordinator(sharedCache, 100, 60, 30)
+coordinator := NewPartitionCacheCoordinator(sharedCache, 100, 50, 25)
 
 // 注册具有优先级的分区
 coordinator.RegisterPartition("2026-02", 2)  // 活跃
@@ -754,9 +754,9 @@ coordinator.StartRebalancer(5 * time.Minute)
          ↓
 ┌───────────────────────────┐
 │ 计算层级预算               │
-│ - 活跃: 60%               │
-│ - 最近: 30%               │
-│ - 历史: 10%               │
+│ - 活跃: 50%               │
+│ - 最近: 25%               │
+│ - 历史: 25%               │
 └────────┬──────────────────┘
          ↓
 ┌───────────────────────────┐
@@ -868,12 +868,12 @@ coordinator.StartRebalancer(5 * time.Minute)
 
 ### 决策 6: 分层分区缓存
 
-**决策:** 分配 60% 活跃 / 30% 最近 / 10% 历史
+**决策:** 分配 50% 活跃 / 25% 最近 / 25% 历史
 
 **理由:**
 - 时间序列数据表现出强烈的最近性偏差(80% 的查询命中当前月份)
-- 历史分区很少访问,最小缓存就足够了
-- 60/30/10 分割平衡了当前性能与历史支持
+- 历史分区在宽泛查询时也需要足够的缓存支持
+- 50/25/25 分割平衡了当前性能与历史查询支持
 - 层级内的按访问比例分配处理热点
 
 ---
@@ -1109,7 +1109,7 @@ if !allocator.ShouldReallocate() {
 ### 问题 5: 分区协调器未调整
 
 **症状:**
-- 活跃分区未获得 60% 缓存
+- 活跃分区未获得 50% 缓存
 - 历史分区消耗太多内存
 
 **诊断:**
@@ -1161,7 +1161,7 @@ btreeCache.SetWriter(writer)
 allocator := cache.NewDynamicCacheAllocator(200, 20)  // 总共 200 MB, 最小 20 MB
 
 // 分区协调器
-coordinator := cache.NewPartitionCacheCoordinator(btreeCache, 100, 60, 30)
+coordinator := cache.NewPartitionCacheCoordinator(btreeCache, 100, 50, 25)
 ```
 
 ### 基本操作
