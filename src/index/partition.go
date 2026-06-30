@@ -211,6 +211,9 @@ func NewPartitionedIndex(
 				recentPct,
 			)
 
+			// Wire up the callback so that coordinator rebalance applies to actual caches
+			pi.cacheCoordinator.SetOnAfterRebalance(pi.applyCacheAllocations)
+
 			// Start background cache rebalancer (every 5 minutes)
 			pi.done = make(chan struct{})
 			pi.cacheCoordinator.StartRebalancer(5 * time.Minute)
@@ -380,11 +383,13 @@ func (pi *PartitionedIndex) allocateCacheToPartitions() {
 		}
 	}
 
-	// Trigger immediate rebalance in coordinator
+	// Trigger immediate rebalance in coordinator and apply to partitions
 	if pi.cacheCoordinator != nil {
 		if err := pi.cacheCoordinator.Rebalance(); err != nil {
 			fmt.Printf("[partition] Warning: failed to rebalance cache: %v\n", err)
 		}
+		// Apply the coordinator's allocations to the actual B+Tree caches
+		pi.applyCacheAllocations()
 	}
 
 	// Log allocation status
@@ -863,6 +868,37 @@ func (pi *PartitionedIndex) GetCacheCoordinator() *cache.PartitionCacheCoordinat
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
 	return pi.cacheCoordinator
+}
+
+// applyCacheAllocations reads the coordinator's per-partition AllocatedMB values
+// and calls ResizeCache on each partition's underlying B+Tree cache to apply them.
+// This is the key method that turns the coordinator's allocation decisions into
+// actual cache capacity changes.
+func (pi *PartitionedIndex) applyCacheAllocations() {
+	if pi.cacheCoordinator == nil {
+		return
+	}
+
+	for _, p := range pi.partitions {
+		allocMB := pi.cacheCoordinator.GetAllocation(p.FilePath)
+		if allocMB <= 0 {
+			continue
+		}
+		if allocMB == p.CacheSizeMB {
+			continue // No change needed
+		}
+		p.CacheSizeMB = allocMB
+		if pbi, ok := p.Index.(*PersistentBTreeIndex); ok {
+			evicted, err := pbi.ResizeCache(allocMB)
+			if err != nil {
+				fmt.Printf("[partition] Warning: failed to resize cache for %s to %d MB: %v\n",
+					p.FilePath, allocMB, err)
+			} else if evicted > 0 {
+				fmt.Printf("[partition] Cache resized for %s: %d MB (evicted %d entries)\n",
+					p.FilePath, allocMB, evicted)
+			}
+		}
+	}
 }
 
 // IndexIntegrityResult holds per-partition verification results.

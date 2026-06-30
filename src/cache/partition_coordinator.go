@@ -24,15 +24,16 @@ type PartitionAllocation struct {
 //
 // This ensures that new data performs well while old data uses minimal cache.
 type PartitionCacheCoordinator struct {
-	mu             sync.RWMutex
-	cache          *BTreeCache
-	partitions     map[string]*PartitionAllocation
-	totalMB        int
-	activePct      int // Percentage for active partitions
-	recentPct      int // Percentage for recent partitions
-	lastRebalance  time.Time
-	rebalanceTimer *time.Ticker
-	done           chan struct{}
+	mu                sync.RWMutex
+	cache             *BTreeCache
+	partitions        map[string]*PartitionAllocation
+	totalMB           int
+	activePct         int // Percentage for active partitions
+	recentPct         int // Percentage for recent partitions
+	lastRebalance     time.Time
+	rebalanceTimer    *time.Ticker
+	done              chan struct{}
+	onAfterRebalance  func() // Called after Rebalance completes, used to apply allocations to partitions
 }
 
 // NewPartitionCacheCoordinator creates a new coordinator for managing shared cache across partitions.
@@ -258,11 +259,23 @@ func (p *PartitionCacheCoordinator) StartRebalancer(interval time.Duration) {
 			case <-p.rebalanceTimer.C:
 				_ = p.Rebalance()
 				p.ResetAccessCounts()
+				// Apply the new allocations to the actual partition caches
+				if p.onAfterRebalance != nil {
+					p.onAfterRebalance()
+				}
 			case <-p.done:
 				return
 			}
 		}
 	}()
+}
+
+// SetOnAfterRebalance sets the callback that is invoked after each Rebalance cycle.
+// This allows the owning PartitionedIndex to apply the new cache allocations to partitions.
+func (p *PartitionCacheCoordinator) SetOnAfterRebalance(fn func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onAfterRebalance = fn
 }
 
 // StopRebalancer stops the background rebalancer goroutine.
